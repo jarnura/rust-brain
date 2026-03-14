@@ -343,7 +343,7 @@ struct ModuleNode {
     items: Vec<ModuleItem>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct ModuleItem {
     name: String,
     kind: String,
@@ -652,10 +652,11 @@ async fn get_trait_impls(
     
     // Query matches the actual IMPLEMENTS relationship structure:
     // (impl:Impl)-[:IMPLEMENTS]->(trait:Trait)
+    // Return a map object so Neo4j REST API returns named fields instead of array
     let cypher = r#"
         MATCH (impl:Impl)-[:IMPLEMENTS]->(trait:Trait {name: $trait_name})
-        RETURN impl.fqn as impl_fqn, impl.name as impl_name, trait.name as trait_name, 
-               impl.start_line as start_line
+        RETURN {impl_fqn: impl.fqn, impl_name: impl.name, trait_name: trait.name, 
+                file_path: impl.file_path, start_line: impl.start_line} as node
         LIMIT $limit
         "#;
     
@@ -669,11 +670,13 @@ async fn get_trait_impls(
     let implementations = results
         .into_iter()
         .filter_map(|r| {
+            // r is an array like [{impl_fqn: ..., impl_name: ...}], get first element
+            let node = r.as_array()?.first()?;
             Some(TraitImpl {
-                impl_fqn: r.get("impl_fqn")?.as_str()?.to_string(),
-                type_name: r.get("impl_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                start_line: r.get("start_line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
+                impl_fqn: node.get("impl_fqn")?.as_str()?.to_string(),
+                type_name: node.get("impl_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                file_path: node.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                start_line: node.get("start_line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
             })
         })
         .collect();
@@ -732,79 +735,154 @@ async fn get_module_tree(
     state.metrics.record_request("get_module_tree", "GET");
     debug!("Get module tree for crate: {}", query.crate_name);
     
-    let cypher = format!(
-        r#"
-        MATCH (root:Module {{crate_name: $crate_name, is_crate_root: true}})
-        OPTIONAL MATCH (root)-[r:CONTAINS*]->(child:Module)
-        WITH root, collect(DISTINCT child) as modules
-        OPTIONAL MATCH (root)-[:DEFINES]->(item)
-        WITH root, modules, collect({{name: item.name, kind: labels(item)[0], visibility: item.visibility}}) as root_items
-        RETURN root.name as root_name, root.path as root_path, modules, root_items
-        "#
-    );
+    // Query all modules for this crate with their items
+    // Modules have FQN like "crate_name::module::submodule"
+    let cypher = r#"
+        MATCH (c:Crate {name: $crate_name})
+        OPTIONAL MATCH (c)-[:CONTAINS*]->(m:Module)
+        WITH c, collect(DISTINCT m) as modules
+        OPTIONAL MATCH (c)-[:DEFINES]->(crate_item)
+        WITH c, modules, collect({fqn: crate_item.fqn, name: crate_item.name, kind: labels(crate_item)[0], visibility: crate_item.visibility}) as crate_items
+        UNWIND modules as mod
+        OPTIONAL MATCH (mod)-[:DEFINES]->(item)
+        WITH c, modules, crate_items, mod, collect({name: item.name, kind: labels(item)[0], visibility: item.visibility}) as mod_items
+        RETURN c.name as crate_name, 
+               modules,
+               crate_items,
+               collect({fqn: mod.fqn, name: mod.name, items: mod_items}) as module_data
+    "#;
     
     let params = serde_json::json!({
         "crate_name": query.crate_name,
     });
     
-    let results = execute_neo4j_query(&state, &cypher, params).await?;
+    let results = execute_neo4j_query(&state, cypher, params).await?;
     
-    let root = if let Some(first) = results.first() {
-        let root_name = first.get("root_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&query.crate_name)
-            .to_string();
-        let root_path = first.get("root_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        
-        let root_items: Vec<ModuleItem> = first.get("root_items")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items.iter().filter_map(|item| {
-                    Some(ModuleItem {
-                        name: item.get("name")?.as_str()?.to_string(),
-                        kind: item.get("kind")?.as_str()?.to_string(),
-                        visibility: item.get("visibility").and_then(|v| v.as_str()).unwrap_or("private").to_string(),
-                    })
-                }).collect()
-            })
-            .unwrap_or_default();
-        
-        let modules: Vec<ModuleNode> = first.get("modules")
-            .and_then(|v| v.as_array())
-            .map(|mods| {
-                mods.iter().filter_map(|m| {
-                    Some(ModuleNode {
-                        name: m.get("name")?.as_str()?.to_string(),
-                        path: m.get("path")?.as_str()?.to_string(),
-                        children: vec![],
-                        items: vec![],
-                    })
-                }).collect()
-            })
-            .unwrap_or_default();
-        
-        ModuleNode {
-            name: root_name,
-            path: root_path,
-            children: modules,
-            items: root_items,
-        }
-    } else {
-        ModuleNode {
-            name: query.crate_name.clone(),
-            path: query.crate_name.clone(),
-            children: vec![],
-            items: vec![],
-        }
-    };
+    // Build module tree from flat results
+    let root = build_module_tree(&query.crate_name, &results);
     
     Ok(Json(ModuleTreeResponse {
         crate_name: query.crate_name,
         root,
     }))
+}
+
+/// Build a hierarchical module tree from flat Neo4j results
+/// Neo4j REST API returns rows as arrays: [crate_name, modules, crate_items, module_data]
+fn build_module_tree(crate_name: &str, results: &[serde_json::Value]) -> ModuleNode {
+    use std::collections::BTreeMap;
+    
+    // Collect all modules with their items
+    let mut module_map: BTreeMap<String, (String, Vec<ModuleItem>)> = BTreeMap::new();
+    let mut crate_items: Vec<ModuleItem> = Vec::new();
+    
+    if let Some(first) = results.first() {
+        // Neo4j returns rows as arrays: [crate_name, modules, crate_items, module_data]
+        let row = match first.as_array() {
+            Some(arr) => arr,
+            None => return ModuleNode {
+                name: crate_name.to_string(),
+                path: crate_name.to_string(),
+                children: vec![],
+                items: vec![],
+            },
+        };
+        
+        // Index 2: crate_items
+        if let Some(items) = row.get(2).and_then(|v| v.as_array()) {
+            crate_items = items.iter().filter_map(|item| {
+                // Skip null items (crate may not define any items directly)
+                if item.get("name").and_then(|v| v.as_str()).is_none() {
+                    return None;
+                }
+                Some(ModuleItem {
+                    name: item.get("name")?.as_str()?.to_string(),
+                    kind: item.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                    visibility: item.get("visibility").and_then(|v| v.as_str()).unwrap_or("private").to_string(),
+                })
+            }).collect();
+        }
+        
+        // Index 3: module_data
+        if let Some(modules) = row.get(3).and_then(|v| v.as_array()) {
+            for mod_entry in modules {
+                if let (Some(fqn), Some(name)) = (
+                    mod_entry.get("fqn").and_then(|v| v.as_str()),
+                    mod_entry.get("name").and_then(|v| v.as_str())
+                ) {
+                    let items: Vec<ModuleItem> = mod_entry.get("items")
+                        .and_then(|v| v.as_array())
+                        .map(|items| {
+                            items.iter().filter_map(|item| {
+                                // Skip null items
+                                if item.get("name").and_then(|v| v.as_str()).is_none() {
+                                    return None;
+                                }
+                                Some(ModuleItem {
+                                    name: item.get("name")?.as_str()?.to_string(),
+                                    kind: item.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                                    visibility: item.get("visibility").and_then(|v| v.as_str()).unwrap_or("private").to_string(),
+                                })
+                            }).collect()
+                        })
+                        .unwrap_or_default();
+                    
+                    module_map.insert(fqn.to_string(), (name.to_string(), items));
+                }
+            }
+        }
+    }
+    
+    // Build tree structure - find direct children for each module
+    fn build_children(
+        parent_fqn: &str, 
+        crate_name: &str,
+        module_map: &BTreeMap<String, (String, Vec<ModuleItem>)>
+    ) -> Vec<ModuleNode> {
+        let mut children: Vec<ModuleNode> = Vec::new();
+        
+        for (fqn, (name, items)) in module_map {
+            // Check if this module is a direct child of parent
+            // Parent "crate" -> child "crate::module" (one :: separator more)
+            // Parent "crate::mod" -> child "crate::mod::sub" 
+            let expected_prefix = if parent_fqn.is_empty() {
+                format!("")
+            } else {
+                format!("{}::", parent_fqn)
+            };
+            
+            let is_direct_child = if parent_fqn.is_empty() {
+                // For root, direct children have exactly one :: (crate::module)
+                fqn.matches("::").count() == 1 && fqn.starts_with(&format!("{}::", crate_name))
+            } else {
+                // For non-root, child must start with "parent::" and have exactly one more :: than parent
+                fqn.starts_with(&expected_prefix) && 
+                fqn.matches("::").count() == parent_fqn.matches("::").count() + 1
+            };
+            
+            if is_direct_child {
+                let nested_children = build_children(fqn, crate_name, module_map);
+                children.push(ModuleNode {
+                    name: name.clone(),
+                    path: fqn.clone(),
+                    children: nested_children,
+                    items: items.clone(),
+                });
+            }
+        }
+        
+        children
+    }
+    
+    // Build root node (crate itself) with direct module children
+    let children = build_children(crate_name, crate_name, &module_map);
+    
+    ModuleNode {
+        name: crate_name.to_string(),
+        path: crate_name.to_string(),
+        children,
+        items: crate_items,
+    }
 }
 
 async fn query_graph(
