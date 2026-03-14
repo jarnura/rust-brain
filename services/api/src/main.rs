@@ -1024,7 +1024,8 @@ async fn get_callers_from_neo4j(
     let callers = results
         .into_iter()
         .filter_map(|r| {
-            let node = r.get("node")?;
+            // r is an array like [{fqn: ..., name: ...}], get first element
+            let node = r.as_array()?.first()?;
             Some(CallerNode {
                 fqn: node.get("fqn")?.as_str()?.to_string(),
                 name: node.get("name")?.as_str()?.to_string(),
@@ -1055,7 +1056,8 @@ async fn get_callees_from_neo4j(
     let callees = results
         .into_iter()
         .filter_map(|r| {
-            let node = r.get("node")?;
+            // r is an array like [{fqn: ..., name: ...}], get first element
+            let node = r.as_array()?.first()?;
             Some(CalleeInfo {
                 fqn: node.get("fqn")?.as_str()?.to_string(),
                 name: node.get("name")?.as_str()?.to_string(),
