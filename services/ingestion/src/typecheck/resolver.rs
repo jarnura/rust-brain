@@ -929,14 +929,19 @@ mod tests {
     #[test]
     fn test_heuristic_fallback() {
         let resolver = TypeResolver::new();
+        // Truly malformed code that syn cannot parse —
+        // an impl block with invalid syntax triggers heuristic fallback
         let source = r#"
-            // Malformed code that syn can't parse
-            impl SomeTrait for AnotherType where {
-                // Missing where clause predicate
+            impl SomeTrait for AnotherType {
+                fn do_thing(&self) -> { broken syntax here }
+            }
+
+            impl SecondTrait for ThirdType {
+                fn also_broken(??? invalid)
             }
         "#;
-        
-        // Should fall back to heuristics
+
+        // Should fall back to heuristics since syn will fail
         let result = resolver.analyze_source(
             "test_crate",
             "test::module",
@@ -944,9 +949,10 @@ mod tests {
             source,
             &[],
         );
-        
-        // Should still find the impl with heuristic quality
-        if let Some(impl_info) = result.trait_impls.first() {
+
+        // Heuristic regex should still find impl patterns even in broken code
+        // The result may be empty if heuristics also can't extract, which is acceptable
+        for impl_info in &result.trait_impls {
             assert!(matches!(impl_info.quality, ResolutionQuality::Heuristic));
         }
     }

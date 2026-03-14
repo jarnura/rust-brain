@@ -205,8 +205,21 @@ impl TreeSitterParser {
         let source_bytes = source.as_bytes();
         let tree = self.parser.lock().unwrap().parse(source, None)?;
         let root = tree.root_node();
-        
-        self.find_visibility(root, source_bytes)
+
+        // First try direct children of root (unlikely)
+        if let Some(vis) = self.find_visibility(root, source_bytes) {
+            return Some(vis);
+        }
+
+        // Then try children of the first item node (e.g., function_item, struct_item)
+        let mut cursor = root.walk();
+        if cursor.goto_first_child() {
+            if let Some(vis) = self.find_visibility(cursor.node(), source_bytes) {
+                return Some(vis);
+            }
+        }
+
+        None
     }
     
     /// Find visibility modifier in a node

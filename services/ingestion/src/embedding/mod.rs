@@ -654,9 +654,9 @@ mod tests {
         let item = make_test_item();
         let payload = service.build_item_payload(&item, "test text");
         
-        assert_eq!(payload.get("fqn").unwrap().as_str().unwrap(), "test_crate::module::test_fn");
-        assert_eq!(payload.get("name").unwrap().as_str().unwrap(), "test_fn");
-        assert_eq!(payload.get("item_type").unwrap().as_str().unwrap(), "function");
-        assert_eq!(payload.get("crate_name").unwrap().as_str().unwrap(), "test_crate");
+        assert!(matches!(payload.get("fqn"), Some(PayloadValue::String(s)) if s == "test_crate::module::test_fn"));
+        assert!(matches!(payload.get("name"), Some(PayloadValue::String(s)) if s == "test_fn"));
+        assert!(matches!(payload.get("item_type"), Some(PayloadValue::String(s)) if s == "function"));
+        assert!(matches!(payload.get("crate_name"), Some(PayloadValue::String(s)) if s == "test_crate"));
     }
 }

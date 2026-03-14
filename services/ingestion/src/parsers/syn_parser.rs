@@ -523,7 +523,15 @@ impl SynParser {
             .iter()
             .filter(|attr| attr.path().is_ident("doc"))
             .filter_map(|attr| {
-                // Try to extract the string literal
+                // #[doc = "..."] is a NameValue meta (from /// comments or explicit #[doc = "..."])
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if let syn::Expr::Lit(expr_lit) = &nv.value {
+                        if let syn::Lit::Str(lit_str) = &expr_lit.lit {
+                            return Some(lit_str.value());
+                        }
+                    }
+                }
+                // Fallback: try parse_args for #[doc("...")] style
                 if let Ok(doc_lit) = attr.parse_args::<syn::LitStr>() {
                     Some(doc_lit.value())
                 } else {
