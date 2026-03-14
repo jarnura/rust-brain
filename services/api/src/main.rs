@@ -10,6 +10,7 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use neo4rs::Graph;
 use prometheus::{Encoder, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
@@ -76,6 +77,7 @@ impl Config {
 struct AppState {
     config: Config,
     pg_pool: sqlx::postgres::PgPool,
+    neo4j_graph: Arc<Graph>,
     http_client: reqwest::Client,
     metrics: Arc<Metrics>,
 }
@@ -929,78 +931,129 @@ fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResult> 
 }
 
 async fn check_neo4j(state: &AppState) -> Result<(), AppError> {
-    let cypher = "RETURN 1 as test";
-    let params = serde_json::json!({});
-    execute_neo4j_query(state, cypher, params).await?;
+    let mut result = state.neo4j_graph
+        .execute(neo4rs::query("RETURN 1 as test"))
+        .await
+        .map_err(|e| AppError::Neo4j(format!("Neo4j health check failed: {}", e)))?;
+
+    // Consume the result to verify the connection works
+    let _row = result.next().await
+        .map_err(|e| AppError::Neo4j(format!("Neo4j health check failed: {}", e)))?;
+
     Ok(())
 }
 
+/// Execute a Cypher query via Neo4j Bolt protocol and return results as JSON values.
+///
+/// Each row is returned as a JSON object with column names as keys.
 async fn execute_neo4j_query(
-    state: &AppState, 
-    query: &str, 
+    state: &AppState,
+    query: &str,
     params: serde_json::Value
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let request = serde_json::json!({
-        "statements": [{
-            "statement": query,
-            "parameters": params,
-        }]
-    });
-    
-    // Convert bolt:// to http:// for REST API
-    let http_uri = state.config.neo4j_uri
-        .replace("bolt://", "http://")
-        .replace(":7687", ":7474");
-    
-    let response = state.http_client
-        .post(format!("{}/db/neo4j/tx/commit", http_uri))
-        .basic_auth(&state.config.neo4j_user, Some(&state.config.neo4j_password))
-        .json(&request)
-        .send()
+    // Build the neo4rs query with parameters
+    let mut q = neo4rs::query(query);
+
+    // Add parameters from the JSON value
+    if let serde_json::Value::Object(map) = &params {
+        for (key, value) in map {
+            q = match value {
+                serde_json::Value::String(s) => q.param(key.as_str(), s.as_str()),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        q.param(key.as_str(), i)
+                    } else if let Some(f) = n.as_f64() {
+                        q.param(key.as_str(), f)
+                    } else {
+                        q
+                    }
+                }
+                serde_json::Value::Bool(b) => q.param(key.as_str(), *b),
+                serde_json::Value::Null => q,
+                // For complex types, convert to string
+                other => q.param(key.as_str(), other.to_string()),
+            };
+        }
+    }
+
+    let mut result = state.neo4j_graph
+        .execute(q)
         .await
         .map_err(|e| AppError::Neo4j(format!("Failed to execute Neo4j query: {}", e)))?;
-    
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Neo4j(format!("Neo4j query failed: {} - {}", status, body)));
+
+    let mut rows = Vec::new();
+    while let Some(row) = result.next().await
+        .map_err(|e| AppError::Neo4j(format!("Failed to fetch Neo4j row: {}", e)))?
+    {
+        // Convert each row to a JSON value by extracting columns
+        // neo4rs Row supports get() by column name, but we need to handle
+        // the row data generically. We'll extract known column patterns.
+        let row_json = row_to_json(&row);
+        rows.push(row_json);
     }
-    
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Neo4j(format!("Failed to parse Neo4j response: {}", e)))?;
-    
-    let errors = result.get("errors")
-        .and_then(|v| v.as_array())
-        .map(|e| !e.is_empty())
-        .unwrap_or(false);
-    
-    if errors {
-        let error_msg = result.get("errors")
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-            .unwrap_or("Unknown Neo4j error");
-        return Err(AppError::Neo4j(error_msg.to_string()));
+
+    Ok(rows)
+}
+
+/// Convert a neo4rs Row to a serde_json::Value.
+///
+/// Attempts to extract values by trying common types in order.
+fn row_to_json(row: &neo4rs::Row) -> serde_json::Value {
+    // neo4rs Row provides get::<T>(column_name) but doesn't expose column names directly.
+    // The row internally tracks columns. We need to access them through the row's keys.
+    // neo4rs::Row has a `to::<T>()` method for single-column results and `get::<T>(key)`.
+    // Since we can't iterate column names, we rely on the query returning named columns
+    // and the caller knowing what to expect.
+    //
+    // For the generic execute_neo4j_query, we return the row's BoltType conversion.
+    // The callers (get_callers_from_neo4j, etc.) will extract specific columns.
+
+    // Try to get the row as a BoltMap which we can iterate
+    if let Ok(node) = row.to::<neo4rs::BoltMap>() {
+        bolt_map_to_json(&node)
+    } else {
+        // Fallback: try single value
+        serde_json::Value::Null
     }
-    
-    let results = result.get("results")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|r| r.get("data"))
-        .and_then(|d| d.as_array())
-        .map(|data| {
-            data.iter()
-                .filter_map(|row| {
-                    row.get("row").cloned()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    
-    Ok(results)
+}
+
+/// Convert a BoltMap to a JSON object
+fn bolt_map_to_json(map: &neo4rs::BoltMap) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (key, value) in &map.value {
+        obj.insert(key.to_string(), bolt_type_to_json(value));
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Convert a BoltType to a JSON value
+fn bolt_type_to_json(value: &neo4rs::BoltType) -> serde_json::Value {
+    match value {
+        neo4rs::BoltType::String(s) => serde_json::Value::String(s.to_string()),
+        neo4rs::BoltType::Integer(i) => serde_json::json!(i.value),
+        neo4rs::BoltType::Float(f) => serde_json::json!(f.value),
+        neo4rs::BoltType::Boolean(b) => serde_json::Value::Bool(b.value),
+        neo4rs::BoltType::Null(_) => serde_json::Value::Null,
+        neo4rs::BoltType::List(list) => {
+            let items: Vec<serde_json::Value> = list.iter()
+                .map(bolt_type_to_json)
+                .collect();
+            serde_json::Value::Array(items)
+        }
+        neo4rs::BoltType::Map(map) => bolt_map_to_json(map),
+        neo4rs::BoltType::Node(node) => {
+            let mut obj = serde_json::Map::new();
+            for (key, value) in &node.properties.value {
+                obj.insert(key.to_string(), bolt_type_to_json(value));
+            }
+            let labels: Vec<serde_json::Value> = node.labels.iter()
+                .map(bolt_type_to_json)
+                .collect();
+            obj.insert("_labels".to_string(), serde_json::Value::Array(labels));
+            serde_json::Value::Object(obj)
+        }
+        _ => serde_json::Value::String(format!("{:?}", value)),
+    }
 }
 
 async fn get_callers_from_neo4j(
@@ -1008,34 +1061,32 @@ async fn get_callers_from_neo4j(
     fqn: &str,
     depth: usize,
 ) -> Result<Vec<CallerNode>, AppError> {
-    // Return a map object so Neo4j REST API returns named fields instead of array
     let cypher = format!(
         r#"
         MATCH path = (caller)-[:CALLS*1..{}]->(callee:Function {{fqn: $fqn}})
-        RETURN {{fqn: caller.fqn, name: caller.name, line: caller.start_line, depth: length(path)}} as node
-        ORDER BY node.depth, node.fqn
+        RETURN caller.fqn as fqn, caller.name as name, caller.file_path as file_path,
+               caller.start_line as line, length(path) as depth
+        ORDER BY depth, fqn
         "#,
         depth
     );
-    
+
     let params = serde_json::json!({"fqn": fqn});
     let results = execute_neo4j_query(state, &cypher, params).await?;
-    
+
     let callers = results
         .into_iter()
         .filter_map(|r| {
-            // r is an array like [{fqn: ..., name: ...}], get first element
-            let node = r.as_array()?.first()?;
             Some(CallerNode {
-                fqn: node.get("fqn")?.as_str()?.to_string(),
-                name: node.get("name")?.as_str()?.to_string(),
-                file_path: node.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                line: node.get("line")?.as_i64()? as u32,
-                depth: node.get("depth")?.as_i64()? as usize,
+                fqn: r.get("fqn")?.as_str()?.to_string(),
+                name: r.get("name")?.as_str()?.to_string(),
+                file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                line: r.get("line")?.as_i64()? as u32,
+                depth: r.get("depth")?.as_i64()? as usize,
             })
         })
         .collect();
-    
+
     Ok(callers)
 }
 
@@ -1043,28 +1094,25 @@ async fn get_callees_from_neo4j(
     state: &AppState,
     fqn: &str,
 ) -> Result<Vec<CalleeInfo>, AppError> {
-    // Return a map object so Neo4j REST API returns named fields instead of array
     let cypher = r#"
         MATCH (caller:Function {fqn: $fqn})-[:CALLS]->(callee:Function)
-        RETURN {fqn: callee.fqn, name: callee.name} as node
-        ORDER BY node.name
+        RETURN callee.fqn as fqn, callee.name as name
+        ORDER BY name
     "#;
-    
+
     let params = serde_json::json!({"fqn": fqn});
     let results = execute_neo4j_query(state, cypher, params).await?;
-    
+
     let callees = results
         .into_iter()
         .filter_map(|r| {
-            // r is an array like [{fqn: ..., name: ...}], get first element
-            let node = r.as_array()?.first()?;
             Some(CalleeInfo {
-                fqn: node.get("fqn")?.as_str()?.to_string(),
-                name: node.get("name")?.as_str()?.to_string(),
+                fqn: r.get("fqn")?.as_str()?.to_string(),
+                name: r.get("name")?.as_str()?.to_string(),
             })
         })
         .collect();
-    
+
     Ok(callees)
 }
 
@@ -1339,6 +1387,99 @@ mod tests {
         assert_eq!(json["dependencies"]["postgres"]["status"], "healthy");
         assert_eq!(json["dependencies"]["postgres"]["latency_ms"], 5);
     }
+
+    // Neo4j Bolt conversion tests
+
+    #[test]
+    fn test_bolt_type_to_json_string() {
+        let bolt = neo4rs::BoltType::String(neo4rs::BoltString::from("hello"));
+        let json = bolt_type_to_json(&bolt);
+        assert_eq!(json, serde_json::Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_bolt_type_to_json_integer() {
+        let bolt = neo4rs::BoltType::Integer(neo4rs::BoltInteger::new(42));
+        let json = bolt_type_to_json(&bolt);
+        assert_eq!(json, serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_bolt_type_to_json_float() {
+        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(3.14));
+        let json = bolt_type_to_json(&bolt);
+        assert!((json.as_f64().unwrap() - 3.14).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bolt_type_to_json_boolean() {
+        let bolt = neo4rs::BoltType::Boolean(neo4rs::BoltBoolean::new(true));
+        let json = bolt_type_to_json(&bolt);
+        assert_eq!(json, serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn test_bolt_type_to_json_null() {
+        let bolt = neo4rs::BoltType::Null(neo4rs::BoltNull);
+        let json = bolt_type_to_json(&bolt);
+        assert_eq!(json, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_bolt_type_to_json_list() {
+        let list = neo4rs::BoltList::from(vec![
+            neo4rs::BoltType::from("a"),
+            neo4rs::BoltType::from("b"),
+        ]);
+        let bolt = neo4rs::BoltType::List(list);
+        let json = bolt_type_to_json(&bolt);
+        assert_eq!(json, serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn test_bolt_map_to_json() {
+        let mut map = neo4rs::BoltMap::new();
+        map.put("name".into(), neo4rs::BoltType::from("test_fn"));
+        map.put("line".into(), neo4rs::BoltType::from(42_i64));
+        let json = bolt_map_to_json(&map);
+        assert_eq!(json["name"], "test_fn");
+        assert_eq!(json["line"], 42);
+    }
+
+    #[test]
+    fn test_bolt_node_to_json() {
+        let properties: neo4rs::BoltMap = vec![
+            (neo4rs::BoltString::from("fqn"), neo4rs::BoltType::from("crate::func")),
+            (neo4rs::BoltString::from("name"), neo4rs::BoltType::from("func")),
+        ].into_iter().collect();
+        let labels = neo4rs::BoltList::from(vec![neo4rs::BoltType::from("Function")]);
+        let node = neo4rs::BoltNode::new(neo4rs::BoltInteger::new(1), labels, properties);
+        let bolt = neo4rs::BoltType::Node(node);
+        let json = bolt_type_to_json(&bolt);
+        assert_eq!(json["fqn"], "crate::func");
+        assert_eq!(json["name"], "func");
+        assert!(json["_labels"].is_array());
+    }
+
+    #[test]
+    fn test_row_to_json_with_bolt_map() {
+        // Row is constructed from fields and data
+        let fields = neo4rs::BoltList::from(vec![
+            neo4rs::BoltType::from("fqn"),
+            neo4rs::BoltType::from("name"),
+            neo4rs::BoltType::from("line"),
+        ]);
+        let data = neo4rs::BoltList::from(vec![
+            neo4rs::BoltType::from("crate::module::func"),
+            neo4rs::BoltType::from("func"),
+            neo4rs::BoltType::from(10_i64),
+        ]);
+        let row = neo4rs::Row::new(fields, data);
+        let json = row_to_json(&row);
+        assert_eq!(json["fqn"], "crate::module::func");
+        assert_eq!(json["name"], "func");
+        assert_eq!(json["line"], 10);
+    }
 }
 
 // =============================================================================
@@ -1371,18 +1512,28 @@ async fn main() -> anyhow::Result<()> {
     
     info!("Connected to Postgres");
     
-    // Create HTTP client
+    // Connect to Neo4j via Bolt protocol
+    info!("Connecting to Neo4j: {}", config.neo4j_uri);
+    let neo4j_graph = Graph::new(
+        &config.neo4j_uri,
+        &config.neo4j_user,
+        &config.neo4j_password,
+    ).await?;
+    info!("Connected to Neo4j");
+
+    // Create HTTP client (for Qdrant/Ollama)
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
-    
+
     // Create metrics
     let metrics = Arc::new(Metrics::new());
-    
+
     // Create app state
     let state = AppState {
         config: config.clone(),
         pg_pool,
+        neo4j_graph: Arc::new(neo4j_graph),
         http_client,
         metrics,
     };
