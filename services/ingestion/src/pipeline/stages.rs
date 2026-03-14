@@ -937,6 +937,14 @@ impl PipelineStage for ExtractStage {
                 match stage.extract_item(item, source_file_id).await {
                     Ok(id) => {
                         state.extracted_items.insert(item.fqn.clone(), id);
+                        // Track cross-store reference
+                        let crate_name = path.iter()
+                            .find_map(|p| source_files.iter().find(|sf| sf.path == *path).map(|sf| sf.crate_name.clone()))
+                            .unwrap_or_default();
+                        let ref_entry = state.store_references
+                            .entry(item.fqn.clone())
+                            .or_insert_with(|| rustbrain_common::StoreReference::new(item.fqn.clone(), crate_name));
+                        ref_entry.postgres_id = Some(id.to_string());
                         extracted_count += 1;
                     }
                     Err(e) => {
@@ -2078,10 +2086,153 @@ fn compute_module_path(crate_path: &Path, file_path: &Path, crate_name: &str) ->
     }
 }
 
+// =============================================================================
+// DATA LIFECYCLE
+// =============================================================================
+
+/// Data lifecycle manager for cross-store garbage collection and cascade deletion.
+pub struct DataLifecycleManager;
+
+impl DataLifecycleManager {
+    /// Delete all data for a crate across all stores.
+    ///
+    /// Order matters: delete embeddings first (Qdrant), then graph (Neo4j), then relational (Postgres).
+    pub async fn cascade_delete_crate(
+        crate_name: &str,
+        pool: &PgPool,
+        neo4j_url: Option<&str>,
+        qdrant_url: Option<&str>,
+    ) -> Result<DataLifecycleReport> {
+        let mut report = DataLifecycleReport::default();
+
+        info!("Starting cascade delete for crate: {}", crate_name);
+
+        // Step 1: Delete from Qdrant (embeddings) if available
+        if let Some(qdrant) = qdrant_url {
+            let client = reqwest::Client::new();
+            let delete_req = serde_json::json!({
+                "filter": {
+                    "must": [{
+                        "key": "crate_name",
+                        "match": { "value": crate_name }
+                    }]
+                }
+            });
+
+            match client
+                .post(format!("{}/collections/code_embeddings/points/delete", qdrant))
+                .json(&delete_req)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    info!("Deleted Qdrant embeddings for crate: {}", crate_name);
+                    report.qdrant_deleted = true;
+                }
+                Ok(resp) => {
+                    warn!("Qdrant delete returned {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+                }
+                Err(e) => {
+                    warn!("Failed to delete from Qdrant: {}", e);
+                    report.errors.push(format!("Qdrant: {}", e));
+                }
+            }
+        }
+
+        // Step 2: Delete from Neo4j (graph nodes/relationships) if available
+        if let Some(neo4j) = neo4j_url {
+            match neo4rs::Graph::new(neo4j, "neo4j", "rustbrain_dev_2024").await {
+                Ok(graph) => {
+                    let q = neo4rs::query(
+                        "MATCH (n {crate_name: $crate_name}) DETACH DELETE n"
+                    ).param("crate_name", crate_name);
+
+                    match graph.run(q).await {
+                        Ok(_) => {
+                            info!("Deleted Neo4j nodes for crate: {}", crate_name);
+                            report.neo4j_deleted = true;
+                        }
+                        Err(e) => {
+                            warn!("Failed to delete from Neo4j: {}", e);
+                            report.errors.push(format!("Neo4j: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to connect to Neo4j: {}", e);
+                    report.errors.push(format!("Neo4j connect: {}", e));
+                }
+            }
+        }
+
+        // Step 3: Delete from Postgres (cascade from source_files to extracted_items)
+        match sqlx::query(
+            "DELETE FROM extracted_items WHERE source_file_id IN (SELECT id FROM source_files WHERE crate_name = $1)"
+        )
+        .bind(crate_name)
+        .execute(pool)
+        .await
+        {
+            Ok(result) => {
+                report.postgres_items_deleted = result.rows_affected() as usize;
+                info!("Deleted {} extracted items from Postgres", report.postgres_items_deleted);
+            }
+            Err(e) => {
+                warn!("Failed to delete extracted items: {}", e);
+                report.errors.push(format!("Postgres items: {}", e));
+            }
+        }
+
+        match sqlx::query("DELETE FROM source_files WHERE crate_name = $1")
+            .bind(crate_name)
+            .execute(pool)
+            .await
+        {
+            Ok(result) => {
+                report.postgres_files_deleted = result.rows_affected() as usize;
+                info!("Deleted {} source files from Postgres", report.postgres_files_deleted);
+            }
+            Err(e) => {
+                warn!("Failed to delete source files: {}", e);
+                report.errors.push(format!("Postgres files: {}", e));
+            }
+        }
+
+        report.postgres_deleted = true;
+        Ok(report)
+    }
+
+    /// Find orphaned references - items in one store but not others.
+    pub fn find_orphaned_references(
+        store_refs: &HashMap<String, rustbrain_common::StoreReference>,
+    ) -> Vec<&rustbrain_common::StoreReference> {
+        store_refs.values()
+            .filter(|r| !r.is_fully_synced() && !r.is_orphaned())
+            .collect()
+    }
+}
+
+/// Report of data lifecycle operations
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct DataLifecycleReport {
+    pub postgres_deleted: bool,
+    pub postgres_items_deleted: usize,
+    pub postgres_files_deleted: usize,
+    pub neo4j_deleted: bool,
+    pub qdrant_deleted: bool,
+    pub errors: Vec<String>,
+}
+
+impl DataLifecycleReport {
+    pub fn is_successful(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_stage_result_success() {
         let result = StageResult::success("test", 10, 0, Duration::from_millis(100));
@@ -2358,5 +2509,84 @@ mod tests {
         let names_to_fqns = std::collections::HashMap::new();
         let calls = GraphStage::extract_method_calls(body, &names_to_fqns, None);
         assert!(calls.is_empty(), "Should skip comments");
+    }
+
+    // Data lifecycle tests
+
+    #[test]
+    fn test_store_reference_new() {
+        let ref_entry = rustbrain_common::StoreReference::new("crate::func".to_string(), "my_crate".to_string());
+        assert_eq!(ref_entry.fqn, "crate::func");
+        assert_eq!(ref_entry.crate_name, "my_crate");
+        assert!(ref_entry.postgres_id.is_none());
+        assert!(ref_entry.neo4j_node_id.is_none());
+        assert!(ref_entry.qdrant_point_id.is_none());
+        assert!(!ref_entry.is_fully_synced());
+        assert!(ref_entry.is_orphaned());
+    }
+
+    #[test]
+    fn test_store_reference_fully_synced() {
+        let mut ref_entry = rustbrain_common::StoreReference::new("crate::func".to_string(), "my_crate".to_string());
+        ref_entry.postgres_id = Some("pg-123".to_string());
+        ref_entry.neo4j_node_id = Some("neo-456".to_string());
+        ref_entry.qdrant_point_id = Some("qd-789".to_string());
+        assert!(ref_entry.is_fully_synced());
+        assert!(!ref_entry.is_orphaned());
+        assert!(ref_entry.missing_stores().is_empty());
+    }
+
+    #[test]
+    fn test_store_reference_partially_synced() {
+        let mut ref_entry = rustbrain_common::StoreReference::new("crate::func".to_string(), "my_crate".to_string());
+        ref_entry.postgres_id = Some("pg-123".to_string());
+        // Missing neo4j and qdrant
+        assert!(!ref_entry.is_fully_synced());
+        assert!(!ref_entry.is_orphaned());
+        let missing = ref_entry.missing_stores();
+        assert_eq!(missing.len(), 2);
+        assert!(missing.contains(&"neo4j"));
+        assert!(missing.contains(&"qdrant"));
+    }
+
+    #[test]
+    fn test_find_orphaned_references() {
+        let mut refs = HashMap::new();
+
+        // Fully synced - should not be orphaned
+        let mut full = rustbrain_common::StoreReference::new("a".to_string(), "c".to_string());
+        full.postgres_id = Some("1".to_string());
+        full.neo4j_node_id = Some("2".to_string());
+        full.qdrant_point_id = Some("3".to_string());
+        refs.insert("a".to_string(), full);
+
+        // Partially synced - should be detected
+        let mut partial = rustbrain_common::StoreReference::new("b".to_string(), "c".to_string());
+        partial.postgres_id = Some("4".to_string());
+        refs.insert("b".to_string(), partial);
+
+        // Completely orphaned - should NOT be in orphaned list (it's empty, not inconsistent)
+        let empty = rustbrain_common::StoreReference::new("c".to_string(), "c".to_string());
+        refs.insert("c".to_string(), empty);
+
+        let orphaned = DataLifecycleManager::find_orphaned_references(&refs);
+        assert_eq!(orphaned.len(), 1);
+        assert_eq!(orphaned[0].fqn, "b");
+    }
+
+    #[test]
+    fn test_data_lifecycle_report_default() {
+        let report = DataLifecycleReport::default();
+        assert!(!report.postgres_deleted);
+        assert!(!report.neo4j_deleted);
+        assert!(!report.qdrant_deleted);
+        assert!(report.is_successful());
+    }
+
+    #[test]
+    fn test_data_lifecycle_report_with_errors() {
+        let mut report = DataLifecycleReport::default();
+        report.errors.push("connection failed".to_string());
+        assert!(!report.is_successful());
     }
 }

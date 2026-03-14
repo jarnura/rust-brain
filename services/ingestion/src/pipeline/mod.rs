@@ -139,6 +139,9 @@ pub struct PipelineState {
 
     /// Cache of expand results keyed by content hash (for incremental runs)
     pub expand_cache: HashMap<String, String>,
+
+    /// Cross-store references for consistency tracking
+    pub store_references: HashMap<String, rustbrain_common::StoreReference>,
 }
 
 /// Information about a source file

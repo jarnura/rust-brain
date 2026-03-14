@@ -133,6 +133,63 @@ impl std::fmt::Display for ResolutionQuality {
     }
 }
 
+/// Reference tracking entry for cross-store consistency.
+///
+/// Maps an item's FQN to its identifiers in each storage backend,
+/// enabling cascade deletion and garbage collection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StoreReference {
+    /// Fully qualified name (canonical identifier)
+    pub fqn: String,
+    /// Postgres extracted_items.id (if stored)
+    pub postgres_id: Option<String>,
+    /// Neo4j node element ID (if stored)
+    pub neo4j_node_id: Option<String>,
+    /// Qdrant point ID (if stored)
+    pub qdrant_point_id: Option<String>,
+    /// Crate name for scoped operations
+    pub crate_name: String,
+    /// Timestamp of last successful sync
+    pub last_synced: Option<String>,
+}
+
+impl StoreReference {
+    /// Create a new store reference with just the FQN and crate
+    pub fn new(fqn: String, crate_name: String) -> Self {
+        Self {
+            fqn,
+            postgres_id: None,
+            neo4j_node_id: None,
+            qdrant_point_id: None,
+            crate_name,
+            last_synced: None,
+        }
+    }
+
+    /// Check if the item exists in all three stores
+    pub fn is_fully_synced(&self) -> bool {
+        self.postgres_id.is_some()
+            && self.neo4j_node_id.is_some()
+            && self.qdrant_point_id.is_some()
+    }
+
+    /// Check if the item is orphaned (exists in no store)
+    pub fn is_orphaned(&self) -> bool {
+        self.postgres_id.is_none()
+            && self.neo4j_node_id.is_none()
+            && self.qdrant_point_id.is_none()
+    }
+
+    /// Get stores where this item is missing
+    pub fn missing_stores(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.postgres_id.is_none() { missing.push("postgres"); }
+        if self.neo4j_node_id.is_none() { missing.push("neo4j"); }
+        if self.qdrant_point_id.is_none() { missing.push("qdrant"); }
+        missing
+    }
+}
+
 impl std::str::FromStr for ResolutionQuality {
     type Err = String;
 
