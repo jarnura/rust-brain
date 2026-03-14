@@ -46,6 +46,7 @@ pub fn generate_text_representation(item: &ParsedItem) -> TextRepresentation {
         ItemType::Macro => generate_macro_text(item),
         ItemType::Module => generate_module_text(item),
         ItemType::Use => generate_use_text(item),
+        ItemType::ExternBlock => generate_unknown_text(item, "extern"),
         ItemType::Unknown(s) => generate_unknown_text(item, s),
     };
     
