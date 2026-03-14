@@ -1830,8 +1830,104 @@ mod tests {
     fn test_stage_error() {
         let err = StageError::new("expand", "test error");
         assert!(!err.is_fatal);
-        
+
         let fatal = StageError::fatal("expand", "fatal error");
         assert!(fatal.is_fatal);
+    }
+
+    #[test]
+    fn test_stage_error_with_context() {
+        let err = StageError::new("parse", "failed")
+            .with_context("file: src/main.rs");
+        assert_eq!(err.stage, "parse");
+        assert_eq!(err.message, "failed");
+        assert_eq!(err.context, Some("file: src/main.rs".to_string()));
+        assert!(!err.is_fatal);
+    }
+
+    #[test]
+    fn test_stage_result_failed() {
+        let result = StageResult::failed("embed", "connection refused");
+        assert_eq!(result.status, StageStatus::Failed);
+        assert_eq!(result.items_processed, 0);
+        assert_eq!(result.items_failed, 0);
+        assert_eq!(result.duration_ms, 0);
+        assert_eq!(result.error, Some("connection refused".to_string()));
+    }
+
+    #[test]
+    fn test_stage_result_skipped() {
+        let result = StageResult::skipped("graph");
+        assert_eq!(result.status, StageStatus::Skipped);
+        assert_eq!(result.name, "graph");
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_stage_status_display() {
+        assert_eq!(StageStatus::Success.to_string(), "success");
+        assert_eq!(StageStatus::Partial.to_string(), "partial");
+        assert_eq!(StageStatus::Failed.to_string(), "failed");
+        assert_eq!(StageStatus::Skipped.to_string(), "skipped");
+    }
+
+    #[test]
+    fn test_stage_result_serialization() {
+        let result = StageResult::success("test", 5, 1, Duration::from_millis(42));
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["name"], "test");
+        assert_eq!(json["status"], "success");
+        assert_eq!(json["items_processed"], 5);
+        assert_eq!(json["items_failed"], 1);
+        assert_eq!(json["duration_ms"], 42);
+    }
+
+    #[test]
+    fn test_stage_error_serialization() {
+        let err = StageError::fatal("parse", "syntax error")
+            .with_context("line 42");
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["stage"], "parse");
+        assert_eq!(json["message"], "syntax error");
+        assert_eq!(json["context"], "line 42");
+        assert_eq!(json["is_fatal"], true);
+    }
+
+    #[test]
+    fn test_expand_stage_creation() {
+        let stage = ExpandStage::new();
+        assert!(stage.is_ok());
+        assert_eq!(stage.unwrap().name(), "expand");
+    }
+
+    #[test]
+    fn test_parse_stage_creation() {
+        let stage = ParseStage::new();
+        assert!(stage.is_ok());
+        assert_eq!(stage.unwrap().name(), "parse");
+    }
+
+    #[test]
+    fn test_typecheck_stage_creation() {
+        let stage = TypecheckStage::new();
+        assert_eq!(stage.name(), "typecheck");
+    }
+
+    #[test]
+    fn test_extract_stage_creation() {
+        let stage = ExtractStage::new();
+        assert_eq!(stage.name(), "extract");
+    }
+
+    #[test]
+    fn test_graph_stage_creation() {
+        let stage = GraphStage::new();
+        assert_eq!(stage.name(), "graph");
+    }
+
+    #[test]
+    fn test_embed_stage_creation() {
+        let stage = EmbedStage::new();
+        assert_eq!(stage.name(), "embed");
     }
 }
