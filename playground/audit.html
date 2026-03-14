@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust Brain - Audit Trail</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-dark-900 border-b border-dark-800">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="text-2xl">🧠</span>
+                        <span class="ml-2 text-xl font-bold text-white">Rust Brain</span>
+                    </div>
+                    <div class="hidden md:block ml-10">
+                        <div class="flex items-baseline space-x-4">
+                            <a href="index.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Dashboard</a>
+                            <a href="playground.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Query</a>
+                            <a href="audit.html" class="bg-dark-800 text-white px-3 py-2 rounded-md text-sm font-medium">Audit Trail</a>
+                            <a href="gaps.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Gap Analysis</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Filters -->
+        <div class="bg-dark-800 rounded-lg p-6 mb-6">
+            <div class="flex flex-wrap items-center gap-4">
+                <div class="flex-1 min-w-64">
+                    <label class="block text-sm font-medium text-dark-300 mb-2">Search</label>
+                    <div class="relative">
+                        <svg class="absolute left-3 top-2.5 h-5 w-5 text-dark-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                        <input type="text" id="searchInput" placeholder="Search operations..." class="w-full bg-dark-700 border border-dark-600 rounded-md pl-10 pr-3 py-2 text-dark-100 focus:outline-none focus:ring-2 focus:ring-blue-500" onkeyup="filterAuditLog()">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-dark-300 mb-2">Type</label>
+                    <select id="typeFilter" onchange="filterAuditLog()" class="bg-dark-700 border border-dark-600 rounded-md px-3 py-2 text-dark-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="all">All Types</option>
+                        <option value="ingest">Ingest</option>
+                        <option value="query">Query</option>
+                        <option value="error">Error</option>
+                        <option value="system">System</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-dark-300 mb-2">Time Range</label>
+                    <select id="timeFilter" onchange="filterAuditLog()" class="bg-dark-700 border border-dark-600 rounded-md px-3 py-2 text-dark-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="all">All Time</option>
+                        <option value="1h">Last Hour</option>
+                        <option value="24h">Last 24 Hours</option>
+                        <option value="7d">Last 7 Days</option>
+                    </select>
+                </div>
+                <div class="flex items-end">
+                    <button onclick="clearFilters()" class="bg-dark-700 hover:bg-dark-600 text-dark-300 px-4 py-2 rounded-md text-sm transition-colors">
+                        Clear Filters
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats Summary -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-dark-800 rounded-lg p-4">
+                <div class="flex items-center justify-between">
+                    <span class="text-sm text-dark-400">Total Operations</span>
+                    <span class="text-lg font-semibold text-white" id="totalCount">0</span>
+                </div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-4">
+                <div class="flex items-center justify-between">
+                    <span class="text-sm text-dark-400">Queries</span>
+                    <span class="text-lg font-semibold text-blue-400" id="queryCount">0</span>
+                </div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-4">
+                <div class="flex items-center justify-between">
+                    <span class="text-sm text-dark-400">Ingestions</span>
+                    <span class="text-lg font-semibold text-green-400" id="ingestCount">0</span>
+                </div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-4">
+                <div class="flex items-center justify-between">
+                    <span class="text-sm text-dark-400">Errors</span>
+                    <span class="text-lg font-semibold text-red-400" id="errorCount">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Audit Log -->
+        <div class="bg-dark-800 rounded-lg overflow-hidden">
+            <div class="border-b border-dark-700 px-6 py-4 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-dark-100">Audit Log</h2>
+                <div class="flex items-center space-x-2">
+                    <button onclick="refreshAuditLog()" class="text-dark-400 hover:text-dark-100 px-3 py-1 rounded text-sm transition-colors">
+                        🔄 Refresh
+                    </button>
+                    <button onclick="exportAuditLog()" class="text-dark-400 hover:text-dark-100 px-3 py-1 rounded text-sm transition-colors">
+                        📥 Export
+                    </button>
+                </div>
+            </div>
+            <div id="auditLogContainer" class="divide-y divide-dark-700 max-h-[600px] overflow-auto">
+                <!-- Audit entries will be populated by JS -->
+            </div>
+        </div>
+    </main>
+
+    <script src="js/app.js"></script>
+    <script>
+        // Simulated audit log data - in a real implementation, this would come from an API
+        let auditData = [];
+        let filteredData = [];
+
+        // Initialize with sample data
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeAuditData();
+            renderAuditLog();
+        });
+
+        function initializeAuditData() {
+            const now = new Date();
+            
+            // Generate sample audit entries
+            auditData = [
+                {
+                    id: 1,
+                    type: 'system',
+                    operation: 'System Startup',
+                    details: 'All services initialized successfully',
+                    timestamp: new Date(now - 3600000 * 24).toISOString(),
+                    duration: null,
+                    user: 'system',
+                    status: 'success'
+                },
+                {
+                    id: 2,
+                    type: 'ingest',
+                    operation: 'Repository Ingestion',
+                    details: 'Ingested target-repo: 42 files processed, 384 items extracted',
+                    timestamp: new Date(now - 3600000 * 23).toISOString(),
+                    duration: 45230,
+                    user: 'admin',
+                    status: 'success',
+                    metadata: {
+                        files_processed: 42,
+                        items_extracted: 384,
+                        errors: 0
+                    }
+                },
+                {
+                    id: 3,
+                    type: 'query',
+                    operation: 'Semantic Search',
+                    details: 'Query: "serialize function" - 5 results returned',
+                    timestamp: new Date(now - 3600000 * 2).toISOString(),
+                    duration: 156,
+                    user: 'admin',
+                    status: 'success',
+                    metadata: {
+                        query: 'serialize function',
+                        results_count: 5
+                    }
+                },
+                {
+                    id: 4,
+                    type: 'query',
+                    operation: 'Graph Query',
+                    details: 'MATCH (n:Function) RETURN n LIMIT 10',
+                    timestamp: new Date(now - 3600000).toISOString(),
+                    duration: 89,
+                    user: 'admin',
+                    status: 'success',
+                    metadata: {
+                        cypher: 'MATCH (n:Function) RETURN n LIMIT 10'
+                    }
+                },
+                {
+                    id: 5,
+                    type: 'error',
+                    operation: 'API Error',
+                    details: 'Failed to connect to Neo4j: Connection refused',
+                    timestamp: new Date(now - 1800000).toISOString(),
+                    duration: null,
+                    user: 'system',
+                    status: 'error',
+                    metadata: {
+                        error_code: 'NEO4J_CONNECTION_ERROR',
+                        retry_count: 3
+                    }
+                },
+                {
+                    id: 6,
+                    type: 'query',
+                    operation: 'Get Callers',
+                    details: 'FQN: serde::ser::to_string - 3 callers found',
+                    timestamp: new Date(now - 900000).toISOString(),
+                    duration: 45,
+                    user: 'admin',
+                    status: 'success',
+                    metadata: {
+                        fqn: 'serde::ser::to_string',
+                        depth: 1,
+                        callers_count: 3
+                    }
+                },
+                {
+                    id: 7,
+                    type: 'ingest',
+                    operation: 'Partial Ingestion',
+                    details: 'Ingestion partially completed with 3 errors',
+                    timestamp: new Date(now - 600000).toISOString(),
+                    duration: 12000,
+                    user: 'admin',
+                    status: 'partial',
+                    metadata: {
+                        files_processed: 15,
+                        items_extracted: 120,
+                        errors: 3
+                    }
+                },
+                {
+                    id: 8,
+                    type: 'query',
+                    operation: 'Trait Implementations',
+                    details: 'Trait: Serialize - 12 implementations found',
+                    timestamp: new Date(now - 300000).toISOString(),
+                    duration: 78,
+                    user: 'admin',
+                    status: 'success',
+                    metadata: {
+                        trait_name: 'Serialize',
+                        impl_count: 12
+                    }
+                },
+                {
+                    id: 9,
+                    type: 'system',
+                    operation: 'Health Check',
+                    details: 'All dependencies healthy',
+                    timestamp: new Date(now - 60000).toISOString(),
+                    duration: 234,
+                    user: 'system',
+                    status: 'success',
+                    metadata: {
+                        postgres: 'healthy',
+                        neo4j: 'healthy',
+                        qdrant: 'healthy',
+                        ollama: 'healthy'
+                    }
+                },
+                {
+                    id: 10,
+                    type: 'query',
+                    operation: 'Module Tree',
+                    details: 'Crate: serde - Module tree generated',
+                    timestamp: new Date(now - 30000).toISOString(),
+                    duration: 56,
+                    user: 'admin',
+                    status: 'success',
+                    metadata: {
+                        crate_name: 'serde',
+                        module_count: 24
+                    }
+                }
+            ];
+
+            filteredData = [...auditData];
+        }
+
+        function renderAuditLog() {
+            const container = document.getElementById('auditLogContainer');
+            updateStats();
+
+            if (filteredData.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center text-dark-500 py-12">
+                        <svg class="mx-auto h-12 w-12 text-dark-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                        <p class="mt-4">No audit entries found</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = filteredData.map(entry => {
+                const typeColors = {
+                    ingest: 'bg-green-900 text-green-300',
+                    query: 'bg-blue-900 text-blue-300',
+                    error: 'bg-red-900 text-red-300',
+                    system: 'bg-purple-900 text-purple-300'
+                };
+                const typeIcons = {
+                    ingest: '📥',
+                    query: '🔍',
+                    error: '❌',
+                    system: '⚙️'
+                };
+                const statusColors = {
+                    success: 'text-green-400',
+                    error: 'text-red-400',
+                    partial: 'text-yellow-400'
+                };
+
+                return `
+                    <div class="audit-entry p-4 hover:bg-dark-700 transition-colors cursor-pointer" onclick="toggleDetails(${entry.id})">
+                        <div class="flex items-start justify-between">
+                            <div class="flex items-start space-x-4">
+                                <span class="text-xl">${typeIcons[entry.type] || '📄'}</span>
+                                <div>
+                                    <div class="flex items-center space-x-2">
+                                        <span class="px-2 py-0.5 text-xs rounded ${typeColors[entry.type] || 'bg-dark-700 text-dark-300'}">${entry.type.toUpperCase()}</span>
+                                        <span class="font-medium text-dark-100">${entry.operation}</span>
+                                        <span class="${statusColors[entry.status]}">${entry.status === 'success' ? '✓' : entry.status === 'error' ? '✗' : '⚠'}</span>
+                                    </div>
+                                    <p class="text-sm text-dark-400 mt-1">${entry.details}</p>
+                                    <div id="details-${entry.id}" class="hidden mt-3 p-3 bg-dark-900 rounded-md">
+                                        <div class="grid grid-cols-2 gap-4 text-sm">
+                                            <div>
+                                                <span class="text-dark-500">User:</span>
+                                                <span class="text-dark-300 ml-2">${entry.user}</span>
+                                            </div>
+                                            <div>
+                                                <span class="text-dark-500">Duration:</span>
+                                                <span class="text-dark-300 ml-2">${entry.duration ? entry.duration + 'ms' : 'N/A'}</span>
+                                            </div>
+                                        </div>
+                                        ${entry.metadata ? `
+                                            <div class="mt-2">
+                                                <span class="text-dark-500 text-sm">Metadata:</span>
+                                                <pre class="mt-1 text-xs text-dark-400 bg-dark-950 p-2 rounded overflow-auto max-h-32">${JSON.stringify(entry.metadata, null, 2)}</pre>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm text-dark-400">${formatTimestamp(entry.timestamp)}</p>
+                                ${entry.duration ? `<p class="text-xs text-dark-500">${entry.duration}ms</p>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function toggleDetails(id) {
+            const details = document.getElementById(`details-${id}`);
+            if (details) {
+                details.classList.toggle('hidden');
+            }
+        }
+
+        function updateStats() {
+            document.getElementById('totalCount').textContent = filteredData.length;
+            document.getElementById('queryCount').textContent = filteredData.filter(e => e.type === 'query').length;
+            document.getElementById('ingestCount').textContent = filteredData.filter(e => e.type === 'ingest').length;
+            document.getElementById('errorCount').textContent = filteredData.filter(e => e.type === 'error').length;
+        }
+
+        function filterAuditLog() {
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const type = document.getElementById('typeFilter').value;
+            const time = document.getElementById('timeFilter').value;
+
+            filteredData = auditData.filter(entry => {
+                // Type filter
+                if (type !== 'all' && entry.type !== type) return false;
+
+                // Search filter
+                if (search && !entry.operation.toLowerCase().includes(search) && 
+                    !entry.details.toLowerCase().includes(search)) return false;
+
+                // Time filter
+                if (time !== 'all') {
+                    const entryTime = new Date(entry.timestamp);
+                    const now = new Date();
+                    let cutoff;
+                    switch (time) {
+                        case '1h': cutoff = new Date(now - 3600000); break;
+                        case '24h': cutoff = new Date(now - 3600000 * 24); break;
+                        case '7d': cutoff = new Date(now - 3600000 * 24 * 7); break;
+                    }
+                    if (entryTime < cutoff) return false;
+                }
+
+                return true;
+            });
+
+            renderAuditLog();
+        }
+
+        function clearFilters() {
+            document.getElementById('searchInput').value = '';
+            document.getElementById('typeFilter').value = 'all';
+            document.getElementById('timeFilter').value = 'all';
+            filteredData = [...auditData];
+            renderAuditLog();
+        }
+
+        function refreshAuditLog() {
+            showNotification('Refreshing audit log...', 'info');
+            // In a real implementation, this would fetch from an API
+            setTimeout(() => {
+                showNotification('Audit log refreshed', 'success');
+                renderAuditLog();
+            }, 500);
+        }
+
+        function exportAuditLog() {
+            const blob = new Blob([JSON.stringify(filteredData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `audit-log-${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showNotification('Audit log exported', 'success');
+        }
+    </script>
+</body>
+</html>

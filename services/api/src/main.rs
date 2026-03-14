@@ -2,14 +2,20 @@
 //!
 //! Provides REST endpoints for code intelligence queries.
 
+mod audit;
+mod gaps;
+
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
+use futures_util::{SinkExt, StreamExt};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::broadcast;
 use prometheus::{Encoder, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
@@ -20,6 +26,9 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info};
+
+use audit::{AuditEntry, AuditLog, Operation, Status};
+use gaps::GapAnalysis;
 
 // =============================================================================
 // Configuration
@@ -78,6 +87,12 @@ struct AppState {
     pg_pool: sqlx::postgres::PgPool,
     http_client: reqwest::Client,
     metrics: Arc<Metrics>,
+    audit_log: Arc<AuditLog>,
+    start_time: std::time::Instant,
+    ws_broadcast: broadcast::Sender<AuditEntry>,
+    query_count: Arc<AtomicU64>,
+    error_count: Arc<AtomicU64>,
+    total_latency_ms: Arc<AtomicU64>,
 }
 
 // =============================================================================
@@ -379,6 +394,56 @@ struct DependencyStatus {
     status: String,
     latency_ms: Option<u64>,
     error: Option<String>,
+}
+
+// =============================================================================
+// Playground Types
+// =============================================================================
+
+#[derive(Debug, Serialize)]
+struct PlaygroundStatus {
+    services: HashMap<String, ServiceStatus>,
+    stats: SystemStats,
+    recent_queries: Vec<QueryRecord>,
+    uptime_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ServiceStatus {
+    name: String,
+    status: String,
+    latency_ms: Option<u64>,
+    last_check: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemStats {
+    total_queries: u64,
+    total_errors: u64,
+    avg_latency_ms: f64,
+    queries_per_minute: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct QueryRecord {
+    timestamp: String,
+    endpoint: String,
+    method: String,
+    duration_ms: u64,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    operation: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 fn default_limit() -> usize { 10 }
@@ -915,6 +980,251 @@ async fn query_graph(
 }
 
 // =============================================================================
+// Playground API Handlers
+// =============================================================================
+
+async fn playground_status(State(state): State<AppState>) -> Json<PlaygroundStatus> {
+    state.metrics.record_request("playground_status", "GET");
+    
+    let mut services = HashMap::new();
+    
+    // Check Postgres
+    let start = std::time::Instant::now();
+    let pg_status = match sqlx::query("SELECT 1").execute(&state.pg_pool).await {
+        Ok(_) => ServiceStatus {
+            name: "postgres".to_string(),
+            status: "healthy".to_string(),
+            latency_ms: Some(start.elapsed().as_millis() as u64),
+            last_check: Utc::now().to_rfc3339(),
+            error: None,
+        },
+        Err(e) => ServiceStatus {
+            name: "postgres".to_string(),
+            status: "unhealthy".to_string(),
+            latency_ms: None,
+            last_check: Utc::now().to_rfc3339(),
+            error: Some(e.to_string()),
+        },
+    };
+    services.insert("postgres".to_string(), pg_status);
+    
+    // Check Qdrant
+    let start = std::time::Instant::now();
+    let qdrant_status = match state.http_client
+        .get(format!("{}/collections/{}", state.config.qdrant_host, state.config.collection_name))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => ServiceStatus {
+            name: "qdrant".to_string(),
+            status: "healthy".to_string(),
+            latency_ms: Some(start.elapsed().as_millis() as u64),
+            last_check: Utc::now().to_rfc3339(),
+            error: None,
+        },
+        Ok(resp) => ServiceStatus {
+            name: "qdrant".to_string(),
+            status: "unhealthy".to_string(),
+            latency_ms: Some(start.elapsed().as_millis() as u64),
+            last_check: Utc::now().to_rfc3339(),
+            error: Some(format!("Status: {}", resp.status())),
+        },
+        Err(e) => ServiceStatus {
+            name: "qdrant".to_string(),
+            status: "unhealthy".to_string(),
+            latency_ms: None,
+            last_check: Utc::now().to_rfc3339(),
+            error: Some(e.to_string()),
+        },
+    };
+    services.insert("qdrant".to_string(), qdrant_status);
+    
+    // Check Ollama
+    let start = std::time::Instant::now();
+    let ollama_status = match state.http_client
+        .get(format!("{}/api/tags", state.config.ollama_host))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => ServiceStatus {
+            name: "ollama".to_string(),
+            status: "healthy".to_string(),
+            latency_ms: Some(start.elapsed().as_millis() as u64),
+            last_check: Utc::now().to_rfc3339(),
+            error: None,
+        },
+        Ok(resp) => ServiceStatus {
+            name: "ollama".to_string(),
+            status: "unhealthy".to_string(),
+            latency_ms: Some(start.elapsed().as_millis() as u64),
+            last_check: Utc::now().to_rfc3339(),
+            error: Some(format!("Status: {}", resp.status())),
+        },
+        Err(e) => ServiceStatus {
+            name: "ollama".to_string(),
+            status: "unhealthy".to_string(),
+            latency_ms: None,
+            last_check: Utc::now().to_rfc3339(),
+            error: Some(e.to_string()),
+        },
+    };
+    services.insert("ollama".to_string(), ollama_status);
+    
+    // Check Neo4j
+    let start = std::time::Instant::now();
+    let neo4j_status = match check_neo4j(&state).await {
+        Ok(_) => ServiceStatus {
+            name: "neo4j".to_string(),
+            status: "healthy".to_string(),
+            latency_ms: Some(start.elapsed().as_millis() as u64),
+            last_check: Utc::now().to_rfc3339(),
+            error: None,
+        },
+        Err(e) => ServiceStatus {
+            name: "neo4j".to_string(),
+            status: "unhealthy".to_string(),
+            latency_ms: None,
+            last_check: Utc::now().to_rfc3339(),
+            error: Some(e.to_string()),
+        },
+    };
+    services.insert("neo4j".to_string(), neo4j_status);
+    
+    // Calculate stats
+    let total_queries = state.query_count.load(Ordering::Relaxed);
+    let total_errors = state.error_count.load(Ordering::Relaxed);
+    let total_latency = state.total_latency_ms.load(Ordering::Relaxed);
+    let uptime_secs = state.start_time.elapsed().as_secs();
+    
+    let stats = SystemStats {
+        total_queries,
+        total_errors,
+        avg_latency_ms: if total_queries > 0 { total_latency as f64 / total_queries as f64 } else { 0.0 },
+        queries_per_minute: if uptime_secs > 0 { (total_queries as f64 * 60.0) / uptime_secs as f64 } else { 0.0 },
+    };
+    
+    // Get recent queries from audit log
+    let recent_entries = state.audit_log.get_recent(10).await;
+    let recent_queries: Vec<QueryRecord> = recent_entries
+        .into_iter()
+        .map(|e| QueryRecord {
+            timestamp: e.timestamp.to_rfc3339(),
+            endpoint: e.operation.to_string(),
+            method: e.input.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string(),
+            duration_ms: e.duration_ms,
+            status: match e.status {
+                Status::Success => "success".to_string(),
+                Status::PartialSuccess => "partial_success".to_string(),
+                Status::Failure => "failure".to_string(),
+            },
+        })
+        .collect();
+    
+    Json(PlaygroundStatus {
+        services,
+        stats,
+        recent_queries,
+        uptime_seconds: uptime_secs,
+    })
+}
+
+async fn playground_gaps(State(state): State<AppState>) -> Json<GapAnalysis> {
+    state.metrics.record_request("playground_gaps", "GET");
+    Json(GapAnalysis::analyze(&state).await)
+}
+
+async fn playground_audit(
+    State(state): State<AppState>,
+    Query(params): Query<AuditQuery>,
+) -> Json<Vec<AuditEntry>> {
+    state.metrics.record_request("playground_audit", "GET");
+    
+    let limit = params.limit.unwrap_or(100).min(1000);
+    let operation_filter = params.operation.as_deref();
+    let status_filter = params.status.as_deref();
+    
+    let entries = if let Some(op) = operation_filter {
+        state.audit_log.get_by_operation(op).await
+    } else if let Some(st) = status_filter {
+        let status = match st.to_lowercase().as_str() {
+            "success" => Status::Success,
+            "partial_success" | "partialsuccess" => Status::PartialSuccess,
+            "failure" | "error" => Status::Failure,
+            _ => Status::Success,
+        };
+        state.audit_log.get_by_status(&status).await
+    } else {
+        state.audit_log.get_recent(limit).await
+    };
+    
+    // Apply limit after filtering
+    let entries: Vec<AuditEntry> = entries.into_iter().take(limit).collect();
+    
+    Json(entries)
+}
+
+/// Get audit statistics
+async fn playground_audit_stats(
+    State(state): State<AppState>,
+) -> Json<audit::AuditStats> {
+    state.metrics.record_request("playground_audit_stats", "GET");
+    
+    let stats = state.audit_log.get_stats().await;
+    Json(stats)
+}
+
+async fn playground_ws(
+    State(state): State<AppState>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_websocket(socket, state.ws_broadcast.clone()))
+}
+
+async fn handle_websocket(socket: WebSocket, broadcast: broadcast::Sender<AuditEntry>) {
+    let (mut tx, mut rx) = socket.split();
+    let mut recv = broadcast.subscribe();
+    
+    // Spawn a task to handle incoming messages (for close/ping)
+    let read_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = rx.next().await {
+            if matches!(msg, Message::Close(_)) {
+                break;
+            }
+        }
+    });
+    
+    // Send audit events to the client
+    while let Ok(entry) = recv.recv().await {
+        let json = match serde_json::to_string(&entry) {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+        
+        if tx.send(Message::Text(json)).await.is_err() {
+            break;
+        }
+    }
+    
+    read_task.abort();
+}
+
+/// Log an audit entry and broadcast to WebSocket clients
+async fn log_audit(state: &AppState, entry: AuditEntry) {
+    // Update counters
+    state.query_count.fetch_add(1, Ordering::Relaxed);
+    state.total_latency_ms.fetch_add(entry.duration_ms, Ordering::Relaxed);
+    if entry.status == Status::Failure {
+        state.error_count.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    // Store in ring buffer
+    state.audit_log.log(entry.clone()).await;
+    
+    // Broadcast to WebSocket clients (ignore errors if no subscribers)
+    let _ = state.ws_broadcast.send(entry);
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
@@ -1147,6 +1457,71 @@ async fn get_callees_from_neo4j(
 }
 
 // =============================================================================
+// Audit Middleware
+// =============================================================================
+
+async fn audit_middleware(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let start = std::time::Instant::now();
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    
+    // Execute the request
+    let response = next.run(request).await;
+    
+    // Calculate duration
+    let duration_ms = start.elapsed().as_millis() as u64;
+    
+    // Determine operation type from path
+    let operation = determine_operation_from_path(&path);
+    
+    // Determine status
+    let status = if response.status().is_success() {
+        Status::Success
+    } else {
+        Status::Failure
+    };
+    
+    // Create audit entry
+    let entry = state.audit_log.create_entry(
+        operation,
+        status.clone(),
+        duration_ms,
+        serde_json::json!({
+            "method": method,
+            "path": path,
+        }),
+        serde_json::json!({
+            "status_code": response.status().as_u16(),
+        }),
+        if response.status().is_success() { None } else { Some(format!("HTTP {}", response.status().as_u16())) },
+    ).await;
+    
+    // Log and broadcast
+    log_audit(&state, entry).await;
+    
+    response
+}
+
+/// Determine operation type from request path
+fn determine_operation_from_path(path: &str) -> Operation {
+    match path {
+        p if p.contains("/tools/search_semantic") => Operation::SemanticSearch { query: String::new() },
+        p if p.contains("/tools/get_function") => Operation::GetFunction { fqn: String::new() },
+        p if p.contains("/tools/get_callers") => Operation::GetCallers { fqn: String::new(), depth: 1 },
+        p if p.contains("/tools/get_trait_impls") => Operation::GetTraitImpls { trait_name: String::new() },
+        p if p.contains("/tools/find_usages_of_type") => Operation::FindUsages { type_name: String::new() },
+        p if p.contains("/tools/get_module_tree") => Operation::ModuleTree { crate_name: String::new() },
+        p if p.contains("/tools/query_graph") => Operation::GraphQuery { query: String::new() },
+        p if p.contains("/health") => Operation::HealthCheck,
+        _ => Operation::HealthCheck, // Default fallback
+    }
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -1184,18 +1559,39 @@ async fn main() -> anyhow::Result<()> {
     // Create metrics
     let metrics = Arc::new(Metrics::new());
     
+    // Create audit log with 1000 entry capacity
+    let audit_log = Arc::new(AuditLog::new(1000));
+    
+    // Create WebSocket broadcast channel
+    let (ws_broadcast, _) = broadcast::channel(256);
+    
+    // Create atomic counters for stats
+    let query_count = Arc::new(AtomicU64::new(0));
+    let error_count = Arc::new(AtomicU64::new(0));
+    let total_latency_ms = Arc::new(AtomicU64::new(0));
+    
+    // Record start time
+    let start_time = std::time::Instant::now();
+    
     // Create app state
     let state = AppState {
         config: config.clone(),
         pg_pool,
         http_client,
         metrics,
+        audit_log,
+        start_time,
+        ws_broadcast,
+        query_count,
+        error_count,
+        total_latency_ms,
     };
     
     // Build router
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics_handler))
+        // Core tool endpoints
         .route("/tools/search_semantic", post(search_semantic))
         .route("/tools/get_function", get(get_function))
         .route("/tools/get_callers", get(get_callers))
@@ -1203,8 +1599,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/find_usages_of_type", get(find_usages_of_type))
         .route("/tools/get_module_tree", get(get_module_tree))
         .route("/tools/query_graph", post(query_graph))
+        // Playground endpoints
+        .route("/playground/status", get(playground_status))
+        .route("/playground/gaps", get(playground_gaps))
+        .route("/playground/audit", get(playground_audit))
+        .route("/playground/audit/stats", get(playground_audit_stats))
+        .route("/playground/ws", get(playground_ws))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn_with_state(state.clone(), audit_middleware))
         .with_state(state);
     
     // Start server

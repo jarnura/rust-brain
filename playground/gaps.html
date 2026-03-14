@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust Brain - Gap Analysis</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="bg-dark-950 text-dark-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-dark-900 border-b border-dark-800">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="text-2xl">🧠</span>
+                        <span class="ml-2 text-xl font-bold text-white">Rust Brain</span>
+                    </div>
+                    <div class="hidden md:block ml-10">
+                        <div class="flex items-baseline space-x-4">
+                            <a href="index.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Dashboard</a>
+                            <a href="playground.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Query</a>
+                            <a href="audit.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Audit Trail</a>
+                            <a href="gaps.html" class="bg-dark-800 text-white px-3 py-2 rounded-md text-sm font-medium">Gap Analysis</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <div class="bg-dark-800 rounded-lg p-6">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="h-12 w-12 bg-green-900/30 rounded-lg flex items-center justify-center">
+                            <svg class="h-6 w-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-dark-400">Working</p>
+                        <p class="text-2xl font-semibold text-green-400" id="workingCount">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-6">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="h-12 w-12 bg-yellow-900/30 rounded-lg flex items-center justify-center">
+                            <svg class="h-6 w-6 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-dark-400">Partial</p>
+                        <p class="text-2xl font-semibold text-yellow-400" id="partialCount">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-6">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="h-12 w-12 bg-red-900/30 rounded-lg flex items-center justify-center">
+                            <svg class="h-6 w-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-dark-400">Broken</p>
+                        <p class="text-2xl font-semibold text-red-400" id="brokenCount">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-dark-800 rounded-lg p-6">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <div class="h-12 w-12 bg-blue-900/30 rounded-lg flex items-center justify-center">
+                            <svg class="h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-dark-400">Completion</p>
+                        <p class="text-2xl font-semibold text-blue-400" id="completionPercent">0%</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- Feature Checklist -->
+            <div>
+                <h2 class="text-lg font-semibold text-dark-100 mb-4">Feature Checklist</h2>
+                <div class="bg-dark-800 rounded-lg overflow-hidden">
+                    <div class="divide-y divide-dark-700" id="featureChecklist">
+                        <!-- Features will be populated by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Known Issues -->
+            <div>
+                <h2 class="text-lg font-semibold text-dark-100 mb-4">Known Issues</h2>
+                <div class="bg-dark-800 rounded-lg overflow-hidden">
+                    <div class="divide-y divide-dark-700" id="knownIssues">
+                        <!-- Issues will be populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recommendations -->
+        <div class="mt-8">
+            <h2 class="text-lg font-semibold text-dark-100 mb-4">Recommendations</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="recommendations">
+                <!-- Recommendations will be populated by JS -->
+            </div>
+        </div>
+
+        <!-- Action Items -->
+        <div class="mt-8">
+            <h2 class="text-lg font-semibold text-dark-100 mb-4">Action Items</h2>
+            <div class="bg-dark-800 rounded-lg overflow-hidden">
+                <table class="min-w-full divide-y divide-dark-700">
+                    <thead>
+                        <tr class="bg-dark-900">
+                            <th class="px-6 py-3 text-left text-xs font-medium text-dark-400 uppercase tracking-wider w-12"></th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-dark-400 uppercase tracking-wider">Action</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-dark-400 uppercase tracking-wider">Priority</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-dark-400 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-dark-400 uppercase tracking-wider">Due</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-700" id="actionItems">
+                        <!-- Action items will be populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Phase Progress -->
+        <div class="mt-8">
+            <h2 class="text-lg font-semibold text-dark-100 mb-4">Phase Progress</h2>
+            <div class="bg-dark-800 rounded-lg p-6">
+                <div class="space-y-6" id="phaseProgress">
+                    <!-- Phases will be populated by JS -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="js/app.js"></script>
+    <script>
+        // Feature data
+        const features = [
+            { name: 'Docker Infrastructure', category: 'Infrastructure', status: 'working', notes: 'All services running healthy' },
+            { name: 'Postgres Database', category: 'Storage', status: 'working', notes: 'Tables created, connections working' },
+            { name: 'Neo4j Graph Database', category: 'Storage', status: 'working', notes: 'Constraints and indexes created' },
+            { name: 'Qdrant Vector Store', category: 'Storage', status: 'working', notes: 'Collections initialized' },
+            { name: 'Ollama LLM Integration', category: 'AI/ML', status: 'working', notes: 'nomic-embed-text + codellama:7b loaded' },
+            { name: 'Prometheus Metrics', category: 'Observability', status: 'working', notes: 'Collecting metrics from all services' },
+            { name: 'Grafana Dashboards', category: 'Observability', status: 'working', notes: '4 dashboards configured' },
+            { name: 'Tool API Layer', category: 'API', status: 'working', notes: '9 endpoints implemented, builds successfully' },
+            { name: 'Semantic Search', category: 'Query', status: 'working', notes: 'Embedding + vector search functional' },
+            { name: 'Call Graph Queries', category: 'Query', status: 'working', notes: 'Neo4j traversal working' },
+            { name: 'Trait Resolution', category: 'Query', status: 'working', notes: 'IMPLEMENTS relationship queries' },
+            { name: 'Cargo Expand', category: 'Ingestion', status: 'partial', notes: 'Code generated, needs API fixes' },
+            { name: 'Tree-sitter Parser', category: 'Ingestion', status: 'partial', notes: 'Code generated, needs API fixes' },
+            { name: 'Syn Parser', category: 'Ingestion', status: 'partial', notes: 'Code generated, needs API fixes' },
+            { name: 'Type Resolver', category: 'Ingestion', status: 'partial', notes: 'sqlx 0.8 API compatibility issues' },
+            { name: 'Graph Writer', category: 'Ingestion', status: 'partial', notes: 'neo4rs 0.8 API changes' },
+            { name: 'Embedding Generator', category: 'Ingestion', status: 'partial', notes: 'uuid crate API changes' },
+            { name: 'Incremental Ingestion', category: 'Ingestion', status: 'broken', notes: 'Not yet implemented' },
+            { name: 'Monomorphization Tracking', category: 'Advanced', status: 'broken', notes: 'Design complete, implementation pending' },
+            { name: 'Multi-repo Support', category: 'Advanced', status: 'broken', notes: 'Schema supports, ingestion pipeline pending' },
+        ];
+
+        const issues = [
+            { id: 'INGEST-001', title: 'sqlx 0.8 try_get API changed', severity: 'high', description: 'sqlx 0.8 changed the try_get method signature. Need to update to new API or downgrade to 0.7.', files: ['pipeline/stages.rs', 'typecheck/resolver.rs'] },
+            { id: 'INGEST-002', title: 'neo4rs execute method visibility', severity: 'high', description: 'neo4rs 0.8 changed execute method visibility. Use run() method or downgrade.', files: ['graph/*.rs'] },
+            { id: 'INGEST-003', title: 'uuid new_v5 signature changed', severity: 'medium', description: 'Uuid::new_v5 signature changed in newer versions. Update to new API.', files: ['embedding/mod.rs'] },
+            { id: 'DOC-001', title: 'API documentation missing', severity: 'medium', description: 'Need to create docs/api-spec.md with OpenAPI specification.', files: [] },
+            { id: 'TEST-001', title: 'Integration tests pending', severity: 'medium', description: 'Run integration tests with test fixtures once ingestion is fixed.', files: [] },
+        ];
+
+        const recommendations = [
+            { title: 'Fix API Compatibility', description: 'Update ingestion service code to work with current crate versions (sqlx 0.8, neo4rs 0.8, uuid).', priority: 'high', effort: '2-4 hours' },
+            { title: 'Add API Documentation', description: 'Create OpenAPI specification for the Tool API endpoints.', priority: 'medium', effort: '1-2 hours' },
+            { title: 'Implement Incremental Ingestion', description: 'Add support for only ingesting changed files.', priority: 'medium', effort: '4-8 hours' },
+            { title: 'Add Integration Tests', description: 'Create end-to-end tests for the ingestion pipeline.', priority: 'medium', effort: '2-4 hours' },
+            { title: 'Implement Monomorphization', description: 'Add concrete type tracking at call sites.', priority: 'low', effort: '8-16 hours' },
+            { title: 'Multi-repo Ingestion', description: 'Extend ingestion to support multiple repositories.', priority: 'low', effort: '4-8 hours' },
+        ];
+
+        const actionItems = [
+            { action: 'Fix sqlx try_get calls in pipeline/stages.rs', priority: 'high', status: 'pending', due: '2026-03-15' },
+            { action: 'Fix sqlx try_get calls in typecheck/resolver.rs', priority: 'high', status: 'pending', due: '2026-03-15' },
+            { action: 'Update neo4rs graph/*.rs to use run() method', priority: 'high', status: 'pending', due: '2026-03-15' },
+            { action: 'Fix uuid::new_v5 call in embedding/mod.rs', priority: 'medium', status: 'pending', due: '2026-03-16' },
+            { action: 'Build and test ingestion service', priority: 'high', status: 'pending', due: '2026-03-16' },
+            { action: 'Add ingestion service to docker-compose', priority: 'medium', status: 'pending', due: '2026-03-16' },
+            { action: 'Create docs/api-spec.md', priority: 'medium', status: 'pending', due: '2026-03-17' },
+            { action: 'Run integration tests', priority: 'medium', status: 'pending', due: '2026-03-17' },
+        ];
+
+        const phases = [
+            { name: 'Phase 0: Prerequisites', status: 'passed', progress: 100 },
+            { name: 'Phase 1: Docker Compose - Core Services', status: 'passed', progress: 100 },
+            { name: 'Phase 2: Ingestion Pipeline', status: 'partial', progress: 60 },
+            { name: 'Phase 3: Tool API Layer', status: 'passed', progress: 100 },
+            { name: 'Phase 4: Integration Testing & Docs', status: 'partial', progress: 50 },
+        ];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            renderFeatures();
+            renderIssues();
+            renderRecommendations();
+            renderActionItems();
+            renderPhases();
+            updateSummary();
+        });
+
+        function renderFeatures() {
+            const container = document.getElementById('featureChecklist');
+            container.innerHTML = features.map(f => {
+                const statusColors = {
+                    working: 'text-green-400 bg-green-900/30',
+                    partial: 'text-yellow-400 bg-yellow-900/30',
+                    broken: 'text-red-400 bg-red-900/30'
+                };
+                const statusIcons = {
+                    working: '✓',
+                    partial: '⚠',
+                    broken: '✗'
+                };
+
+                return `
+                    <div class="p-4 hover:bg-dark-700 transition-colors">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-3">
+                                <span class="w-6 h-6 flex items-center justify-center rounded ${statusColors[f.status]}">${statusIcons[f.status]}</span>
+                                <div>
+                                    <p class="text-sm font-medium text-dark-100">${f.name}</p>
+                                    <p class="text-xs text-dark-500">${f.category}</p>
+                                </div>
+                            </div>
+                            <span class="px-2 py-1 text-xs rounded ${statusColors[f.status]}">${f.status}</span>
+                        </div>
+                        <p class="text-xs text-dark-400 mt-2 ml-9">${f.notes}</p>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderIssues() {
+            const container = document.getElementById('knownIssues');
+            container.innerHTML = issues.map(i => {
+                const severityColors = {
+                    high: 'border-l-red-500',
+                    medium: 'border-l-yellow-500',
+                    low: 'border-l-blue-500'
+                };
+
+                return `
+                    <div class="p-4 border-l-4 ${severityColors[i.severity]} hover:bg-dark-700 transition-colors">
+                        <div class="flex items-start justify-between">
+                            <div>
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-xs font-mono text-dark-500">${i.id}</span>
+                                    <span class="px-2 py-0.5 text-xs rounded ${i.severity === 'high' ? 'bg-red-900 text-red-300' : i.severity === 'medium' ? 'bg-yellow-900 text-yellow-300' : 'bg-blue-900 text-blue-300'}">${i.severity}</span>
+                                </div>
+                                <p class="text-sm font-medium text-dark-100 mt-1">${i.title}</p>
+                                <p class="text-xs text-dark-400 mt-1">${i.description}</p>
+                                ${i.files.length > 0 ? `
+                                    <div class="flex flex-wrap gap-1 mt-2">
+                                        ${i.files.map(f => `<span class="px-2 py-0.5 text-xs bg-dark-700 rounded text-dark-400">${f}</span>`).join('')}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderRecommendations() {
+            const container = document.getElementById('recommendations');
+            container.innerHTML = recommendations.map(r => {
+                const priorityColors = {
+                    high: 'border-red-500',
+                    medium: 'border-yellow-500',
+                    low: 'border-blue-500'
+                };
+
+                return `
+                    <div class="bg-dark-800 rounded-lg p-4 border-t-2 ${priorityColors[r.priority]}">
+                        <div class="flex items-start justify-between mb-2">
+                            <h3 class="text-sm font-medium text-dark-100">${r.title}</h3>
+                            <span class="px-2 py-0.5 text-xs rounded ${r.priority === 'high' ? 'bg-red-900 text-red-300' : r.priority === 'medium' ? 'bg-yellow-900 text-yellow-300' : 'bg-blue-900 text-blue-300'}">${r.priority}</span>
+                        </div>
+                        <p class="text-xs text-dark-400 mb-2">${r.description}</p>
+                        <p class="text-xs text-dark-500">Est. effort: ${r.effort}</p>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderActionItems() {
+            const container = document.getElementById('actionItems');
+            container.innerHTML = actionItems.map(item => {
+                const priorityColors = {
+                    high: 'bg-red-900 text-red-300',
+                    medium: 'bg-yellow-900 text-yellow-300',
+                    low: 'bg-blue-900 text-blue-300'
+                };
+                const statusColors = {
+                    pending: 'text-dark-400',
+                    'in-progress': 'text-blue-400',
+                    done: 'text-green-400'
+                };
+
+                return `
+                    <tr class="hover:bg-dark-700">
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <input type="checkbox" class="rounded bg-dark-700 border-dark-600 text-blue-500 focus:ring-blue-500" ${item.status === 'done' ? 'checked' : ''}>
+                        </td>
+                        <td class="px-6 py-4 text-sm text-dark-200">${item.action}</td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="px-2 py-1 text-xs rounded ${priorityColors[item.priority]}">${item.priority}</span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <span class="text-sm ${statusColors[item.status]}">${item.status}</span>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-dark-400">${item.due}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderPhases() {
+            const container = document.getElementById('phaseProgress');
+            container.innerHTML = phases.map(p => {
+                const statusColors = {
+                    passed: 'bg-green-500',
+                    partial: 'bg-yellow-500',
+                    pending: 'bg-dark-600'
+                };
+
+                return `
+                    <div>
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm font-medium text-dark-200">${p.name}</span>
+                            <span class="text-sm text-dark-400">${p.progress}%</span>
+                        </div>
+                        <div class="w-full bg-dark-700 rounded-full h-2">
+                            <div class="h-2 rounded-full ${statusColors[p.status]}" style="width: ${p.progress}%"></div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateSummary() {
+            const working = features.filter(f => f.status === 'working').length;
+            const partial = features.filter(f => f.status === 'partial').length;
+            const broken = features.filter(f => f.status === 'broken').length;
+            const total = features.length;
+            const completion = Math.round((working + partial * 0.5) / total * 100);
+
+            document.getElementById('workingCount').textContent = working;
+            document.getElementById('partialCount').textContent = partial;
+            document.getElementById('brokenCount').textContent = broken;
+            document.getElementById('completionPercent').textContent = `${completion}%`;
+        }
+    </script>
+</body>
+</html>
