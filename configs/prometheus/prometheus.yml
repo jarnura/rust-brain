@@ -1,0 +1,62 @@
+# =============================================================================
+# rust-brain — Prometheus Configuration
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'rustbrain'
+
+# Alertmanager (optional, uncomment if needed)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # ===========================================================================
+  # rust-brain Services
+  # ===========================================================================
+  
+  - job_name: 'rustbrain-api'
+    static_configs:
+      - targets: ['api:8080']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    scrape_interval: 30s
+
+  - job_name: 'neo4j'
+    static_configs:
+      - targets: ['neo4j:2004']
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  - job_name: 'qdrant'
+    static_configs:
+      - targets: ['qdrant:6333']
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  - job_name: 'ollama'
+    static_configs:
+      - targets: ['ollama:11434']
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  # ===========================================================================
+  # Infrastructure
+  # ===========================================================================
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 15s
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

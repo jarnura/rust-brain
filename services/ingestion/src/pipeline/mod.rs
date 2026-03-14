@@ -1,0 +1,262 @@
+//! Pipeline orchestration for rust-brain ingestion
+//!
+//! This module implements a staged pipeline for processing Rust source code:
+//! 1. **Expand** - Macro expansion via cargo expand
+//! 2. **Parse** - Dual parsing (tree-sitter + syn)
+//! 3. **Typecheck** - Type resolution and inference
+//! 4. **Extract** - Extract items to Postgres
+//! 5. **Graph** - Build Neo4j relationship graph
+//! 6. **Embed** - Create vector embeddings
+
+pub mod stages;
+pub mod runner;
+
+pub use stages::{PipelineStage, StageResult, StageError, StageStatus};
+pub use runner::PipelineRunner;
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use uuid::Uuid;
+
+/// Unique identifier for a pipeline run
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PipelineId(pub Uuid);
+
+impl Default for PipelineId {
+    fn default() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for PipelineId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Configuration for pipeline execution
+#[derive(Debug, Clone)]
+pub struct PipelineConfig {
+    /// Path to the crate or workspace to process
+    pub crate_path: PathBuf,
+    
+    /// Database connection URL
+    pub database_url: String,
+    
+    /// Neo4j connection URL (optional)
+    pub neo4j_url: Option<String>,
+    
+    /// Embedding service URL (optional)
+    pub embedding_url: Option<String>,
+    
+    /// Which stages to run (None = all stages)
+    pub stages: Option<Vec<String>>,
+    
+    /// Dry run mode - don't write to databases
+    pub dry_run: bool,
+    
+    /// Continue on non-fatal errors
+    pub continue_on_error: bool,
+    
+    /// Maximum concurrent operations
+    pub max_concurrency: usize,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            crate_path: PathBuf::from("."),
+            database_url: "postgresql://rustbrain:rustbrain_dev_2024@localhost:5432/rustbrain".to_string(),
+            neo4j_url: None,
+            embedding_url: None,
+            stages: None,
+            dry_run: false,
+            continue_on_error: true,
+            max_concurrency: 4,
+        }
+    }
+}
+
+/// Context shared across pipeline stages
+#[derive(Debug)]
+pub struct PipelineContext {
+    /// Unique identifier for this pipeline run
+    pub id: PipelineId,
+    
+    /// Configuration
+    pub config: PipelineConfig,
+    
+    /// Shared state between stages
+    pub state: Arc<RwLock<PipelineState>>,
+}
+
+impl PipelineContext {
+    /// Create a new pipeline context
+    pub fn new(config: PipelineConfig) -> Self {
+        Self {
+            id: PipelineId::default(),
+            config,
+            state: Arc::new(RwLock::new(PipelineState::default())),
+        }
+    }
+    
+    /// Create with a specific ID (for resuming runs)
+    pub fn with_id(id: Uuid, config: PipelineConfig) -> Self {
+        Self {
+            id: PipelineId(id),
+            config,
+            state: Arc::new(RwLock::new(PipelineState::default())),
+        }
+    }
+}
+
+/// Mutable state accumulated during pipeline execution
+#[derive(Debug, Default)]
+pub struct PipelineState {
+    /// Source files discovered
+    pub source_files: Vec<SourceFileInfo>,
+    
+    /// Expanded source code by file path
+    pub expanded_sources: HashMap<PathBuf, String>,
+    
+    /// Parsed items by file
+    pub parsed_items: HashMap<PathBuf, Vec<ParsedItemInfo>>,
+    
+    /// Extracted item IDs by FQN
+    pub extracted_items: HashMap<String, Uuid>,
+    
+    /// Graph node IDs by FQN
+    pub graph_nodes: HashMap<String, String>,
+    
+    /// Errors encountered
+    pub errors: Vec<StageError>,
+    
+    /// Counts for each stage
+    pub counts: StageCounts,
+}
+
+/// Information about a source file
+#[derive(Debug, Clone)]
+pub struct SourceFileInfo {
+    pub path: PathBuf,
+    pub crate_name: String,
+    pub module_path: String,
+    pub original_source: String,
+    pub git_hash: Option<String>,
+}
+
+/// Simplified parsed item info for state tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedItemInfo {
+    pub fqn: String,
+    pub item_type: String,
+    pub name: String,
+    pub visibility: String,
+    pub signature: String,
+    pub generic_params: Vec<crate::parsers::GenericParam>,
+    pub where_clauses: Vec<crate::parsers::WhereClause>,
+    pub attributes: Vec<String>,
+    pub doc_comment: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub body_source: String,
+}
+
+/// Counts tracked per stage
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct StageCounts {
+    pub files_expanded: usize,
+    pub files_parsed: usize,
+    pub items_parsed: usize,
+    pub items_typechecked: usize,
+    pub items_extracted: usize,
+    pub graph_nodes: usize,
+    pub graph_edges: usize,
+    pub embeddings_created: usize,
+}
+
+impl StageCounts {
+    pub fn total_processed(&self) -> usize {
+        self.files_expanded + self.items_parsed + self.items_extracted
+    }
+}
+
+/// Overall pipeline result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PipelineResult {
+    pub id: Uuid,
+    pub status: PipelineStatus,
+    pub stages: Vec<StageResult>,
+    pub counts: StageCounts,
+    pub errors: Vec<StageError>,
+    pub duration_ms: u64,
+}
+
+/// Pipeline execution status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStatus {
+    Running,
+    Completed,
+    Partial,
+    Failed,
+}
+
+impl std::fmt::Display for PipelineStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Running => write!(f, "running"),
+            Self::Completed => write!(f, "completed"),
+            Self::Partial => write!(f, "partial"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+/// Stage names in execution order
+pub const STAGE_NAMES: &[&str] = &[
+    "expand",
+    "parse", 
+    "typecheck",
+    "extract",
+    "graph",
+    "embed",
+];
+
+/// Check if a stage should run based on config
+pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
+    match &config.stages {
+        Some(stages) => stages.iter().any(|s| s == stage_name),
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_pipeline_id_default() {
+        let id = PipelineId::default();
+        assert!(!id.0.is_nil());
+    }
+    
+    #[test]
+    fn test_should_run_stage() {
+        let mut config = PipelineConfig::default();
+        
+        // No stages specified = run all
+        assert!(should_run_stage(&config, "expand"));
+        assert!(should_run_stage(&config, "parse"));
+        
+        // Specific stages = only those
+        config.stages = Some(vec!["expand".to_string(), "parse".to_string()]);
+        assert!(should_run_stage(&config, "expand"));
+        assert!(should_run_stage(&config, "parse"));
+        assert!(!should_run_stage(&config, "embed"));
+    }
+}

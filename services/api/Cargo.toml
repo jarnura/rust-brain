@@ -1,0 +1,47 @@
+[package]
+name = "rustbrain-api"
+version = "0.1.0"
+edition = "2021"
+description = "Tool API server for rust-brain code intelligence platform"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.37", features = ["full"] }
+
+# Web framework
+axum = { version = "0.7", features = ["json"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+
+# HTTP client for Qdrant/Ollama
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics
+prometheus = "0.13"
+lazy_static = "1.4"
+
+# Configuration
+config = "0.14"
+
+# Pin home to avoid Rust 1.88 requirement
+home = "=0.5.9"
+
+# Build standalone, not as part of parent workspace
+[workspace]

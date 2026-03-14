@@ -1,0 +1,17 @@
+# =============================================================================
+# rust-brain — Grafana Dashboard Provisioning
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: 'rust-brain'
+    orgId: 1
+    folder: 'Rust Brain'
+    folderUid: 'rustbrain'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

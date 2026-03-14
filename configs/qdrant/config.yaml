@@ -1,0 +1,31 @@
+# =============================================================================
+# rust-brain — Qdrant Configuration
+# =============================================================================
+
+storage:
+  storage_path: /qdrant/storage
+  
+  # Performance tuning
+  optimizers:
+    default_segment_number: 4
+    indexing_threshold: 20000
+
+  # Write performance
+  wal:
+    wal_capacity_mb: 32
+
+# Service settings
+service:
+  max_request_size_mb: 32
+  max_workers: 4
+  
+  # REST API
+  http_port: 6333
+  
+  # gRPC API  
+  grpc_port: 6334
+  enable_tls: false
+
+# Telemetry
+telemetry:
+  disabled: false

@@ -1,0 +1,35 @@
+# =============================================================================
+# rust-brain — Grafana Datasources Provisioning
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  # Prometheus - Primary metrics store
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"
+      httpMethod: POST
+
+  # PostgreSQL - For direct data queries
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: rustbrain
+    user: ${POSTGRES_USER}
+    editable: false
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+      postgresVersion: 1600
+      timescaledb: false
