@@ -960,15 +960,166 @@ mod tests {
     #[test]
     fn test_parse_type_args_heuristic() {
         let resolver = TypeResolver::new();
-        
+
         // Simple types
         let args = resolver.parse_type_args_heuristic("String, i32");
         assert_eq!(args.len(), 2);
-        
+
         // Nested generics
         let args = resolver.parse_type_args_heuristic("Vec<String>, HashMap<String, i32>");
         assert_eq!(args.len(), 2);
         assert!(args[0].concrete_type.contains("Vec"));
         assert!(args[1].concrete_type.contains("HashMap"));
+    }
+
+    #[test]
+    fn test_inherent_impl_not_treated_as_trait_impl() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Point {
+                fn new(x: f64, y: f64) -> Self {
+                    Point { x, y }
+                }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "test_crate",
+            "test::module",
+            "test.rs",
+            source,
+            &[],
+        );
+
+        // Inherent impl should NOT appear in trait_impls
+        assert!(result.trait_impls.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_trait_impls() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Clone for Foo {
+                fn clone(&self) -> Self { Foo }
+            }
+
+            impl Default for Foo {
+                fn default() -> Self { Foo }
+            }
+
+            impl Display for Bar {
+                fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    write!(f, "Bar")
+                }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "test_crate",
+            "test::module",
+            "test.rs",
+            source,
+            &[],
+        );
+
+        assert_eq!(result.trait_impls.len(), 3);
+
+        let trait_names: Vec<&str> = result.trait_impls.iter().map(|i| i.trait_fqn.as_str()).collect();
+        assert!(trait_names.iter().any(|n| n.contains("Clone")));
+        assert!(trait_names.iter().any(|n| n.contains("Default")));
+        assert!(trait_names.iter().any(|n| n.contains("Display")));
+    }
+
+    #[test]
+    fn test_call_site_extraction_from_function() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            fn process() {
+                let x = compute(42);
+                let y = transform(x);
+            }
+
+            fn compute(n: i32) -> i32 { n * 2 }
+            fn transform(n: i32) -> i32 { n + 1 }
+        "#;
+
+        let result = resolver.analyze_source(
+            "test_crate",
+            "test::module",
+            "test.rs",
+            source,
+            &["test::module::process".to_string()],
+        );
+
+        // Should find call sites from process()
+        let process_calls: Vec<_> = result.call_sites.iter()
+            .filter(|s| s.caller_fqn.contains("process"))
+            .collect();
+
+        assert!(process_calls.len() >= 2, "Expected at least 2 calls from process(), got {}", process_calls.len());
+    }
+
+    #[test]
+    fn test_analyzed_quality_for_syn_parsed() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Clone for Foo {
+                fn clone(&self) -> Self { Foo }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "test_crate",
+            "test::module",
+            "test.rs",
+            source,
+            &[],
+        );
+
+        // Syn-parsed impls should have Analyzed quality
+        for impl_info in &result.trait_impls {
+            assert!(matches!(impl_info.quality, ResolutionQuality::Analyzed));
+        }
+    }
+
+    #[test]
+    fn test_empty_source() {
+        let resolver = TypeResolver::new();
+        let result = resolver.analyze_source(
+            "test_crate",
+            "test::module",
+            "test.rs",
+            "",
+            &[],
+        );
+
+        assert!(result.trait_impls.is_empty());
+        assert!(result.call_sites.is_empty());
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_generic_trait_impl() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl<T: Clone> From<Vec<T>> for Container<T> {
+                fn from(items: Vec<T>) -> Self {
+                    Container { items }
+                }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "test_crate",
+            "test::module",
+            "test.rs",
+            source,
+            &[],
+        );
+
+        assert_eq!(result.trait_impls.len(), 1);
+        let impl_info = &result.trait_impls[0];
+        assert!(impl_info.trait_fqn.contains("From"));
+        assert!(impl_info.self_type.contains("Container"));
     }
 }
