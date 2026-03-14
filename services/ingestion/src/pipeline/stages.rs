@@ -1196,7 +1196,7 @@ impl PipelineStage for GraphStage {
         }
         
         info!("Created {} CONTAINS relationships", relationships.len());
-        let contains_count = relationships.len();
+        let _contains_count = relationships.len();
         
         // 2. Create IMPLEMENTS and FOR relationships for impl blocks
         let mut impl_count = 0;
@@ -1680,8 +1680,8 @@ impl PipelineStage for EmbedStage {
         
         for (path, items) in &parsed_items {
             // Get module_path and crate_name from source_files for file_path
-            let file_path_str = path.to_string_lossy().to_string();
-            let module_path = path_to_crate.get(path).map(|s| s.as_str()).unwrap_or("");
+            let _file_path_str = path.to_string_lossy().to_string();
+            let _module_path = path_to_crate.get(path).map(|s| s.as_str()).unwrap_or("");
             
             for item_info in items {
                 // Reconstruct ParsedItem from ParsedItemInfo with ALL fields preserved

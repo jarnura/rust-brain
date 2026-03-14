@@ -4,8 +4,8 @@
 //! and recording progress to the database.
 
 use crate::pipeline::{
-    PipelineConfig, PipelineContext, PipelineId, PipelineResult, PipelineStatus,
-    PipelineStage, StageCounts, STAGE_NAMES,
+    PipelineConfig, PipelineContext, PipelineResult, PipelineStatus,
+    PipelineStage, StageCounts,
 };
 use crate::pipeline::stages::{
     ExpandStage, ExtractStage, GraphStage, ParseStage, StageError, StageResult, StageStatus,
@@ -14,8 +14,8 @@ use crate::pipeline::stages::{
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sqlx::PgPool;
-use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use std::time::Instant;
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 /// Pipeline runner that orchestrates stage execution
@@ -54,7 +54,7 @@ impl PipelineRunner {
     
     /// Create a runner with an existing context
     pub fn with_context(ctx: PipelineContext) -> Result<Self> {
-        let config = ctx.config.clone();
+        let _config = ctx.config.clone();
         let stages: Vec<Box<dyn PipelineStage>> = vec![
             Box::new(ExpandStage::new()?),
             Box::new(ParseStage::new()?),
@@ -359,8 +359,9 @@ pub async fn run_single_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::STAGE_NAMES;
     use std::path::PathBuf;
-    
+
     #[test]
     fn test_pipeline_runner_creation() {
         let config = PipelineConfig {

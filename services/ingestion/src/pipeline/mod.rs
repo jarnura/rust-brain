@@ -14,7 +14,6 @@ pub mod runner;
 pub use stages::{PipelineStage, StageResult, StageError, StageStatus};
 pub use runner::PipelineRunner;
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -8,10 +8,11 @@ use neo4rs::{Graph, query, BoltType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Relationship types supported by the graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
 pub enum RelationshipType {
     /// Crate→Module, Module→Module, Module→Items containment
     CONTAINS,

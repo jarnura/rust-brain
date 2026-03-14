@@ -570,7 +570,7 @@ fn split_fqn(fqn: &str) -> (String, String) {
 fn extract_struct_fields(body: &str) -> String {
     let mut fields = Vec::new();
     let mut in_field = false;
-    let mut current_field = String::new();
+    let _current_field = String::new();
     let mut brace_count = 0;
     
     for line in body.lines() {

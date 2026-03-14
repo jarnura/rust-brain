@@ -156,7 +156,7 @@ impl TypeResolver {
         module_path: &str,
         file_path: &str,
         source: &str,
-        caller_fqns: &[String],
+        _caller_fqns: &[String],
     ) -> Result<(Vec<TraitImplementation>, Vec<CallSite>)> {
         // Parse the entire source file
         let file: syn::File = syn::parse_str(source)
@@ -218,7 +218,7 @@ impl TypeResolver {
     fn extract_trait_impl(
         &self,
         impl_item: &ItemImpl,
-        crate_name: &str,
+        _crate_name: &str,
         module_path: &str,
         file_path: &str,
         _item_idx: usize,
@@ -548,12 +548,12 @@ impl TypeResolver {
     fn infer_method_callee(&self, receiver: &Expr, method_name: &str) -> String {
         // Try to get the type of the receiver
         let receiver_type = match receiver {
-            Expr::Path(path_expr) => {
+            Expr::Path(_path_expr) => {
                 // Variable reference - we can't know the type without type checking
                 // Use a placeholder
                 format!("unknown::{}", method_name)
             }
-            Expr::Call(call) => {
+            Expr::Call(_call) => {
                 // Method called on result of another call
                 format!("call_result::{}", method_name)
             }
@@ -731,7 +731,7 @@ impl TypeResolver {
     /// Analyze source using regex and heuristics
     fn analyze_with_heuristics(
         &self,
-        crate_name: &str,
+        _crate_name: &str,
         module_path: &str,
         file_path: &str,
         source: &str,

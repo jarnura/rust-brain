@@ -12,10 +12,9 @@ use crate::parsers::{GenericParam, ItemType, ParsedItem, SkeletonItem, Visibilit
 use anyhow::{anyhow, Context, Result};
 use quote::ToTokens;
 use syn::{
-    Attribute, Expr, GenericArgument, GenericParam as SynGenericParam,
-    Ident, Item as SynItem, ItemFn, ItemStruct, ItemEnum, ItemTrait, ItemImpl,
-    ItemType as SynItemType, ItemConst, ItemStatic, ItemMod, ItemUse, Lifetime, PathArguments, 
-    ReturnType, Type, TypePath, Visibility as SynVisibility, WhereClause as SynWhereClause, 
+    Attribute, GenericParam as SynGenericParam, Item as SynItem, ItemFn, ItemStruct, ItemEnum, ItemTrait, ItemImpl,
+    ItemType as SynItemType, ItemConst, ItemStatic, ItemMod, ItemUse, 
+    ReturnType, Type, Visibility as SynVisibility, WhereClause as SynWhereClause, 
     WherePredicate,
 };
 

@@ -8,7 +8,7 @@ use neo4rs::{Graph, query, BoltType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::NodeType;
 
