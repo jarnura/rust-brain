@@ -118,24 +118,27 @@ impl PipelineContext {
 pub struct PipelineState {
     /// Source files discovered
     pub source_files: Vec<SourceFileInfo>,
-    
+
     /// Expanded source code by file path
     pub expanded_sources: HashMap<PathBuf, String>,
-    
+
     /// Parsed items by file
     pub parsed_items: HashMap<PathBuf, Vec<ParsedItemInfo>>,
-    
+
     /// Extracted item IDs by FQN
     pub extracted_items: HashMap<String, Uuid>,
-    
+
     /// Graph node IDs by FQN
     pub graph_nodes: HashMap<String, String>,
-    
+
     /// Errors encountered
     pub errors: Vec<StageError>,
-    
+
     /// Counts for each stage
     pub counts: StageCounts,
+
+    /// Cache of expand results keyed by content hash (for incremental runs)
+    pub expand_cache: HashMap<String, String>,
 }
 
 /// Information about a source file
