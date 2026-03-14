@@ -115,6 +115,7 @@ impl TreeSitterParser {
             "macro_invocation" | "macro_definition" => Some(ItemType::Macro),
             "mod_item" => Some(ItemType::Module),
             "use_declaration" => Some(ItemType::Use),
+            "foreign_mod_item" | "extern_crate_declaration" => Some(ItemType::ExternBlock),
             _ => None,
         }
     }
@@ -456,9 +457,22 @@ pub struct Point {
 /// that does something.
 pub fn do_thing() {}
 "#;
-        
+
         let doc = parser.extract_doc_comments(source, 4);
         assert!(doc.contains("This is a function"));
         assert!(doc.contains("that does something"));
+    }
+
+    #[test]
+    fn test_parse_extern_crate() {
+        let parser = TreeSitterParser::new().unwrap();
+        let source = r#"
+extern crate serde;
+"#;
+        let skeletons = parser.extract_skeletons(source).unwrap();
+        assert!(!skeletons.is_empty());
+        let extern_item = skeletons.iter()
+            .find(|s| matches!(s.item_type, ItemType::ExternBlock));
+        assert!(extern_item.is_some(), "Should detect extern crate as ExternBlock");
     }
 }

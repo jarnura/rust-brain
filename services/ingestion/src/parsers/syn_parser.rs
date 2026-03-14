@@ -13,8 +13,8 @@ use anyhow::{anyhow, Context, Result};
 use quote::ToTokens;
 use syn::{
     Attribute, GenericParam as SynGenericParam, Item as SynItem, ItemFn, ItemStruct, ItemEnum, ItemTrait, ItemImpl,
-    ItemType as SynItemType, ItemConst, ItemStatic, ItemMod, ItemUse, 
-    ReturnType, Type, Visibility as SynVisibility, WhereClause as SynWhereClause, 
+    ItemType as SynItemType, ItemConst, ItemStatic, ItemMod, ItemUse, ItemForeignMod, ItemExternCrate,
+    ReturnType, Type, Visibility as SynVisibility, WhereClause as SynWhereClause,
     WherePredicate,
 };
 
@@ -60,6 +60,8 @@ impl SynParser {
             SynItem::Static(static_item) => self.parse_static(static_item, source, module_path, skeleton),
             SynItem::Mod(mod_item) => self.parse_module(mod_item, source, module_path, skeleton),
             SynItem::Use(use_item) => self.parse_use(use_item, source, module_path, skeleton),
+            SynItem::ForeignMod(foreign_mod) => self.parse_foreign_mod(foreign_mod, source, module_path, skeleton),
+            SynItem::ExternCrate(extern_crate) => self.parse_extern_crate(extern_crate, source, module_path, skeleton),
             _ => Err(anyhow!("Unsupported item type: {:?}", item)),
         }
     }
@@ -173,9 +175,37 @@ impl SynParser {
         let signature = self.extract_trait_signature(&item);
         let generic_params = self.extract_generic_params(&item.generics);
         let where_clauses = self.extract_where_clauses(&item.generics.where_clause);
-        let attributes = self.extract_attributes(&item.attrs);
+        let mut attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
+        // Detect async trait: check for #[async_trait] attribute or async fn methods
+        let has_async_trait_attr = item.attrs.iter().any(|a| a.path().is_ident("async_trait"));
+        let has_async_methods = item.items.iter().any(|ti| {
+            if let syn::TraitItem::Fn(method) = ti {
+                method.sig.asyncness.is_some()
+            } else {
+                false
+            }
+        });
+
+        if has_async_trait_attr || has_async_methods {
+            attributes.push("async_trait=true".to_string());
+        }
+
+        // Collect async method names for downstream consumers
+        let async_methods: Vec<String> = item.items.iter().filter_map(|ti| {
+            if let syn::TraitItem::Fn(method) = ti {
+                if method.sig.asyncness.is_some() {
+                    return Some(method.sig.ident.to_string());
+                }
+            }
+            None
+        }).collect();
+
+        if !async_methods.is_empty() {
+            attributes.push(format!("async_methods={}", async_methods.join(",")));
+        }
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Trait,
@@ -394,6 +424,73 @@ impl SynParser {
         })
     }
     
+    /// Parse a foreign mod (extern block)
+    fn parse_foreign_mod(
+        &self,
+        item: ItemForeignMod,
+        source: &str,
+        module_path: &str,
+        skeleton: &SkeletonItem,
+    ) -> Result<ParsedItem> {
+        let abi_name = item.abi.name
+            .as_ref()
+            .map(|n| n.value())
+            .unwrap_or_else(|| "C".to_string());
+        let name = format!("extern_{}", abi_name);
+        let signature = format!("extern \"{}\"", abi_name);
+        let attributes = self.extract_attributes(&item.attrs);
+        let doc_comment = self.extract_doc_from_attrs(&item.attrs);
+
+        Ok(ParsedItem {
+            fqn: format!("{}::{}", module_path, name),
+            item_type: ItemType::ExternBlock,
+            name,
+            visibility: Visibility::Public,
+            signature,
+            generic_params: Vec::new(),
+            where_clauses: Vec::new(),
+            attributes,
+            doc_comment,
+            start_line: skeleton.start_line,
+            end_line: skeleton.end_line,
+            body_source: source.to_string(),
+        })
+    }
+
+    /// Parse an extern crate declaration
+    fn parse_extern_crate(
+        &self,
+        item: ItemExternCrate,
+        source: &str,
+        module_path: &str,
+        skeleton: &SkeletonItem,
+    ) -> Result<ParsedItem> {
+        let name = item.ident.to_string();
+        let visibility = self.convert_visibility(&item.vis);
+        let signature = if let Some((_, rename)) = &item.rename {
+            format!("extern crate {} as {}", name, rename)
+        } else {
+            format!("extern crate {}", name)
+        };
+        let attributes = self.extract_attributes(&item.attrs);
+        let doc_comment = self.extract_doc_from_attrs(&item.attrs);
+
+        Ok(ParsedItem {
+            fqn: format!("{}::{}", module_path, name),
+            item_type: ItemType::ExternBlock,
+            name,
+            visibility,
+            signature,
+            generic_params: Vec::new(),
+            where_clauses: Vec::new(),
+            attributes,
+            doc_comment,
+            start_line: skeleton.start_line,
+            end_line: skeleton.end_line,
+            body_source: source.to_string(),
+        })
+    }
+
     // ========================================================================
     // Helper Methods
     // ========================================================================
@@ -506,13 +603,33 @@ impl SynParser {
     
     /// Extract attributes as strings
     fn extract_attributes(&self, attrs: &[Attribute]) -> Vec<String> {
-        attrs
+        let mut result: Vec<String> = attrs
             .iter()
             .filter(|attr| {
                 // Skip doc attributes as they're handled separately
                 !attr.path().is_ident("doc")
             })
             .map(|attr| attr.to_token_stream().to_string())
+            .collect();
+
+        // Extract cfg conditions as structured metadata for downstream consumers
+        let cfg_conditions = self.extract_cfg_conditions(attrs);
+        if !cfg_conditions.is_empty() {
+            result.push(format!("cfg_conditions={}", cfg_conditions.join(";")));
+        }
+
+        result
+    }
+
+    /// Extract #[cfg(...)] conditions from attributes
+    fn extract_cfg_conditions(&self, attrs: &[Attribute]) -> Vec<String> {
+        attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("cfg"))
+            .map(|attr| {
+                // Get the token stream inside the cfg(...)
+                attr.meta.to_token_stream().to_string()
+            })
             .collect()
     }
     
@@ -871,12 +988,119 @@ pub struct Point {
 /// It does something useful.
 #[doc = "More docs"]
 pub fn test() {}"#;
-        
+
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
-        
+
         assert!(result.doc_comment.contains("This is a test function"));
         assert!(result.doc_comment.contains("It does something useful"));
         assert!(result.doc_comment.contains("More docs"));
+    }
+
+    #[test]
+    fn test_parse_extern_block() {
+        let parser = SynParser::new();
+        let source = r#"extern "C" {
+    fn printf(format: *const i8, ...) -> i32;
+    fn malloc(size: usize) -> *mut u8;
+}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        assert!(matches!(result.item_type, ItemType::ExternBlock));
+        assert_eq!(result.name, "extern_C");
+        assert!(result.signature.contains("extern \"C\""));
+    }
+
+    #[test]
+    fn test_parse_extern_crate() {
+        let parser = SynParser::new();
+        let source = "extern crate serde;";
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        assert!(matches!(result.item_type, ItemType::ExternBlock));
+        assert_eq!(result.name, "serde");
+        assert!(result.signature.contains("extern crate serde"));
+    }
+
+    #[test]
+    fn test_parse_extern_crate_renamed() {
+        let parser = SynParser::new();
+        let source = "extern crate serde as serde_lib;";
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        assert!(matches!(result.item_type, ItemType::ExternBlock));
+        assert_eq!(result.name, "serde");
+        assert!(result.signature.contains("as serde_lib"));
+    }
+
+    #[test]
+    fn test_parse_async_trait() {
+        let parser = SynParser::new();
+        let source = r#"pub trait AsyncService {
+    async fn connect(&self) -> Result<(), Error>;
+    async fn disconnect(&self);
+    fn name(&self) -> &str;
+}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        assert!(matches!(result.item_type, ItemType::Trait));
+        assert_eq!(result.name, "AsyncService");
+        assert!(result.attributes.iter().any(|a| a == "async_trait=true"));
+        assert!(result.attributes.iter().any(|a| a.starts_with("async_methods=")));
+        // Verify the async method names are tracked
+        let async_methods_attr = result.attributes.iter()
+            .find(|a| a.starts_with("async_methods="))
+            .unwrap();
+        assert!(async_methods_attr.contains("connect"));
+        assert!(async_methods_attr.contains("disconnect"));
+        assert!(!async_methods_attr.contains("name"));
+    }
+
+    #[test]
+    fn test_parse_sync_trait_no_async_marker() {
+        let parser = SynParser::new();
+        let source = r#"pub trait SyncService {
+    fn process(&self) -> bool;
+}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        assert!(matches!(result.item_type, ItemType::Trait));
+        assert!(!result.attributes.iter().any(|a| a == "async_trait=true"));
+        assert!(!result.attributes.iter().any(|a| a.starts_with("async_methods=")));
+    }
+
+    #[test]
+    fn test_cfg_condition_extraction() {
+        let parser = SynParser::new();
+        let source = r#"#[cfg(feature = "async")]
+#[cfg(target_os = "linux")]
+pub fn platform_specific() {}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        // Should have the raw cfg attributes
+        assert!(result.attributes.iter().any(|a| a.contains("cfg")));
+        // Should have the structured cfg_conditions metadata
+        let cfg_attr = result.attributes.iter()
+            .find(|a| a.starts_with("cfg_conditions="))
+            .expect("Should have cfg_conditions attribute");
+        assert!(cfg_attr.contains("feature"));
+        assert!(cfg_attr.contains("target_os"));
+    }
+
+    #[test]
+    fn test_no_cfg_conditions_when_absent() {
+        let parser = SynParser::new();
+        let source = r#"#[derive(Clone)]
+pub fn simple() {}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let result = parser.parse_item(source, "test", &skeleton).unwrap();
+
+        assert!(!result.attributes.iter().any(|a| a.starts_with("cfg_conditions=")));
     }
 }
