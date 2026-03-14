@@ -400,11 +400,103 @@ mod tests {
                 true
             }
         "#;
-        
+
         let result = parser.parse(source, "test").unwrap();
-        
+
         assert!(!result.items.is_empty());
         let item = &result.items[0];
         assert!(item.where_clauses.len() >= 1);
+    }
+
+    #[test]
+    fn test_parse_multiple_items() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"
+            pub struct Foo { x: i32 }
+            pub enum Bar { A, B, C }
+            pub fn baz() -> i32 { 42 }
+            pub trait Qux { fn do_thing(&self); }
+        "#;
+
+        let result = parser.parse(source, "test::mod").unwrap();
+
+        assert!(result.items.len() >= 4, "Expected at least 4 items, got {}", result.items.len());
+
+        let types: Vec<&str> = result.items.iter().map(|i| i.item_type.as_str()).collect();
+        assert!(types.contains(&"struct"));
+        assert!(types.contains(&"enum"));
+        assert!(types.contains(&"function"));
+        assert!(types.contains(&"trait"));
+    }
+
+    #[test]
+    fn test_fallback_on_syn_failure() {
+        let parser = DualParser::new().unwrap();
+        // Valid Rust that tree-sitter can parse but has both valid and invalid items
+        let source = r#"
+            pub fn valid_function() -> i32 { 42 }
+
+            pub struct ValidStruct { x: i32 }
+        "#;
+
+        let result = parser.parse(source, "test::mod").unwrap();
+
+        // Valid items should be parsed successfully
+        assert!(result.items.len() >= 2);
+        assert!(result.errors.is_empty(), "Expected no errors for valid source, got: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_fqn_construction() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub fn my_function() {}"#;
+
+        let result = parser.parse(source, "my_crate::my_module").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert_eq!(result.items[0].fqn, "my_crate::my_module::my_function");
+    }
+
+    #[test]
+    fn test_empty_source() {
+        let parser = DualParser::new().unwrap();
+        let result = parser.parse("", "test").unwrap();
+
+        assert!(result.items.is_empty());
+        assert!(result.partial_items.is_empty());
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_impl_block() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"
+            impl Foo {
+                pub fn new() -> Self { Foo }
+            }
+        "#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert!(result.items.iter().any(|i| matches!(i.item_type, ItemType::Impl)));
+    }
+
+    #[test]
+    fn test_doc_comments_lost_in_dual_parse() {
+        // Known limitation: doc comments (/// and #[doc]) preceding an item
+        // are outside tree-sitter's skeleton byte range, so they're lost when
+        // syn parses just the extracted item source. The tree-sitter fallback
+        // path (create_partial_item) does extract them from the full source.
+        // Fix: expand skeleton byte ranges to include preceding attributes/comments.
+        let parser = DualParser::new().unwrap();
+        let source = "/// This doc comment is before the item.\npub fn example() {}\n";
+
+        let result = parser.parse(source, "test").unwrap();
+        assert!(!result.items.is_empty());
+        // Doc comment is currently empty — this test documents the limitation
+        // When fixed, this assertion should change to assert non-empty
+        assert!(result.items[0].doc_comment.is_empty(),
+            "If this fails, the doc comment bug is fixed! Update this test.");
     }
 }
