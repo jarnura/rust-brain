@@ -21,6 +21,15 @@ use walkdir::WalkDir;
 /// Default timeout for cargo expand (5 minutes)
 const CARGO_EXPAND_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Compute a SHA-256 content hash of a string, returning a hex-encoded string.
+fn compute_content_hash(content: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// Maximum retries for transient network failures
 const MAX_RETRIES: usize = 3;
 
@@ -423,15 +432,17 @@ impl PipelineStage for ExpandStage {
             for file_path in source_files {
                 if let Ok(source) = std::fs::read_to_string(&file_path) {
                     let module_path = compute_module_path(crate_path, &file_path, &crate_name);
-                    
+                    let content_hash = compute_content_hash(&source);
+
                     state.source_files.push(SourceFileInfo {
                         path: file_path.clone(),
                         crate_name: crate_name.clone(),
                         module_path,
                         original_source: source,
                         git_hash: git_hash.clone(),
+                        content_hash,
                     });
-                    
+
                     if let Some(ref expanded_source) = expanded {
                         state.expanded_sources.insert(file_path, expanded_source.clone());
                     }
@@ -723,22 +734,50 @@ impl ExtractStage {
         Ok(())
     }
     
-    /// Store a source file in the database and return its ID
+    /// Check if a source file has changed since last indexing by comparing content hashes.
+    /// Returns Some(existing_id) if unchanged, None if changed or new.
+    async fn check_file_unchanged(&self, file_info: &SourceFileInfo) -> Result<Option<Uuid>> {
+        let pool = self.pool.as_ref()
+            .ok_or_else(|| anyhow!("Database not connected"))?;
+
+        let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT id, content_hash FROM source_files
+            WHERE crate_name = $1 AND module_path = $2 AND file_path = $3
+            "#
+        )
+        .bind(&file_info.crate_name)
+        .bind(&file_info.module_path)
+        .bind(file_info.path.to_string_lossy().to_string())
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some((id, Some(existing_hash))) = row {
+            if existing_hash == file_info.content_hash {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Store a source file in the database and return its ID.
+    /// Includes content_hash for incremental change detection.
     async fn store_source_file(&self, file_info: &SourceFileInfo, expanded_source: Option<&str>) -> Result<Uuid> {
         let pool = self.pool.as_ref()
             .ok_or_else(|| anyhow!("Database not connected"))?;
-        
+
         let id = Uuid::new_v4();
-        
+
         sqlx::query(
             r#"
-            INSERT INTO source_files 
-                (id, crate_name, module_path, file_path, original_source, expanded_source, git_hash)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO source_files
+                (id, crate_name, module_path, file_path, original_source, expanded_source, git_hash, content_hash)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (crate_name, module_path, file_path) DO UPDATE SET
                 original_source = EXCLUDED.original_source,
                 expanded_source = EXCLUDED.expanded_source,
                 git_hash = EXCLUDED.git_hash,
+                content_hash = EXCLUDED.content_hash,
                 last_indexed_at = NOW(),
                 updated_at = NOW()
             RETURNING id
@@ -751,9 +790,10 @@ impl ExtractStage {
         .bind(&file_info.original_source)
         .bind(expanded_source)
         .bind(&file_info.git_hash)
+        .bind(&file_info.content_hash)
         .fetch_one(pool)
         .await?;
-        
+
         Ok(id)
     }
     
@@ -851,9 +891,26 @@ impl PipelineStage for ExtractStage {
         let mut failed_count = 0;
         
         // Step 1: Store source files in database and build path -> ID mapping
+        // Use incremental detection: skip files whose content hash hasn't changed
         let mut source_file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
-        
+        let mut skipped_unchanged = 0;
+
         for file_info in &source_files {
+            // Check if file is unchanged since last indexing
+            match stage.check_file_unchanged(file_info).await {
+                Ok(Some(existing_id)) => {
+                    debug!("Skipping unchanged file {:?} (hash: {})", file_info.path, file_info.content_hash);
+                    source_file_ids.insert(file_info.path.clone(), existing_id);
+                    skipped_unchanged += 1;
+                    continue;
+                }
+                Ok(None) => {} // File is new or changed, proceed with storage
+                Err(e) => {
+                    // If hash check fails (e.g., column doesn't exist yet), proceed with storage
+                    debug!("Content hash check failed for {:?}, will re-index: {}", file_info.path, e);
+                }
+            }
+
             let expanded = expanded_sources.get(&file_info.path);
             match stage.store_source_file(file_info, expanded.map(|s| s.as_str())).await {
                 Ok(id) => {
@@ -866,6 +923,10 @@ impl PipelineStage for ExtractStage {
                         .with_context(file_info.path.display().to_string()));
                 }
             }
+        }
+
+        if skipped_unchanged > 0 {
+            info!("Skipped {} unchanged files (incremental mode)", skipped_unchanged);
         }
         
         // Step 2: Extract parsed items with source_file_id
@@ -2115,5 +2176,39 @@ mod tests {
     #[test]
     fn test_max_retries_constant() {
         assert_eq!(MAX_RETRIES, 3);
+    }
+
+    #[test]
+    fn test_compute_content_hash_deterministic() {
+        let hash1 = compute_content_hash("fn main() {}");
+        let hash2 = compute_content_hash("fn main() {}");
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 16);
+    }
+
+    #[test]
+    fn test_compute_content_hash_different_content() {
+        let hash1 = compute_content_hash("fn main() {}");
+        let hash2 = compute_content_hash("fn main() { println!(\"hello\"); }");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_content_hash_empty() {
+        let hash = compute_content_hash("");
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn test_source_file_info_content_hash() {
+        let info = SourceFileInfo {
+            path: PathBuf::from("src/main.rs"),
+            crate_name: "test".to_string(),
+            module_path: "test".to_string(),
+            original_source: "fn main() {}".to_string(),
+            git_hash: None,
+            content_hash: compute_content_hash("fn main() {}"),
+        };
+        assert_eq!(info.content_hash.len(), 16);
     }
 }

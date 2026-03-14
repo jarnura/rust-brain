@@ -149,6 +149,8 @@ pub struct SourceFileInfo {
     pub module_path: String,
     pub original_source: String,
     pub git_hash: Option<String>,
+    /// SHA-256 content hash for change detection
+    pub content_hash: String,
 }
 
 /// Simplified parsed item info for state tracking
