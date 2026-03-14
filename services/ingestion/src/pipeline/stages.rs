@@ -1501,22 +1501,49 @@ impl PipelineStage for GraphStage {
         for (_path, items) in &parsed_items {
             for item in items {
                 if (item.item_type == "function" || item.item_type == "impl") && !item.body_source.is_empty() {
+                    // Static/free function calls
                     let calls = Self::extract_function_calls(&item.body_source, &function_fqns, &function_names_to_fqns, &item.fqn);
-                    for (callee_fqn, line) in calls {
+                    for (callee_fqn, line) in &calls {
                         relationships.push(RelationshipBuilder::create_calls(
                             item.fqn.clone(),
-                            callee_fqn,
-                            line,
-                            "", // file path not needed here
-                            Vec::new(), // concrete_types - would need type inference
-                            true, // is_static_dispatch - simplified assumption
+                            callee_fqn.clone(),
+                            *line,
+                            "",
+                            Vec::new(),
+                            true, // is_static_dispatch
                         ));
                         calls_count += 1;
+                    }
+
+                    // Method calls with local type tracking
+                    let self_type = if item.item_type == "impl" {
+                        Some(item.name.as_str())
+                    } else {
+                        None
+                    };
+                    let method_calls = Self::extract_method_calls(
+                        &item.body_source,
+                        &function_names_to_fqns,
+                        self_type,
+                    );
+                    for (callee_fqn, line) in &method_calls {
+                        // Avoid duplicate entries
+                        if !calls.iter().any(|(fqn, _)| fqn == callee_fqn) {
+                            relationships.push(RelationshipBuilder::create_calls(
+                                item.fqn.clone(),
+                                callee_fqn.clone(),
+                                *line,
+                                "",
+                                Vec::new(),
+                                false, // is_static_dispatch = false for method calls
+                            ));
+                            calls_count += 1;
+                        }
                     }
                 }
             }
         }
-        info!("Created {} CALLS relationships", calls_count);
+        info!("Created {} CALLS relationships (including method calls)", calls_count);
         
         // Batch insert relationships
         let relationship_count = relationships.len();
@@ -1726,6 +1753,76 @@ impl GraphStage {
         calls
     }
     
+    /// Extract method calls from body source by tracking local variable types.
+    ///
+    /// Handles patterns like:
+    /// - `let x: Type = ...;` then `x.method()`
+    /// - `let x = Type::new();` then `x.method()`
+    /// - `self.method()` where self type is known from context
+    fn extract_method_calls(
+        body_source: &str,
+        function_names_to_fqns: &std::collections::HashMap<String, Vec<String>>,
+        self_type: Option<&str>,
+    ) -> Vec<(String, usize)> {
+        let mut calls = Vec::new();
+        let mut local_types: HashMap<String, String> = HashMap::new();
+
+        // Track local variable types from let bindings
+        let type_annotation_re = regex::Regex::new(r"let\s+(?:mut\s+)?(\w+)\s*:\s*([A-Z]\w+)").unwrap();
+        let constructor_re = regex::Regex::new(r"let\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w+)::").unwrap();
+
+        for line in body_source.lines() {
+            let trimmed = line.trim();
+            // Track type annotations: let x: Type = ...
+            if let Some(caps) = type_annotation_re.captures(trimmed) {
+                let var_name = caps.get(1).unwrap().as_str().to_string();
+                let type_name = caps.get(2).unwrap().as_str().to_string();
+                local_types.insert(var_name, type_name);
+            }
+            // Track constructor calls: let x = Type::new()
+            if let Some(caps) = constructor_re.captures(trimmed) {
+                let var_name = caps.get(1).unwrap().as_str().to_string();
+                let type_name = caps.get(2).unwrap().as_str().to_string();
+                local_types.insert(var_name, type_name);
+            }
+        }
+
+        // Now find method calls on tracked variables and self
+        let method_call_re = regex::Regex::new(r"(\w+)\.(\w+)\s*\(").unwrap();
+
+        for (line_num, line) in body_source.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || trimmed.starts_with("#") {
+                continue;
+            }
+
+            for caps in method_call_re.captures_iter(trimmed) {
+                let receiver = caps.get(1).unwrap().as_str();
+                let method = caps.get(2).unwrap().as_str();
+
+                // Determine the receiver type
+                let receiver_type = if receiver == "self" || receiver == "Self" {
+                    self_type.map(|s| s.to_string())
+                } else {
+                    local_types.get(receiver).cloned()
+                };
+
+                if let Some(type_name) = receiver_type {
+                    // Look for Type::method in known functions
+                    let qualified = format!("{}::{}", type_name, method);
+                    if let Some(fqns) = function_names_to_fqns.get(method) {
+                        // Find FQN that contains the type name
+                        if let Some(fqn) = fqns.iter().find(|f| f.contains(&format!("::{}", qualified)) || f.ends_with(&qualified)) {
+                            calls.push((fqn.clone(), line_num + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        calls
+    }
+
     /// Resolve a call target identifier to an FQN
     fn resolve_call_target(
         identifier: &str,
@@ -2210,5 +2307,56 @@ mod tests {
             content_hash: compute_content_hash("fn main() {}"),
         };
         assert_eq!(info.content_hash.len(), 16);
+    }
+
+    #[test]
+    fn test_extract_method_calls_with_type_annotation() {
+        let body = r#"
+            let client: HttpClient = HttpClient::new();
+            client.get("/api");
+            client.post("/data");
+        "#;
+        let mut names_to_fqns = std::collections::HashMap::new();
+        names_to_fqns.insert("get".to_string(), vec!["crate::HttpClient::get".to_string()]);
+        names_to_fqns.insert("post".to_string(), vec!["crate::HttpClient::post".to_string()]);
+
+        let calls = GraphStage::extract_method_calls(body, &names_to_fqns, None);
+        assert!(!calls.is_empty(), "Should detect method calls on typed variables");
+    }
+
+    #[test]
+    fn test_extract_method_calls_with_constructor() {
+        let body = r#"
+            let parser = DualParser::new();
+            parser.parse("source");
+        "#;
+        let mut names_to_fqns = std::collections::HashMap::new();
+        names_to_fqns.insert("parse".to_string(), vec!["crate::DualParser::parse".to_string()]);
+
+        let calls = GraphStage::extract_method_calls(body, &names_to_fqns, None);
+        assert!(!calls.is_empty(), "Should detect method calls on constructor-inferred variables");
+    }
+
+    #[test]
+    fn test_extract_method_calls_on_self() {
+        let body = r#"
+            self.process_item(item);
+        "#;
+        let mut names_to_fqns = std::collections::HashMap::new();
+        names_to_fqns.insert("process_item".to_string(), vec!["crate::MyStruct::process_item".to_string()]);
+
+        let calls = GraphStage::extract_method_calls(body, &names_to_fqns, Some("MyStruct"));
+        assert!(!calls.is_empty(), "Should detect self.method() calls");
+    }
+
+    #[test]
+    fn test_extract_method_calls_skips_comments() {
+        let body = r#"
+            // client.get("/api");
+            # client.post("/data");
+        "#;
+        let names_to_fqns = std::collections::HashMap::new();
+        let calls = GraphStage::extract_method_calls(body, &names_to_fqns, None);
+        assert!(calls.is_empty(), "Should skip comments");
     }
 }

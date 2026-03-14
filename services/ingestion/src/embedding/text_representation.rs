@@ -5,8 +5,11 @@
 
 use crate::parsers::{GenericParam, ItemType, ParsedItem, Visibility, WhereClause};
 
-/// Maximum lines to include in body preview
-const MAX_BODY_PREVIEW_LINES: usize = 10;
+/// Maximum lines to include in body preview for long items
+const MAX_BODY_PREVIEW_LINES: usize = 20;
+
+/// Items shorter than this get their full body included
+const FULL_BODY_THRESHOLD_LINES: usize = 50;
 
 /// Text representation of a parsed item for embedding
 #[derive(Debug, Clone)]
@@ -534,12 +537,39 @@ fn extract_return_type_from_signature(signature: &str) -> String {
 
 /// Extract body preview (first N lines)
 fn extract_body_preview(body: &str, max_lines: usize) -> String {
-    body.lines()
-        .take(max_lines)
+    let line_count = body.lines().count();
+
+    // Include full body for short items (better embedding quality)
+    if line_count <= FULL_BODY_THRESHOLD_LINES {
+        return body.lines()
+            .enumerate()
+            .map(|(i, line)| format!("{:4}: {}", i + 1, line))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    // For longer items, show beginning and end for context
+    let head_lines = max_lines * 2 / 3; // ~13 lines from top
+    let tail_lines = max_lines - head_lines; // ~7 lines from bottom
+
+    let head: Vec<String> = body.lines()
+        .take(head_lines)
         .enumerate()
         .map(|(i, line)| format!("{:4}: {}", i + 1, line))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+
+    let all_lines: Vec<&str> = body.lines().collect();
+    let tail_start = line_count.saturating_sub(tail_lines);
+    let tail: Vec<String> = all_lines[tail_start..]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{:4}: {}", tail_start + i + 1, line))
+        .collect();
+
+    let mut result = head;
+    result.push(format!("  ... ({} lines omitted) ...", line_count - head_lines - tail_lines));
+    result.extend(tail);
+    result.join("\n")
 }
 
 /// Format doc comment for embedding
@@ -1067,5 +1097,35 @@ mod tests {
         let result = generics_to_string(&generics);
         assert!(result.contains("T: Clone + Send"));
         assert!(result.contains("'a"));
+    }
+
+    #[test]
+    fn test_body_preview_short_item_includes_full_body() {
+        // Items under FULL_BODY_THRESHOLD_LINES should include full body
+        let body = (1..=10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let preview = extract_body_preview(&body, MAX_BODY_PREVIEW_LINES);
+        // All 10 lines should be present
+        assert!(preview.contains("line 1"));
+        assert!(preview.contains("line 10"));
+        assert!(!preview.contains("omitted"));
+    }
+
+    #[test]
+    fn test_body_preview_long_item_shows_head_and_tail() {
+        // Items over FULL_BODY_THRESHOLD_LINES should show head + tail
+        let body = (1..=100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let preview = extract_body_preview(&body, MAX_BODY_PREVIEW_LINES);
+        // Should have head lines
+        assert!(preview.contains("line 1"));
+        // Should have tail lines
+        assert!(preview.contains("line 100"));
+        // Should have omission indicator
+        assert!(preview.contains("omitted"));
+    }
+
+    #[test]
+    fn test_full_body_threshold() {
+        assert_eq!(FULL_BODY_THRESHOLD_LINES, 50);
+        assert_eq!(MAX_BODY_PREVIEW_LINES, 20);
     }
 }
