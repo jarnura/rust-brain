@@ -643,6 +643,7 @@ mod tests {
             start_line: 10,
             end_line: 15,
             body_source: "pub fn test_fn(x: i32) -> bool { x > 0 }".to_string(),
+            generated_by: None,
         }
     }
     

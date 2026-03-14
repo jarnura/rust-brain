@@ -228,9 +228,7 @@ async fn check_get_function(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No Function nodes in Neo4j".to_string());
@@ -265,9 +263,7 @@ async fn check_get_callers(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No CALLS relationships found in Neo4j".to_string());
@@ -289,9 +285,7 @@ async fn check_get_callers(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No Function nodes exist (required for caller analysis)".to_string());
@@ -321,9 +315,7 @@ async fn check_trait_impls(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No Trait nodes found in Neo4j".to_string());
@@ -345,9 +337,7 @@ async fn check_trait_impls(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No IMPLEMENTS relationships found".to_string());
@@ -379,9 +369,7 @@ async fn check_find_usages(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No Type nodes found in Neo4j".to_string());
@@ -403,9 +391,7 @@ async fn check_find_usages(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No USES_TYPE relationships found".to_string());
@@ -437,9 +423,7 @@ async fn check_module_tree(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No Module nodes found in Neo4j".to_string());
@@ -461,9 +445,7 @@ async fn check_module_tree(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No Crate nodes found".to_string());
@@ -482,9 +464,7 @@ async fn check_module_tree(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("No CONTAINS relationships (module hierarchy not built)".to_string());
@@ -517,7 +497,7 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
     ).await {
         Ok(results) => {
             let test_val = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("test")?.as_i64());
+                .and_then(|r| r.as_array()?.first()?.as_i64());
             
             if test_val == Some(1) {
                 details.push("Neo4j Cypher queries are working".to_string());
@@ -539,9 +519,7 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
         serde_json::json!({})
     ).await {
         Ok(results) => {
-            let count = results.first()
-                .and_then(|r| r.as_array()?.first()?.get("count")?.as_i64())
-                .unwrap_or(0) as usize;
+            let count = extract_count(&results);
             
             if count == 0 {
                 details.push("Neo4j has no nodes - database is empty".to_string());
@@ -565,6 +543,20 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
 // Data Quality Assessment
 // =============================================================================
 
+/// Helper to extract count from Neo4j row result (returns array format)
+fn extract_count(results: &[serde_json::Value]) -> usize {
+    results.first()
+        .and_then(|r| r.as_array()?.first()?.as_i64())
+        .unwrap_or(0) as usize
+}
+
+/// Helper to extract boolean from Neo4j row result
+fn extract_bool(results: &[serde_json::Value]) -> bool {
+    results.first()
+        .and_then(|r| r.as_array()?.first()?.as_bool())
+        .unwrap_or(false)
+}
+
 async fn get_data_quality(state: &AppState) -> DataQuality {
     // Get Neo4j node count
     let neo4j_nodes = execute_neo4j_query(
@@ -572,9 +564,8 @@ async fn get_data_quality(state: &AppState) -> DataQuality {
         "MATCH (n) RETURN count(n) as count",
         serde_json::json!({})
     ).await
-        .ok()
-        .and_then(|r| r.first().and_then(|v| v.as_array()?.first()?.get("count")?.as_i64()))
-        .unwrap_or(0) as usize;
+        .map(|r| extract_count(&r))
+        .unwrap_or(0);
     
     // Get Neo4j relationship count
     let neo4j_relationships = execute_neo4j_query(
@@ -582,9 +573,8 @@ async fn get_data_quality(state: &AppState) -> DataQuality {
         "MATCH ()-[r]->() RETURN count(r) as count",
         serde_json::json!({})
     ).await
-        .ok()
-        .and_then(|r| r.first().and_then(|v| v.as_array()?.first()?.get("count")?.as_i64()))
-        .unwrap_or(0) as usize;
+        .map(|r| extract_count(&r))
+        .unwrap_or(0);
     
     // Get Qdrant point count
     let qdrant_points = match state.http_client
@@ -619,8 +609,7 @@ async fn get_data_quality(state: &AppState) -> DataQuality {
         "MATCH ()-[r:CALLS]->() RETURN count(r) > 0 as has",
         serde_json::json!({})
     ).await
-        .ok()
-        .and_then(|r| r.first().and_then(|v| v.as_array()?.first()?.get("has")?.as_bool()))
+        .map(|r| extract_bool(&r))
         .unwrap_or(false);
     
     // Check for trait implementations (IMPLEMENTS relationships exist)
@@ -629,8 +618,7 @@ async fn get_data_quality(state: &AppState) -> DataQuality {
         "MATCH ()-[r:IMPLEMENTS]->() RETURN count(r) > 0 as has",
         serde_json::json!({})
     ).await
-        .ok()
-        .and_then(|r| r.first().and_then(|v| v.as_array()?.first()?.get("has")?.as_bool()))
+        .map(|r| extract_bool(&r))
         .unwrap_or(false);
     
     DataQuality {

@@ -94,6 +94,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -126,6 +127,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -158,6 +160,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -190,6 +193,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -241,6 +245,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None, // Will be set by DeriveDetector
         })
     }
     
@@ -273,6 +278,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -303,6 +309,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -333,6 +340,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -363,6 +371,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     
@@ -392,6 +401,7 @@ impl SynParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: source.to_string(),
+            generated_by: None,
         })
     }
     

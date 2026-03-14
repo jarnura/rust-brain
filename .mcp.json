@@ -1,0 +1,178 @@
+{
+  "mcpServers": {
+    "rust-brain": {
+      "type": "http",
+      "url": "http://localhost:8080",
+      "description": "Rust code intelligence MCP server - provides semantic search, call graph traversal, trait resolution, and code analysis tools",
+      "tools": [
+        {
+          "name": "search_semantic",
+          "description": "Search for Rust code using natural language queries. Returns matching functions, structs, enums, traits with relevance scores.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Natural language search query describing what code you're looking for"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return",
+                "default": 10
+              },
+              "filters": {
+                "type": "object",
+                "properties": {
+                  "item_type": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["function", "struct", "enum", "trait", "impl"]
+                    },
+                    "description": "Filter by item types"
+                  },
+                  "crate_name": {
+                    "type": "string",
+                    "description": "Filter by source crate name"
+                  },
+                  "visibility": {
+                    "type": "string",
+                    "enum": ["pub", "pub(crate)", "private"],
+                    "description": "Filter by visibility"
+                  }
+                }
+              }
+            },
+            "required": ["query"]
+          }
+        },
+        {
+          "name": "get_function",
+          "description": "Get full details for a specific function by its fully qualified name, including source code, parameters, return type, and callers.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "fqn": {
+                "type": "string",
+                "description": "Fully qualified name of the function (e.g., 'serde_json::from_str')"
+              },
+              "include_body": {
+                "type": "boolean",
+                "description": "Include function body source code",
+                "default": true
+              },
+              "include_callers": {
+                "type": "boolean",
+                "description": "Include list of direct callers",
+                "default": false
+              }
+            },
+            "required": ["fqn"]
+          }
+        },
+        {
+          "name": "get_callers",
+          "description": "Find all functions that call the specified function, including transitive callers up to a specified depth.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "fqn": {
+                "type": "string",
+                "description": "Fully qualified name of the callee function"
+              },
+              "depth": {
+                "type": "integer",
+                "description": "Call depth to traverse (1=direct callers only, 2=callers of callers, etc.)",
+                "default": 1,
+                "minimum": 1,
+                "maximum": 10
+              },
+              "include_monomorphized": {
+                "type": "boolean",
+                "description": "Include monomorphized call sites",
+                "default": true
+              }
+            },
+            "required": ["fqn"]
+          }
+        },
+        {
+          "name": "get_trait_impls",
+          "description": "List all implementations of a specific trait in the codebase.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "trait_name": {
+                "type": "string",
+                "description": "Fully qualified name of the trait (e.g., 'serde::Serialize')"
+              },
+              "include_methods": {
+                "type": "boolean",
+                "description": "Include implemented methods in the response",
+                "default": false
+              }
+            },
+            "required": ["trait_name"]
+          }
+        },
+        {
+          "name": "find_usages_of_type",
+          "description": "Find all locations where a specific type is used in the codebase.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "type_name": {
+                "type": "string",
+                "description": "Fully qualified name of the type"
+              },
+              "usage_type": {
+                "type": "string",
+                "enum": ["parameter", "return", "field", "all"],
+                "description": "Filter by how the type is used",
+                "default": "all"
+              }
+            },
+            "required": ["type_name"]
+          }
+        },
+        {
+          "name": "get_module_tree",
+          "description": "Get the module hierarchy for a crate, showing nested modules and their items.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "crate": {
+                "type": "string",
+                "description": "Name of the crate"
+              },
+              "include_items": {
+                "type": "boolean",
+                "description": "Include items (functions, structs, etc.) in each module",
+                "default": false
+              }
+            },
+            "required": ["crate"]
+          }
+        },
+        {
+          "name": "query_graph",
+          "description": "Execute raw Cypher queries against the Neo4j graph database. Use for advanced queries not covered by other tools.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Cypher query string (READ operations only)"
+              },
+              "parameters": {
+                "type": "object",
+                "description": "Query parameters for parameterized queries"
+              }
+            },
+            "required": ["query"]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS extracted_items (
     generic_params JSONB DEFAULT '[]',
     where_clauses JSONB DEFAULT '[]',
     attributes JSONB DEFAULT '[]',
+    generated_by TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -65,6 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_extracted_items_type ON extracted_items(item_type
 CREATE INDEX IF NOT EXISTS idx_extracted_items_name ON extracted_items(name);
 CREATE INDEX IF NOT EXISTS idx_extracted_items_source ON extracted_items(source_file_id);
 CREATE INDEX IF NOT EXISTS idx_extracted_items_crate ON extracted_items(fqn text_pattern_ops);
+CREATE INDEX IF NOT EXISTS idx_extracted_items_generated_by ON extracted_items(generated_by);
 
 -- GIN index for generic_params and attributes JSONB queries
 CREATE INDEX IF NOT EXISTS idx_extracted_items_generic ON extracted_items USING GIN(generic_params);

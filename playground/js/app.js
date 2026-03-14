@@ -3,13 +3,14 @@
  * Common utilities and API helpers
  */
 
-// Configuration
+// Configuration - use current host for all API calls
+const _host = window.location.hostname;
 const CONFIG = {
-    apiBase: 'http://localhost:8080',
-    qdrantBase: 'http://localhost:6333',
-    neo4jBase: 'http://localhost:7474',
-    ollamaBase: 'http://localhost:11434',
-    grafanaBase: 'http://localhost:3000',
+    apiBase: `http://${_host}:8088`,
+    qdrantBase: `http://${_host}:6333`,
+    neo4jBase: `http://${_host}:7474`,
+    ollamaBase: `http://${_host}:11434`,
+    grafanaBase: `http://${_host}:3000`,
     timeout: 30000
 };
 

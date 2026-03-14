@@ -164,6 +164,9 @@ pub struct ParsedItemInfo {
     pub start_line: usize,
     pub end_line: usize,
     pub body_source: String,
+    /// Source of macro generation, e.g., "derive(Debug)"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<String>,
 }
 
 /// Counts tracked per stage

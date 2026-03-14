@@ -1,0 +1,46 @@
+[package]
+name = "rustbrain-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server for rust-brain code intelligence platform"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.37", features = ["full", "io-std"] }
+
+# HTTP client for API calls
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Async utilities
+futures-util = "0.3"
+tokio-stream = "0.1"
+
+# SSE support
+axum = { version = "0.7", features = ["json"], optional = true }
+tower-http = { version = "0.5", features = ["cors"], optional = true }
+
+# URL encoding
+url = "2.5"
+
+[features]
+default = ["stdio"]
+stdio = []
+sse = ["axum", "tower-http"]
+
+# Build standalone, not as part of parent workspace
+[workspace]

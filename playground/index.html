@@ -174,7 +174,7 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                             </svg>
                         </a>
-                        <a href="http://localhost:3000" target="_blank" class="w-full flex items-center justify-between px-4 py-3 bg-dark-700 hover:bg-dark-600 rounded-lg transition-colors">
+                        <a id="grafanaLink" href="#" target="_blank" class="w-full flex items-center justify-between px-4 py-3 bg-dark-700 hover:bg-dark-600 rounded-lg transition-colors">
                             <div class="flex items-center">
                                 <svg class="h-5 w-5 text-orange-500 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
@@ -260,6 +260,8 @@
     <script>
         // Dashboard-specific initialization
         document.addEventListener('DOMContentLoaded', () => {
+            // Set dynamic links using CONFIG
+            document.getElementById('grafanaLink').href = CONFIG.grafanaBase;
             refreshAll();
             // Auto-refresh every 30 seconds
             setInterval(refreshAll, 30000);
@@ -344,7 +346,7 @@
                 document.getElementById('edgeCount').textContent = edgeResult.results?.[0]?.[0] || '-';
 
                 // Fetch Qdrant stats
-                const qdrantInfo = await fetch('http://localhost:6333/collections/code_embeddings');
+                const qdrantInfo = await fetch(`${CONFIG.qdrantBase}/collections/code_embeddings`);
                 if (qdrantInfo.ok) {
                     const qdrantData = await qdrantInfo.json();
                     document.getElementById('embeddingCount').textContent = qdrantData.result?.points_count || '-';
@@ -352,8 +354,9 @@
                     document.getElementById('embeddingCount').textContent = 'N/A';
                 }
 
-                // For Postgres, we'd need a dedicated endpoint. Show placeholder.
-                document.getElementById('itemCount').textContent = '~9.5K';
+                // For Postgres, get count from playground status API
+                const playgroundStatus = await fetchAPI('/playground/status');
+                document.getElementById('itemCount').textContent = formatNumber(playgroundStatus.stats?.postgres_items) || '-';
             } catch (error) {
                 console.error('Failed to fetch stats:', error);
             }

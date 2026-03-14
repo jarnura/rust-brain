@@ -86,7 +86,7 @@ services:
       QDRANT__SERVICE__GRPC_PORT: "6334"
       QDRANT__SERVICE__ENABLE_TLS: "false"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -243,6 +243,31 @@ services:
       resources:
         limits:
           memory: 1G
+
+  # ---------------------------------------------------------------------------
+  # MCP LAYER
+  # ---------------------------------------------------------------------------
+
+  mcp:
+    build:
+      context: ./services/mcp
+      dockerfile: Dockerfile
+    container_name: rustbrain-mcp
+    environment:
+      API_BASE_URL: http://api:8080
+      RUST_LOG: ${RUST_LOG:-info,rustbrain_mcp=debug}
+      MCP_TRANSPORT: stdio
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    # MCP server uses stdio, so we don't expose ports
+    # To use: docker exec -i rustbrain-mcp rustbrain-mcp
 
   # ---------------------------------------------------------------------------
   # INGESTION LAYER

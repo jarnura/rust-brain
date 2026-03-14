@@ -89,6 +89,32 @@ impl From<&str> for PayloadValue {
     }
 }
 
+impl PayloadValue {
+    /// Get the value as a string if it is one
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            PayloadValue::String(s) => Some(s),
+            _ => None,
+        }
+    }
+    
+    /// Get the value as an integer if it is one
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            PayloadValue::Integer(i) => Some(*i),
+            _ => None,
+        }
+    }
+    
+    /// Get the value as a boolean if it is one
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            PayloadValue::Boolean(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
 impl From<i64> for PayloadValue {
     fn from(i: i64) -> Self {
         PayloadValue::Integer(i)

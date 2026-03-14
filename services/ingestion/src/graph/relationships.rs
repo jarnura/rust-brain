@@ -37,6 +37,8 @@ pub enum RelationshipType {
     EXPANDS_TO,
     /// Module→Module import
     IMPORTS,
+    /// Function/Method/Struct/Enum→Type usage relationship
+    USES_TYPE,
 }
 
 impl RelationshipType {
@@ -55,6 +57,7 @@ impl RelationshipType {
             RelationshipType::EXTENDS => "EXTENDS",
             RelationshipType::EXPANDS_TO => "EXPANDS_TO",
             RelationshipType::IMPORTS => "IMPORTS",
+            RelationshipType::USES_TYPE => "USES_TYPE",
         }
     }
 }
@@ -414,6 +417,28 @@ impl RelationshipBuilder {
             from_id: from_id.into(),
             to_id: to_id.into(),
             rel_type: RelationshipType::IMPORTS,
+            properties,
+        }
+    }
+
+    /// Create USES_TYPE relationship
+    /// Used for: Function/Method/Struct/Enum→Type (type usage in code)
+    pub fn create_uses_type(
+        from_id: impl Into<String>,
+        to_id: impl Into<String>,
+        usage_context: impl Into<String>,  // "parameter", "return", "body", "field", "generic"
+        line: Option<usize>,
+    ) -> RelationshipData {
+        let mut properties = HashMap::new();
+        properties.insert("usage_context".to_string(), PropertyValue::from(usage_context.into()));
+        if let Some(l) = line {
+            properties.insert("line".to_string(), PropertyValue::from(l));
+        }
+
+        RelationshipData {
+            from_id: from_id.into(),
+            to_id: to_id.into(),
+            rel_type: RelationshipType::USES_TYPE,
             properties,
         }
     }

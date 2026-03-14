@@ -15,7 +15,8 @@ tests/
 │   └── test_services.sh  # Service health checks
 ├── integration/
 │   ├── test_pipeline.sh  # Pipeline verification tests
-│   └── test_api.sh       # API endpoint tests
+│   ├── test_api.sh       # API endpoint tests
+│   └── test_mcp.sh       # MCP server tool verification tests
 └── README.md             # This file
 ```
 
@@ -121,6 +122,31 @@ cargo test
 
 Note: API tests require the Tool API service running on port 8080.
 
+### MCP Server Tests
+
+`tests/integration/test_mcp.sh` verifies all 7 MCP tools are working correctly.
+
+#### Tests Performed
+
+1. **MCP Initialize Handshake**: Verifies server health and dependencies
+2. **Tools List**: Confirms all 7 tools are available
+3. **search_semantic**: Tests natural language code search
+4. **get_function**: Tests function retrieval
+5. **get_callers**: Tests call graph queries
+6. **get_trait_impls**: Tests trait implementation lookup
+7. **find_usages_of_type**: Tests type usage search
+8. **get_module_tree**: Tests module hierarchy retrieval
+9. **query_graph**: Tests raw Cypher query execution
+10. **Error Handling**: Tests error response format
+11. **Metrics**: Tests Prometheus metrics endpoint
+
+#### Running
+
+```bash
+# From rust-brain root
+./tests/integration/test_mcp.sh
+```
+
 ## Running All Tests
 
 ```bash
@@ -133,9 +159,13 @@ sleep 30
 # Run smoke tests
 ./tests/smoke/test_services.sh
 
+# Quick MCP server check
+./scripts/test-mcp.sh
+
 # Run integration tests
 ./tests/integration/test_pipeline.sh
 ./tests/integration/test_api.sh
+./tests/integration/test_mcp.sh
 ```
 
 ## Test Requirements
@@ -152,8 +182,10 @@ sleep 30
 All tests are designed to complete within 5 minutes:
 
 - Smoke tests: ~30 seconds
+- MCP smoke test: ~10 seconds
 - Pipeline tests: ~2-3 minutes (depends on ingestion)
 - API tests: ~1 minute
+- MCP tests: ~1 minute
 
 ## Exit Codes
 

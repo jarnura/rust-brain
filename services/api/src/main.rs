@@ -423,6 +423,7 @@ struct SystemStats {
     total_errors: u64,
     avg_latency_ms: f64,
     queries_per_minute: f64,
+    postgres_items: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -759,9 +760,11 @@ async fn find_usages_of_type(
     state.metrics.record_request("find_usages_of_type", "GET");
     debug!("Find usages of type: {}", query.type_name);
     
+    // Match any type-like node: Type, Struct, Enum, Trait, or TypeAlias
     let cypher = format!(
         r#"
-        MATCH (n)-[:USES_TYPE]->(t:Type {{name: $type_name}})
+        MATCH (n)-[:USES_TYPE]->(t)
+        WHERE (t:Type OR t:Struct OR t:Enum OR t:Trait OR t:TypeAlias) AND t.name = $type_name
         RETURN n.fqn as fqn, n.name as name, labels(n)[0] as kind, n.file_path as file_path, n.start_line as line
         LIMIT $limit
         "#
@@ -1090,6 +1093,15 @@ async fn playground_status(State(state): State<AppState>) -> Json<PlaygroundStat
     };
     services.insert("neo4j".to_string(), neo4j_status);
     
+    // Query Postgres for item count
+    let postgres_items: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM extracted_items")
+        .fetch_one(&state.pg_pool)
+        .await
+    {
+        Ok(count) => count,
+        Err(_) => 0,
+    };
+    
     // Calculate stats
     let total_queries = state.query_count.load(Ordering::Relaxed);
     let total_errors = state.error_count.load(Ordering::Relaxed);
@@ -1101,6 +1113,7 @@ async fn playground_status(State(state): State<AppState>) -> Json<PlaygroundStat
         total_errors,
         avg_latency_ms: if total_queries > 0 { total_latency as f64 / total_queries as f64 } else { 0.0 },
         queries_per_minute: if uptime_secs > 0 { (total_queries as f64 * 60.0) / uptime_secs as f64 } else { 0.0 },
+        postgres_items,
     };
     
     // Get recent queries from audit log
@@ -1285,11 +1298,16 @@ fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResult> 
                         .or_else(|| payload.get("kind").and_then(|v| v.as_str()))
                         .unwrap_or("unknown")
                         .to_string();
-                    // file_path may not exist in all payloads
+                    // file_path not stored directly; derive from module_path if available
                     let file_path = payload.get("file_path")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                        .map(|s| s.to_string())
+                        .or_else(|| {
+                            payload.get("module_path")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.replace("::", "/") + ".rs")
+                        })
+                        .unwrap_or_default();
                     // start_line/end_line are stored as i64 in Qdrant
                     let start_line = payload.get("start_line")
                         .and_then(|v| v.as_i64())
@@ -1299,6 +1317,16 @@ fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResult> 
                         .and_then(|v| v.as_i64())
                         .or_else(|| payload.get("end_line").and_then(|v| v.as_u64()).map(|n| n as i64))
                         .unwrap_or(0) as u32;
+                    // Qdrant uses text_preview for snippet, doc_comment for docstring
+                    let snippet = payload.get("text_preview")
+                        .or_else(|| payload.get("snippet"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let docstring = payload.get("doc_comment")
+                        .or_else(|| payload.get("docstring"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
                     Some(SearchResult {
                         fqn: payload.get("fqn")?.as_str()?.to_string(),
                         name: payload.get("name")?.as_str()?.to_string(),
@@ -1307,8 +1335,8 @@ fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResult> 
                         start_line,
                         end_line,
                         score: r.get("score")?.as_f64()? as f32,
-                        snippet: payload.get("snippet").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        docstring: payload.get("docstring").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        snippet,
+                        docstring,
                     })
                 })
                 .collect()

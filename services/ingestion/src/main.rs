@@ -20,6 +20,7 @@ pub mod typecheck;
 pub mod pipeline;
 pub mod graph;
 pub mod embedding;
+pub mod derive_detector;
 
 use anyhow::{Context, Result};
 use clap::Parser;

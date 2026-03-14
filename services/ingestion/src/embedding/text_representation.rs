@@ -862,6 +862,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             body_source: "pub fn func() {}".to_string(),
+            generated_by: None,
         };
         
         let chunks = extract_doc_chunks(&item, 50);
