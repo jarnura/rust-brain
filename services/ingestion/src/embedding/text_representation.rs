@@ -870,6 +870,183 @@ mod tests {
     }
     
     #[test]
+    fn test_generate_function_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::utils::do_thing".to_string(),
+            item_type: ItemType::Function,
+            name: "do_thing".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub fn do_thing(x: i32) -> bool".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: "Does a thing".to_string(),
+            start_line: 1,
+            end_line: 3,
+            body_source: "pub fn do_thing(x: i32) -> bool { x > 0 }".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "function");
+        assert!(!rep.is_doc_chunk);
+        assert!(rep.text.contains("do_thing"));
+        assert!(rep.text.contains("bool"));
+        assert!(rep.text.contains("my_crate"));
+    }
+
+    #[test]
+    fn test_generate_struct_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::MyStruct".to_string(),
+            item_type: ItemType::Struct,
+            name: "MyStruct".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub struct MyStruct".to_string(),
+            generic_params: vec![GenericParam {
+                name: "T".to_string(),
+                kind: "type".to_string(),
+                bounds: vec!["Clone".to_string()],
+                default: None,
+            }],
+            where_clauses: vec![],
+            attributes: vec!["#[derive(Debug, Clone)]".to_string()],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: "pub struct MyStruct<T: Clone> {\n    field: T,\n}".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "struct");
+        assert!(rep.text.contains("MyStruct"));
+        assert!(rep.text.contains("T: Clone"));
+        assert!(rep.text.contains("Debug, Clone"));
+    }
+
+    #[test]
+    fn test_generate_enum_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::Color".to_string(),
+            item_type: ItemType::Enum,
+            name: "Color".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub enum Color".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: "pub enum Color {\n    Red,\n    Green,\n    Blue,\n}".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "enum");
+        assert!(rep.text.contains("Color"));
+        assert!(rep.text.contains("Red"));
+    }
+
+    #[test]
+    fn test_generate_trait_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::Processor".to_string(),
+            item_type: ItemType::Trait,
+            name: "Processor".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub trait Processor".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: "pub trait Processor {\n    fn process(&self);\n}".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "trait");
+        assert!(rep.text.contains("Processor"));
+        assert!(rep.text.contains("process"));
+    }
+
+    #[test]
+    fn test_extract_doc_chunks_empty() {
+        let item = ParsedItem {
+            fqn: "test::func".to_string(),
+            item_type: ItemType::Function,
+            name: "func".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub fn func()".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 1,
+            body_source: "pub fn func() {}".to_string(),
+        };
+
+        let chunks = extract_doc_chunks(&item, 100);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_extract_return_type() {
+        assert_eq!(extract_return_type_from_signature("fn foo() -> i32 {"), "i32");
+        assert_eq!(extract_return_type_from_signature("fn foo()"), "()");
+        assert_eq!(extract_return_type_from_signature("fn foo() -> Result<String, Error> where T: Clone"), "Result<String, Error>");
+    }
+
+    #[test]
+    fn test_extract_params() {
+        assert_eq!(extract_params_from_signature("fn foo(x: i32, y: String)"), "x: i32, y: String");
+        assert_eq!(extract_params_from_signature("fn foo()"), "");
+    }
+
+    #[test]
+    fn test_format_doc_comment() {
+        assert_eq!(format_doc_comment(""), "No documentation");
+        assert_eq!(format_doc_comment("Hello world"), "Documentation: Hello world");
+    }
+
+    #[test]
+    fn test_split_fqn_single_component() {
+        let (crate_name, module_path) = split_fqn("my_crate");
+        assert_eq!(crate_name, "my_crate");
+        assert_eq!(module_path, "my_crate");
+    }
+
+    #[test]
+    fn test_extract_derive_traits() {
+        let attrs = vec!["#[derive(Debug, Clone, Serialize)]".to_string()];
+        let result = extract_derive_traits(&attrs);
+        assert!(result.contains("Debug"));
+        assert!(result.contains("Clone"));
+        assert!(result.contains("Serialize"));
+    }
+
+    #[test]
+    fn test_extract_derive_traits_none() {
+        let attrs: Vec<String> = vec!["#[cfg(test)]".to_string()];
+        assert_eq!(extract_derive_traits(&attrs), "none");
+    }
+
+    #[test]
+    fn test_where_clauses_empty() {
+        assert_eq!(where_clauses_to_string(&[]), "none");
+    }
+
+    #[test]
+    fn test_where_clauses_with_bounds() {
+        let clauses = vec![WhereClause {
+            subject: "T".to_string(),
+            bounds: vec!["Clone".to_string(), "Send".to_string()],
+        }];
+        let result = where_clauses_to_string(&clauses);
+        assert!(result.contains("T: Clone + Send"));
+    }
+
+    #[test]
     fn test_generics_to_string() {
         let generics = vec![
             GenericParam {
