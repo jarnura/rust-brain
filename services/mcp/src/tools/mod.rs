@@ -68,3 +68,80 @@ pub async fn execute_tool(
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_definitions_count() {
+        let definitions = all_definitions();
+        assert_eq!(definitions.len(), 7);
+    }
+
+    #[test]
+    fn test_all_definitions_have_name() {
+        let definitions = all_definitions();
+        
+        for def in &definitions {
+            assert!(def.get("name").is_some());
+            assert!(!def["name"].as_str().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_all_definitions_have_description() {
+        let definitions = all_definitions();
+        
+        for def in &definitions {
+            assert!(def.get("description").is_some());
+            assert!(!def["description"].as_str().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_all_definitions_have_input_schema() {
+        let definitions = all_definitions();
+        
+        for def in &definitions {
+            assert!(def.get("inputSchema").is_some());
+            assert!(def["inputSchema"].is_object());
+        }
+    }
+
+    #[test]
+    fn test_definition_names_are_correct() {
+        let definitions = all_definitions();
+        let names: Vec<&str> = definitions
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        
+        assert!(names.contains(&"search_code"));
+        assert!(names.contains(&"get_function"));
+        assert!(names.contains(&"get_callers"));
+        assert!(names.contains(&"get_trait_impls"));
+        assert!(names.contains(&"find_type_usages"));
+        assert!(names.contains(&"get_module_tree"));
+        assert!(names.contains(&"query_graph"));
+    }
+
+    #[test]
+    fn test_all_definitions_have_required_fields() {
+        let definitions = all_definitions();
+        
+        for def in &definitions {
+            let schema = &def["inputSchema"];
+            assert!(schema.get("type").is_some());
+            assert!(schema.get("properties").is_some());
+        }
+    }
+
+    // Test that unknown tool returns error
+    #[test]
+    fn test_unknown_tool_error_message() {
+        let err = crate::error::McpError::InvalidRequest("Unknown tool: unknown_tool".to_string());
+        assert!(err.to_string().contains("Unknown tool"));
+        assert!(err.to_string().contains("unknown_tool"));
+    }
+}

@@ -42,5 +42,10 @@ default = ["stdio"]
 stdio = []
 sse = ["axum", "tower-http"]
 
+[dev-dependencies]
+# HTTP mocking for tests
+mockito = "1.4"
+tokio-test = "0.4"
+
 # Build standalone, not as part of parent workspace
 [workspace]

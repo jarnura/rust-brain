@@ -1,0 +1,3 @@
+#!/bin/bash
+# Wrapper to run psql via docker container
+docker exec -i rustbrain-postgres psql "$@"

@@ -127,3 +127,149 @@ pub fn definition() -> serde_json::Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_definition_has_required_fields() {
+        let def = definition();
+        
+        assert_eq!(def["name"], "get_callers");
+        assert!(!def["description"].as_str().unwrap().is_empty());
+        assert!(def["inputSchema"].is_object());
+    }
+
+    #[test]
+    fn test_definition_schema_properties() {
+        let schema = &definition()["inputSchema"];
+        
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["fqn"].is_object());
+        assert!(schema["properties"]["depth"].is_object());
+        
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("fqn")));
+    }
+
+    #[test]
+    fn test_get_callers_request_deserialization() {
+        let json = r#"{"fqn": "crate::module::function", "depth": 3}"#;
+        let request: GetCallersRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.fqn, "crate::module::function");
+        assert_eq!(request.depth, 3);
+    }
+
+    #[test]
+    fn test_get_callers_request_default_depth() {
+        let json = r#"{"fqn": "crate::module::function"}"#;
+        let request: GetCallersRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.fqn, "crate::module::function");
+        assert_eq!(request.depth, 1); // default
+    }
+
+    #[test]
+    fn test_default_depth_value() {
+        assert_eq!(default_depth(), 1);
+    }
+
+    #[test]
+    fn test_caller_node_deserialization() {
+        let json = r#"{
+            "fqn": "crate::caller::func",
+            "name": "func",
+            "file_path": "src/caller.rs",
+            "line": 42,
+            "depth": 1
+        }"#;
+        
+        let node: CallerNode = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(node.fqn, "crate::caller::func");
+        assert_eq!(node.name, "func");
+        assert_eq!(node.file_path, "src/caller.rs");
+        assert_eq!(node.line, 42);
+        assert_eq!(node.depth, 1);
+    }
+
+    #[test]
+    fn test_callers_response_deserialization() {
+        let json = r#"{
+            "fqn": "crate::module::function",
+            "callers": [
+                {
+                    "fqn": "crate::caller1",
+                    "name": "caller1",
+                    "file_path": "src/caller1.rs",
+                    "line": 10,
+                    "depth": 1
+                },
+                {
+                    "fqn": "crate::caller2",
+                    "name": "caller2",
+                    "file_path": "src/caller2.rs",
+                    "line": 20,
+                    "depth": 2
+                }
+            ],
+            "depth": 2
+        }"#;
+        
+        let response: CallersResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.fqn, "crate::module::function");
+        assert_eq!(response.callers.len(), 2);
+        assert_eq!(response.depth, 2);
+    }
+
+    #[test]
+    fn test_callers_response_empty() {
+        let json = r#"{
+            "fqn": "crate::module::function",
+            "callers": [],
+            "depth": 1
+        }"#;
+        
+        let response: CallersResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.fqn, "crate::module::function");
+        assert!(response.callers.is_empty());
+    }
+
+    #[test]
+    fn test_caller_node_serialization() {
+        let node = CallerNode {
+            fqn: "crate::caller".to_string(),
+            name: "caller".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line: 10,
+            depth: 1,
+        };
+        
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("\"fqn\":\"crate::caller\""));
+        assert!(json.contains("\"depth\":1"));
+    }
+
+    #[test]
+    fn test_callers_response_serialization() {
+        let response = CallersResponse {
+            fqn: "crate::func".to_string(),
+            callers: vec![CallerNode {
+                fqn: "crate::caller".to_string(),
+                name: "caller".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                line: 5,
+                depth: 1,
+            }],
+            depth: 1,
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"fqn\":\"crate::func\""));
+        assert!(json.contains("\"depth\":1"));
+    }
+}

@@ -590,10 +590,17 @@ async fn search_semantic(
     Json(req): Json<SearchSemanticRequest>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
     state.metrics.record_request("search_semantic", "POST");
-    debug!("Semantic search for: {}", req.query);
+    
+    // Validate query is not empty
+    let query = req.query.trim();
+    if query.is_empty() {
+        return Err(AppError::BadRequest("Query cannot be empty".to_string()));
+    }
+    
+    debug!("Semantic search for: {}", query);
     
     // Get embedding from Ollama
-    let embedding = get_embedding(&state, &req.query).await?;
+    let embedding = get_embedding(&state, query).await?;
     
     // Search Qdrant
     let search_request = serde_json::json!({
@@ -630,7 +637,7 @@ async fn search_semantic(
     let results = parse_search_results(&search_result);
     
     Ok(Json(SearchSemanticResponse {
-        query: req.query,
+        query: query.to_string(),
         total: results.len(),
         results,
     }))
@@ -1393,12 +1400,27 @@ async fn execute_neo4j_query(
         .unwrap_or(false);
     
     if errors {
-        let error_msg = result.get("errors")
+        let error_obj = result.get("errors")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first())
+            .and_then(|arr| arr.first());
+        
+        let error_msg = error_obj
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
             .unwrap_or("Unknown Neo4j error");
+        
+        // Check if this is a client error (syntax, invalid query, etc.)
+        // Neo4j error codes starting with "Neo.ClientError" indicate client-side errors
+        // that should return HTTP 400 instead of HTTP 500
+        let error_code = error_obj
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        
+        if error_code.starts_with("Neo.ClientError") {
+            return Err(AppError::BadRequest(format!("Cypher error: {}", error_msg)));
+        }
+        
         return Err(AppError::Neo4j(error_msg.to_string()));
     }
     

@@ -119,3 +119,148 @@ pub fn definition() -> serde_json::Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_definition_has_required_fields() {
+        let def = definition();
+        
+        assert_eq!(def["name"], "find_type_usages");
+        assert!(!def["description"].as_str().unwrap().is_empty());
+        assert!(def["inputSchema"].is_object());
+    }
+
+    #[test]
+    fn test_definition_schema_properties() {
+        let schema = &definition()["inputSchema"];
+        
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["type_name"].is_object());
+        assert!(schema["properties"]["limit"].is_object());
+        
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("type_name")));
+    }
+
+    #[test]
+    fn test_find_type_usages_request_deserialization() {
+        let json = r#"{"type_name": "User", "limit": 30}"#;
+        let request: FindTypeUsagesRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.type_name, "User");
+        assert_eq!(request.limit, 30);
+    }
+
+    #[test]
+    fn test_find_type_usages_request_default_limit() {
+        let json = r#"{"type_name": "HttpRequest"}"#;
+        let request: FindTypeUsagesRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.type_name, "HttpRequest");
+        assert_eq!(request.limit, 20); // default
+    }
+
+    #[test]
+    fn test_default_limit_value() {
+        assert_eq!(default_limit(), 20);
+    }
+
+    #[test]
+    fn test_type_usage_deserialization() {
+        let json = r#"{
+            "fqn": "crate::module::function",
+            "name": "function",
+            "kind": "function",
+            "file_path": "src/module.rs",
+            "line": 42
+        }"#;
+        
+        let usage: TypeUsage = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(usage.fqn, "crate::module::function");
+        assert_eq!(usage.name, "function");
+        assert_eq!(usage.kind, "function");
+        assert_eq!(usage.file_path, "src/module.rs");
+        assert_eq!(usage.line, 42);
+    }
+
+    #[test]
+    fn test_usages_response_deserialization() {
+        let json = r#"{
+            "type_name": "User",
+            "usages": [
+                {
+                    "fqn": "crate::api::get_user",
+                    "name": "get_user",
+                    "kind": "function",
+                    "file_path": "src/api.rs",
+                    "line": 10
+                },
+                {
+                    "fqn": "crate::models::User",
+                    "name": "User",
+                    "kind": "struct",
+                    "file_path": "src/models.rs",
+                    "line": 5
+                }
+            ]
+        }"#;
+        
+        let response: UsagesResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.type_name, "User");
+        assert_eq!(response.usages.len(), 2);
+        assert_eq!(response.usages[0].kind, "function");
+        assert_eq!(response.usages[1].kind, "struct");
+    }
+
+    #[test]
+    fn test_usages_response_empty() {
+        let json = r#"{
+            "type_name": "NonExistentType",
+            "usages": []
+        }"#;
+        
+        let response: UsagesResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.type_name, "NonExistentType");
+        assert!(response.usages.is_empty());
+    }
+
+    #[test]
+    fn test_type_usage_serialization() {
+        let usage = TypeUsage {
+            fqn: "crate::func".to_string(),
+            name: "func".to_string(),
+            kind: "function".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line: 10,
+        };
+        
+        let json = serde_json::to_string(&usage).unwrap();
+        assert!(json.contains("\"fqn\":\"crate::func\""));
+        assert!(json.contains("\"kind\":\"function\""));
+        assert!(json.contains("\"line\":10"));
+    }
+
+    #[test]
+    fn test_usages_response_serialization() {
+        let response = UsagesResponse {
+            type_name: "User".to_string(),
+            usages: vec![TypeUsage {
+                fqn: "crate::func".to_string(),
+                name: "func".to_string(),
+                kind: "function".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                line: 5,
+            }],
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"type_name\":\"User\""));
+        assert!(json.contains("\"usages\""));
+    }
+}

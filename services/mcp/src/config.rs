@@ -79,3 +79,77 @@ impl Config {
         format!("{}{}", self.api_base_url.trim_end_matches('/'), path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transport_default() {
+        assert_eq!(Transport::default(), Transport::Stdio);
+    }
+
+    #[test]
+    fn test_transport_from_str_valid() {
+        assert_eq!("stdio".parse::<Transport>().unwrap(), Transport::Stdio);
+        assert_eq!("STDIO".parse::<Transport>().unwrap(), Transport::Stdio);
+        assert_eq!("StdIO".parse::<Transport>().unwrap(), Transport::Stdio);
+        assert_eq!("sse".parse::<Transport>().unwrap(), Transport::Sse);
+        assert_eq!("SSE".parse::<Transport>().unwrap(), Transport::Sse);
+    }
+
+    #[test]
+    fn test_transport_from_str_invalid() {
+        let result = "invalid".parse::<Transport>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid transport"));
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert_eq!(config.transport, Transport::Stdio);
+        assert_eq!(config.api_base_url, "http://localhost:8088");
+        assert_eq!(config.http_timeout, 30);
+        assert_eq!(config.max_search_results, 50);
+        assert_eq!(config.default_search_limit, 10);
+    }
+
+    #[test]
+    fn test_config_api_url_basic() {
+        let config = Config::default();
+        assert_eq!(config.api_url("/health"), "http://localhost:8088/health");
+    }
+
+    #[test]
+    fn test_config_api_url_with_trailing_slash() {
+        let mut config = Config::default();
+        config.api_base_url = "http://localhost:8088/".to_string();
+        assert_eq!(config.api_url("/health"), "http://localhost:8088/health");
+    }
+
+    #[test]
+    fn test_config_api_url_empty_path() {
+        let config = Config::default();
+        assert_eq!(config.api_url(""), "http://localhost:8088");
+    }
+
+    #[test]
+    fn test_config_api_url_custom_base() {
+        let mut config = Config::default();
+        config.api_base_url = "https://api.example.com/v1".to_string();
+        assert_eq!(config.api_url("/search"), "https://api.example.com/v1/search");
+    }
+
+    #[test]
+    fn test_transport_debug() {
+        assert!(format!("{:?}", Transport::Stdio).contains("Stdio"));
+        assert!(format!("{:?}", Transport::Sse).contains("Sse"));
+    }
+
+    #[test]
+    fn test_transport_eq() {
+        assert_eq!(Transport::Stdio, Transport::Stdio);
+        assert_ne!(Transport::Stdio, Transport::Sse);
+    }
+}

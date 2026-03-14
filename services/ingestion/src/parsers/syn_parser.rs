@@ -533,11 +533,23 @@ impl SynParser {
             .iter()
             .filter(|attr| attr.path().is_ident("doc"))
             .filter_map(|attr| {
-                // Try to extract the string literal
-                if let Ok(doc_lit) = attr.parse_args::<syn::LitStr>() {
-                    Some(doc_lit.value())
-                } else {
-                    None
+                // Handle both #[doc = "..."] and #[doc("...")] forms
+                // Doc comments (///) are converted to #[doc = "..."] form
+                match &attr.meta {
+                    syn::Meta::NameValue(name_value) => {
+                        // #[doc = "..."]
+                        if let syn::Expr::Lit(expr_lit) = &name_value.value {
+                            if let syn::Lit::Str(lit_str) = &expr_lit.lit {
+                                return Some(lit_str.value());
+                            }
+                        }
+                        None
+                    }
+                    syn::Meta::List(list) => {
+                        // #[doc("...")]
+                        list.parse_args::<syn::LitStr>().ok().map(|s| s.value())
+                    }
+                    _ => None,
                 }
             })
             .collect::<Vec<_>>()

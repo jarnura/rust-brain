@@ -162,3 +162,195 @@ pub fn definition() -> serde_json::Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_definition_has_required_fields() {
+        let def = definition();
+        
+        assert_eq!(def["name"], "query_graph");
+        assert!(!def["description"].as_str().unwrap().is_empty());
+        assert!(def["inputSchema"].is_object());
+    }
+
+    #[test]
+    fn test_definition_schema_properties() {
+        let schema = &definition()["inputSchema"];
+        
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["query"].is_object());
+        assert!(schema["properties"]["parameters"].is_object());
+        assert!(schema["properties"]["limit"].is_object());
+        
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("query")));
+    }
+
+    #[test]
+    fn test_query_graph_request_deserialization() {
+        let json = r#"{
+            "query": "MATCH (f:Function) RETURN f.name",
+            "parameters": {"limit": 10},
+            "limit": 50
+        }"#;
+        
+        let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.query, "MATCH (f:Function) RETURN f.name");
+        assert_eq!(request.parameters.get("limit").unwrap(), 10);
+        assert_eq!(request.limit, 50);
+    }
+
+    #[test]
+    fn test_query_graph_request_minimal() {
+        let json = r#"{"query": "MATCH (n) RETURN n"}"#;
+        let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.query, "MATCH (n) RETURN n");
+        assert!(request.parameters.is_empty());
+        assert_eq!(request.limit, 50); // default
+    }
+
+    #[test]
+    fn test_default_limit_value() {
+        assert_eq!(default_limit(), 50);
+    }
+
+    #[test]
+    fn test_graph_query_response_deserialization() {
+        let json = r#"{
+            "results": [
+                {"name": "func1", "kind": "function"},
+                {"name": "func2", "kind": "function"}
+            ],
+            "query": "MATCH (f:Function) RETURN f.name",
+            "row_count": 2
+        }"#;
+        
+        let response: GraphQueryResponse = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(response.query, "MATCH (f:Function) RETURN f.name");
+        assert_eq!(response.row_count, 2);
+    }
+
+    #[test]
+    fn test_graph_query_response_empty() {
+        let json = r#"{
+            "results": [],
+            "query": "MATCH (n:NonExistent) RETURN n",
+            "row_count": 0
+        }"#;
+        
+        let response: GraphQueryResponse = serde_json::from_str(json).unwrap();
+        
+        assert!(response.results.is_empty());
+        assert_eq!(response.row_count, 0);
+    }
+
+    #[test]
+    fn test_graph_query_response_serialization() {
+        let response = GraphQueryResponse {
+            results: vec![
+                serde_json::json!({"name": "func"}),
+            ],
+            query: "MATCH (f:Function) RETURN f.name".to_string(),
+            row_count: 1,
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"query\":\"MATCH (f:Function) RETURN f.name\""));
+        assert!(json.contains("\"row_count\":1"));
+    }
+
+    #[test]
+    fn test_format_value_string() {
+        let value = serde_json::json!("test_string");
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "`test_string`");
+    }
+
+    #[test]
+    fn test_format_value_number() {
+        let value = serde_json::json!(42);
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "42");
+    }
+
+    #[test]
+    fn test_format_value_bool() {
+        let value = serde_json::json!(true);
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "true");
+    }
+
+    #[test]
+    fn test_format_value_null() {
+        let value = serde_json::json!(null);
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "null");
+    }
+
+    #[test]
+    fn test_format_value_empty_array() {
+        let value = serde_json::json!([]);
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "[]");
+    }
+
+    #[test]
+    fn test_format_value_small_array() {
+        let value = serde_json::json!([1, 2, 3]);
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "[1, 2, 3]");
+    }
+
+    #[test]
+    fn test_format_value_large_array() {
+        let value = serde_json::json!([1, 2, 3, 4, 5, 6, 7]);
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "[7 items]");
+    }
+
+    #[test]
+    fn test_format_value_empty_object() {
+        let value = serde_json::json!({});
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "{}");
+    }
+
+    #[test]
+    fn test_format_value_small_object() {
+        let value = serde_json::json!({"a": 1, "b": 2});
+        let formatted = format_value(&value);
+        // Keys may be in any order
+        assert!(formatted.contains("a: 1"));
+        assert!(formatted.contains("b: 2"));
+    }
+
+    #[test]
+    fn test_format_value_large_object() {
+        let value = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4});
+        let formatted = format_value(&value);
+        assert_eq!(formatted, "{ 4 keys }");
+    }
+
+    #[test]
+    fn test_query_graph_request_with_parameters() {
+        let mut params = HashMap::new();
+        params.insert("name".to_string(), serde_json::json!("test_func"));
+        
+        let request = QueryGraphRequest {
+            query: "MATCH (f:Function {name: $name}) RETURN f".to_string(),
+            parameters: params,
+            limit: 10,
+        };
+        
+        assert_eq!(request.query, "MATCH (f:Function {name: $name}) RETURN f");
+        assert_eq!(request.parameters.get("name").unwrap(), "test_func");
+        assert_eq!(request.limit, 10);
+    }
+}

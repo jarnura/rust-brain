@@ -158,3 +158,206 @@ pub fn definition() -> serde_json::Value {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_definition_has_required_fields() {
+        let def = definition();
+        
+        assert_eq!(def["name"], "get_function");
+        assert!(!def["description"].as_str().unwrap().is_empty());
+        assert!(def["inputSchema"].is_object());
+    }
+
+    #[test]
+    fn test_definition_schema_properties() {
+        let schema = &definition()["inputSchema"];
+        
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["fqn"].is_object());
+        
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("fqn")));
+    }
+
+    #[test]
+    fn test_get_function_request_deserialization() {
+        let json = r#"{"fqn": "crate::module::function"}"#;
+        let request: GetFunctionRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.fqn, "crate::module::function");
+    }
+
+    #[test]
+    fn test_caller_info_deserialization() {
+        let json = r#"{
+            "fqn": "crate::caller::func",
+            "name": "func",
+            "file_path": "src/caller.rs",
+            "line": 42
+        }"#;
+        
+        let caller: CallerInfo = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(caller.fqn, "crate::caller::func");
+        assert_eq!(caller.name, "func");
+        assert_eq!(caller.file_path, "src/caller.rs");
+        assert_eq!(caller.line, 42);
+    }
+
+    #[test]
+    fn test_callee_info_deserialization() {
+        let json = r#"{
+            "fqn": "crate::callee::func",
+            "name": "func"
+        }"#;
+        
+        let callee: CalleeInfo = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(callee.fqn, "crate::callee::func");
+        assert_eq!(callee.name, "func");
+    }
+
+    #[test]
+    fn test_function_detail_deserialization() {
+        let json = r#"{
+            "fqn": "crate::module::function",
+            "name": "function",
+            "kind": "function",
+            "visibility": "pub",
+            "signature": "pub fn function(x: i32) -> String",
+            "docstring": "A function",
+            "file_path": "src/module.rs",
+            "start_line": 10,
+            "end_line": 20,
+            "module_path": "crate::module",
+            "crate_name": "my_crate",
+            "callers": [],
+            "callees": []
+        }"#;
+        
+        let detail: FunctionDetail = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(detail.fqn, "crate::module::function");
+        assert_eq!(detail.name, "function");
+        assert_eq!(detail.kind, "function");
+        assert_eq!(detail.visibility, Some("pub".to_string()));
+        assert_eq!(detail.signature, Some("pub fn function(x: i32) -> String".to_string()));
+        assert_eq!(detail.docstring, Some("A function".to_string()));
+        assert_eq!(detail.file_path, "src/module.rs");
+        assert_eq!(detail.start_line, 10);
+        assert_eq!(detail.end_line, 20);
+        assert_eq!(detail.module_path, Some("crate::module".to_string()));
+        assert_eq!(detail.crate_name, Some("my_crate".to_string()));
+        assert!(detail.callers.is_empty());
+        assert!(detail.callees.is_empty());
+    }
+
+    #[test]
+    fn test_function_detail_with_callers_and_callees() {
+        let json = r#"{
+            "fqn": "crate::module::function",
+            "name": "function",
+            "kind": "function",
+            "file_path": "src/module.rs",
+            "start_line": 10,
+            "end_line": 20,
+            "callers": [
+                {
+                    "fqn": "crate::other::caller",
+                    "name": "caller",
+                    "file_path": "src/other.rs",
+                    "line": 5
+                }
+            ],
+            "callees": [
+                {
+                    "fqn": "crate::util::helper",
+                    "name": "helper"
+                }
+            ]
+        }"#;
+        
+        let detail: FunctionDetail = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(detail.callers.len(), 1);
+        assert_eq!(detail.callers[0].fqn, "crate::other::caller");
+        
+        assert_eq!(detail.callees.len(), 1);
+        assert_eq!(detail.callees[0].fqn, "crate::util::helper");
+    }
+
+    #[test]
+    fn test_function_detail_minimal() {
+        let json = r#"{
+            "fqn": "crate::func",
+            "name": "func",
+            "kind": "function",
+            "file_path": "src/lib.rs",
+            "start_line": 1,
+            "end_line": 5,
+            "callers": [],
+            "callees": []
+        }"#;
+        
+        let detail: FunctionDetail = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(detail.visibility, None);
+        assert_eq!(detail.signature, None);
+        assert_eq!(detail.docstring, None);
+        assert_eq!(detail.module_path, None);
+        assert_eq!(detail.crate_name, None);
+    }
+
+    #[test]
+    fn test_function_detail_serialization() {
+        let detail = FunctionDetail {
+            fqn: "crate::func".to_string(),
+            name: "func".to_string(),
+            kind: "function".to_string(),
+            visibility: Some("pub".to_string()),
+            signature: None,
+            docstring: None,
+            file_path: "src/lib.rs".to_string(),
+            start_line: 1,
+            end_line: 5,
+            module_path: None,
+            crate_name: None,
+            callers: vec![],
+            callees: vec![],
+        };
+        
+        let json = serde_json::to_string(&detail).unwrap();
+        assert!(json.contains("\"fqn\":\"crate::func\""));
+        assert!(json.contains("\"kind\":\"function\""));
+    }
+
+    #[test]
+    fn test_caller_info_serialization() {
+        let caller = CallerInfo {
+            fqn: "crate::caller".to_string(),
+            name: "caller".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line: 10,
+        };
+        
+        let json = serde_json::to_string(&caller).unwrap();
+        assert!(json.contains("\"fqn\":\"crate::caller\""));
+        assert!(json.contains("\"line\":10"));
+    }
+
+    #[test]
+    fn test_callee_info_serialization() {
+        let callee = CalleeInfo {
+            fqn: "crate::callee".to_string(),
+            name: "callee".to_string(),
+        };
+        
+        let json = serde_json::to_string(&callee).unwrap();
+        assert!(json.contains("\"fqn\":\"crate::callee\""));
+        assert!(json.contains("\"name\":\"callee\""));
+    }
+}

@@ -418,4 +418,64 @@ mod tests {
         let item = &result.items[0];
         assert!(item.where_clauses.len() >= 1);
     }
+    
+    #[test]
+    fn test_doc_comment_extraction_with_fallback() {
+        // Test that doc comments are properly extracted via syn parser
+        // and that the fallback to tree-sitter works when needed
+        let parser = DualParser::new().unwrap();
+        let source = r#"
+            /// This is a documented function.
+            /// It has multiple lines.
+            pub fn documented_function() -> i32 {
+                42
+            }
+        "#;
+        
+        let result = parser.parse(source, "test").unwrap();
+        
+        assert!(!result.items.is_empty());
+        let item = &result.items[0];
+        assert_eq!(item.name, "documented_function");
+        
+        // Doc comments should be extracted (via syn parser, with fallback available)
+        assert!(
+            item.doc_comment.contains("This is a documented function"),
+            "Expected doc comment to contain main text, got: {:?}",
+            item.doc_comment
+        );
+        assert!(
+            item.doc_comment.contains("multiple lines"),
+            "Expected doc comment to contain second line, got: {:?}",
+            item.doc_comment
+        );
+    }
+    
+    #[test]
+    fn test_doc_comment_fallback_tree_sitter() {
+        // Test the tree-sitter fallback specifically for cases where syn might
+        // not capture doc comments (e.g., when the item byte range doesn't include
+        // preceding doc comments)
+        let ts_parser = TreeSitterParser::new().unwrap();
+        let source = r#"
+/// A well-documented struct.
+/// With multiple lines.
+pub struct WellDocumented {
+    field: i32,
+}
+"#;
+        
+        // Tree-sitter should find doc comments before line 4 (where struct starts)
+        let doc = ts_parser.extract_doc_comments(source, 4);
+        assert!(
+            doc.contains("well-documented struct"),
+            "Expected tree-sitter to extract doc comment, got: {:?}",
+            doc
+        );
+        assert!(
+            doc.contains("multiple lines"),
+            "Expected tree-sitter to extract second line, got: {:?}",
+            doc
+        );
+    }
 }
