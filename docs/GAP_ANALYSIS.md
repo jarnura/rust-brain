@@ -1,6 +1,7 @@
 # rust-brain: Deep Gap Analysis
 
-**Date:** 2026-03-14
+**Date:** 2026-03-14 (Revised)
+**Revision:** 2 — Updated after test additions
 **Scope:** Full architectural and implementation review
 **Status:** Phase 2 (Partial) — 11,372 LOC across 2 services
 
@@ -98,29 +99,54 @@ Three known API compatibility issues prevent compilation:
 
 ---
 
-#### Gap 2: No Unit Tests in Production Code
+#### Gap 2: Test Coverage Gaps — Critical Modules Untested
 
-**Severity:** CRITICAL
-**Files:** All source files in `services/ingestion/` and `services/api/`
+**Severity:** HIGH (downgraded from CRITICAL — unit tests now exist)
+**Files:** Multiple modules still lack coverage
 
-Neither service has any Rust unit tests (`#[cfg(test)]` modules). The only tests are:
-- Shell-based smoke tests (`tests/smoke/test_services.sh`)
-- Shell-based integration tests (`tests/integration/`)
-- Test fixture crate (`tests/fixtures/test-crate/`) — has tests but is only a sample input
+**What's tested (27+ unit tests across 8 modules):**
 
-For 11,372 lines of production code, zero unit tests means:
-- Parser correctness is unverified (does `syn_parser` actually extract generics correctly?)
-- Type resolution is unverified (does the heuristic fallback work?)
-- Graph construction is unverified (are relationships created correctly?)
-- Embedding text generation is unverified (are code items represented faithfully?)
+| Module | Tests | What's Covered |
+|---|---|---|
+| `parsers/syn_parser.rs` | 7 tests | Function, struct, impl, where clause, visibility, attributes, doc comments |
+| `parsers/tree_sitter_parser.rs` | 5 tests | Simple function, multiple items, visibility, attributes, doc comments |
+| `graph/nodes.rs` | 2 tests | Function node creation, struct node creation |
+| `graph/relationships.rs` | 3 tests | CALLS, HAS_FIELD, MONOMORPHIZED_AS relationships |
+| `graph/batch.rs` | 2 tests | BatchConfig defaults, BatchStats defaults |
+| `graph/mod.rs` | 2 tests | Neo4j connection, index creation (both `#[ignore]` — require Neo4j) |
+| `pipeline/stages.rs` | 3 tests | StageResult success/partial, StageError fatal flag |
+| `embedding/text_representation.rs` | 3 tests | FQN splitting, doc chunking, generics formatting |
 
-**Fix:** Add `#[cfg(test)]` modules to at least:
-- `parsers/syn_parser.rs` — test each item type parsing
-- `parsers/tree_sitter_parser.rs` — test skeleton extraction
-- `typecheck/resolver.rs` — test call site extraction, trait impl detection
-- `embedding/text_representation.rs` — test text generation for each item type
-- `graph/nodes.rs` — test Cypher query generation
-- `graph/relationships.rs` — test relationship Cypher generation
+**Also present:**
+- Shell-based integration tests (`tests/integration/test_pipeline.sh`, `test_api.sh`)
+- Smoke tests for all services (`tests/smoke/test_services.sh`)
+- Comprehensive test fixture crate (`tests/fixtures/test-crate/`) — 715 LOC covering all Rust constructs
+
+**What's NOT tested (remaining gaps):**
+
+| Module | Gap | Risk |
+|---|---|---|
+| `services/api/src/main.rs` (1,140 LOC) | **Zero unit tests** — no endpoint handler testing | API could return wrong data format, incorrect error codes, or silently fail |
+| `typecheck/resolver.rs` (968 LOC) | **Zero unit tests** — call site extraction, trait impl detection untested | Core type resolution could be wrong — this feeds the graph and enables monomorphization queries |
+| `typecheck/mod.rs` (291 LOC) | **Zero unit tests** — TypeResolutionService untested | Orchestration logic between analyzed/heuristic paths untested |
+| `parsers/mod.rs` (410 LOC) | **Zero unit tests** — DualParser orchestration untested | Fallback from syn to tree-sitter not tested — the dual-parser strategy is the key reliability feature |
+| `pipeline/runner.rs` (399 LOC) | **Zero unit tests** — pipeline execution flow untested | Stage sequencing, error propagation, partial success handling untested |
+| `embedding/ollama_client.rs` (347 LOC) | **Zero unit tests** — embedding HTTP client untested | Retry logic, batch splitting, error handling all untested |
+| `embedding/qdrant_client.rs` (556 LOC) | **Zero unit tests** — vector store operations untested | Upsert, search, deletion operations untested |
+| `embedding/mod.rs` (662 LOC) | **Zero unit tests** — EmbeddingService orchestration untested | End-to-end embed + store flow untested |
+
+**Quality concerns with existing tests:**
+1. **Shallow assertions** — Most tests check field existence (`contains_key`) but not correctness of values
+2. **No negative tests** — No tests for malformed input, parse failures, or error paths
+3. **No integration between parsers** — DualParser (the glue) has no tests
+4. **No edge cases** — Empty files, files with only macros, Unicode identifiers, very large files
+
+**Fix (prioritized):**
+1. `typecheck/resolver.rs` — Most critical: test call site extraction with known Rust code snippets
+2. `parsers/mod.rs` (DualParser) — Test the fallback path: give syn something it can't parse, verify tree-sitter fallback works
+3. `embedding/ollama_client.rs` — Mock HTTP tests for retry logic and batch handling
+4. `services/api/src/main.rs` — Test endpoint handlers with mock database state
+5. Add negative/edge case tests to existing modules
 
 ---
 
@@ -532,7 +558,7 @@ While Prometheus/Grafana are set up, the metrics are basic:
 | # | Gap | Severity | Effort | Impact |
 |---|---|---|---|---|
 | 1 | Ingestion doesn't compile | CRITICAL | Low | Blocking |
-| 2 | No unit tests | CRITICAL | Medium | Quality |
+| 2 | Test coverage gaps (API, typecheck, DualParser, embedding clients) | HIGH | Medium | Quality |
 | 3 | No workspace / shared types | HIGH | Medium | Maintainability |
 | 4 | API missing Neo4j client | HIGH | Low | Functionality |
 | 5 | No cross-DB aggregation | HIGH | Medium | Core value |
@@ -562,7 +588,7 @@ While Prometheus/Grafana are set up, the metrics are basic:
 3. **Implement cross-DB aggregation** (Gap 5) — the core value proposition
 
 ### Phase 2: Make It Right (Week 2-3)
-4. **Add unit tests** (Gap 2) — parser, type resolver, text representation
+4. **Fill test coverage gaps** (Gap 2) — typecheck/resolver, DualParser fallback, API handlers, embedding clients
 5. **Create workspace structure** (Gap 3) — shared types crate
 6. **Add confidence scoring** (Gap 17) — low effort, high value
 7. **Improve error recovery** (Gap 8)
@@ -591,8 +617,8 @@ While Prometheus/Grafana are set up, the metrics are basic:
 Your analogy is sound. rust-brain is architecturally well-designed — the triple-storage pattern (Graph + Vector + Relational) is the right approach for giving LLMs "database-like" access to code intelligence. The infrastructure (Docker Compose, monitoring, observability) is production-grade.
 
 The critical gaps are:
-1. **The engine doesn't start** (compilation failures)
-2. **The engine has no tests** (correctness is unverified)
-3. **The core query orchestration is missing** (cross-DB aggregation is the killer feature)
+1. **The engine doesn't start** (compilation failures — Gap 1)
+2. **Key modules lack test coverage** (typecheck resolver, DualParser fallback, API handlers, embedding clients — Gap 2). Core parsing and graph modules now have solid unit tests (27+ tests across 8 modules), but the highest-risk code paths — type resolution, parser fallback, and API correctness — remain untested.
+3. **The core query orchestration is missing** (cross-DB aggregation is the killer feature — Gap 5)
 
 Once these are addressed, the path to "a database engine where LLMs can accurately read code very fast and process it" is clear. The query planner (Gap 14) is the most exciting future piece — it would complete the analogy by adding the "query optimizer" that makes a database engine truly intelligent about access paths.
