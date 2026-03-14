@@ -258,7 +258,12 @@ impl DualParser {
             
             // Try syn parsing
             match self.syn.parse_item(item_source, module_path, &skeleton) {
-                Ok(parsed_item) => {
+                Ok(mut parsed_item) => {
+                    // BUGFIX: Doc comments are often cut off because tree-sitter's byte range
+                    // doesn't include preceding attributes. Extract from full source if empty.
+                    if parsed_item.doc_comment.is_empty() {
+                        parsed_item.doc_comment = self.tree_sitter.extract_doc_comments(source, skeleton.start_line);
+                    }
                     items.push(parsed_item);
                 }
                 Err(e) => {

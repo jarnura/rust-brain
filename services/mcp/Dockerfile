@@ -47,7 +47,7 @@ USER rustbrain
 
 # Set environment defaults
 ENV RUST_LOG=info,rustbrain_mcp=debug
-ENV API_BASE_URL=http://api:8080
+ENV API_BASE_URL=http://rustbrain-api:8080
 
 # Health check (MCP server uses stdio, so this is just for container health)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

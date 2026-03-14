@@ -2101,6 +2101,54 @@ impl EmbedStage {
         std::env::var("QDRANT_HOST")
             .unwrap_or_else(|_| "http://qdrant:6333".to_string())
     }
+    
+    /// Load items from the database when parsed_items is not available in state
+    async fn load_items_from_database(&self, database_url: &str) -> Result<Vec<ParsedItemInfo>> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(database_url)
+            .await
+            .context("Failed to connect to database for loading items")?;
+        
+        let rows = sqlx::query(
+            r#"
+            SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                   start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+            FROM extracted_items
+            ORDER BY fqn
+            "#
+        )
+        .fetch_all(&pool)
+        .await
+        .context("Failed to query extracted_items")?;
+        
+        let items: Vec<ParsedItemInfo> = rows
+            .into_iter()
+            .map(|row| {
+                let generic_params_json: serde_json::Value = row.get("generic_params");
+                let where_clauses_json: serde_json::Value = row.get("where_clauses");
+                let attributes_json: serde_json::Value = row.get("attributes");
+                
+                ParsedItemInfo {
+                    fqn: row.get("fqn"),
+                    item_type: row.get("item_type"),
+                    name: row.get("name"),
+                    visibility: row.get("visibility"),
+                    signature: row.get("signature"),
+                    generic_params: serde_json::from_value(generic_params_json).unwrap_or_default(),
+                    where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
+                    attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
+                    doc_comment: row.get("doc_comment"),
+                    start_line: row.get::<i32, _>("start_line") as usize,
+                    end_line: row.get::<i32, _>("end_line") as usize,
+                    body_source: row.get("body_source"),
+                    generated_by: row.get("generated_by"),
+                }
+            })
+            .collect();
+        
+        Ok(items)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2120,13 +2168,28 @@ impl PipelineStage for EmbedStage {
         }
         
         let state = ctx.state.read().await;
-        let parsed_items = state.parsed_items.clone();
+        let mut parsed_items = state.parsed_items.clone();
         let source_files = state.source_files.clone();
         drop(state);
         
+        // If no parsed_items in state, try to load from database
         if parsed_items.is_empty() {
-            info!("No parsed items to embed");
-            return Ok(StageResult::skipped("embed"));
+            info!("No parsed items in state, loading from database...");
+            match self.load_items_from_database(&ctx.config.database_url).await {
+                Ok(items) => {
+                    if items.is_empty() {
+                        info!("No items found in database");
+                        return Ok(StageResult::skipped("embed"));
+                    }
+                    info!("Loaded {} items from database", items.len());
+                    // Group items by a dummy path since we don't have file paths from DB
+                    parsed_items.insert(std::path::PathBuf::from("/workspace"), items);
+                }
+                Err(e) => {
+                    warn!("Failed to load items from database: {}", e);
+                    return Ok(StageResult::skipped("embed"));
+                }
+            }
         }
         
         // Get service URLs
