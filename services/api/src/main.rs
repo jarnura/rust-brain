@@ -1069,6 +1069,279 @@ async fn get_callees_from_neo4j(
 }
 
 // =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_limit() {
+        assert_eq!(default_limit(), 10);
+    }
+
+    #[test]
+    fn test_default_depth() {
+        assert_eq!(default_depth(), 1);
+    }
+
+    #[test]
+    fn test_config_from_env_defaults() {
+        // Unset env vars to test defaults
+        let config = Config {
+            database_url: "postgresql://rustbrain:rustbrain_dev_2024@postgres:5432/rustbrain".to_string(),
+            neo4j_uri: "bolt://neo4j:7687".to_string(),
+            neo4j_user: "neo4j".to_string(),
+            neo4j_password: "rustbrain_dev_2024".to_string(),
+            qdrant_host: "http://qdrant:6333".to_string(),
+            ollama_host: "http://ollama:11434".to_string(),
+            embedding_model: "nomic-embed-text".to_string(),
+            embedding_dimensions: 768,
+            collection_name: "rust_functions".to_string(),
+            port: 8080,
+        };
+
+        assert_eq!(config.embedding_dimensions, 768);
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.embedding_model, "nomic-embed-text");
+    }
+
+    #[test]
+    fn test_app_error_display() {
+        assert_eq!(
+            AppError::Database("conn refused".to_string()).to_string(),
+            "Database error: conn refused"
+        );
+        assert_eq!(
+            AppError::NotFound("item".to_string()).to_string(),
+            "Not found: item"
+        );
+        assert_eq!(
+            AppError::BadRequest("invalid".to_string()).to_string(),
+            "Bad request: invalid"
+        );
+        assert_eq!(
+            AppError::Neo4j("timeout".to_string()).to_string(),
+            "Neo4j error: timeout"
+        );
+        assert_eq!(
+            AppError::Qdrant("error".to_string()).to_string(),
+            "Qdrant error: error"
+        );
+        assert_eq!(
+            AppError::Ollama("error".to_string()).to_string(),
+            "Ollama error: error"
+        );
+        assert_eq!(
+            AppError::Internal("panic".to_string()).to_string(),
+            "Internal error: panic"
+        );
+    }
+
+    #[test]
+    fn test_app_error_into_response_status_codes() {
+        use axum::http::StatusCode;
+
+        let cases = vec![
+            (AppError::Database("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (AppError::Neo4j("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (AppError::Qdrant("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (AppError::Ollama("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (AppError::Internal("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (AppError::NotFound("err".into()), StatusCode::NOT_FOUND),
+            (AppError::BadRequest("err".into()), StatusCode::BAD_REQUEST),
+        ];
+
+        for (error, expected_status) in cases {
+            let response = error.into_response();
+            assert_eq!(response.status(), expected_status);
+        }
+    }
+
+    #[test]
+    fn test_parse_search_results_empty() {
+        let data = serde_json::json!({"result": []});
+        let results = parse_search_results(&data);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_search_results_no_result_key() {
+        let data = serde_json::json!({});
+        let results = parse_search_results(&data);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_search_results_valid() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.95,
+                    "payload": {
+                        "fqn": "crate::my_fn",
+                        "name": "my_fn",
+                        "item_type": "function",
+                        "file_path": "src/lib.rs",
+                        "start_line": 10,
+                        "end_line": 20,
+                        "snippet": "fn my_fn() {}",
+                        "docstring": "A function"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].fqn, "crate::my_fn");
+        assert_eq!(results[0].name, "my_fn");
+        assert_eq!(results[0].kind, "function");
+        assert_eq!(results[0].file_path, "src/lib.rs");
+        assert_eq!(results[0].start_line, 10);
+        assert_eq!(results[0].end_line, 20);
+        assert!((results[0].score - 0.95).abs() < f32::EPSILON);
+        assert_eq!(results[0].snippet, Some("fn my_fn() {}".to_string()));
+        assert_eq!(results[0].docstring, Some("A function".to_string()));
+    }
+
+    #[test]
+    fn test_parse_search_results_missing_optional_fields() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.8,
+                    "payload": {
+                        "fqn": "crate::item",
+                        "name": "item",
+                        "item_type": "struct"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "struct");
+        assert_eq!(results[0].file_path, "");
+        assert_eq!(results[0].start_line, 0);
+        assert!(results[0].snippet.is_none());
+        assert!(results[0].docstring.is_none());
+    }
+
+    #[test]
+    fn test_parse_search_results_skips_invalid_items() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.9,
+                    "payload": {
+                        // Missing required "fqn" and "name"
+                        "kind": "function"
+                    }
+                },
+                {
+                    "score": 0.8,
+                    "payload": {
+                        "fqn": "valid::item",
+                        "name": "item",
+                        "item_type": "function"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].fqn, "valid::item");
+    }
+
+    #[test]
+    fn test_metrics_creation() {
+        let metrics = Metrics::new();
+        metrics.record_request("test_endpoint", "GET");
+        metrics.record_error("test_endpoint", "500");
+        // No panic = success
+    }
+
+    #[test]
+    fn test_api_error_serialization() {
+        let api_error = ApiError {
+            error: "Something went wrong".to_string(),
+            code: "INTERNAL_ERROR".to_string(),
+        };
+        let json = serde_json::to_value(&api_error).unwrap();
+        assert_eq!(json["error"], "Something went wrong");
+        assert_eq!(json["code"], "INTERNAL_ERROR");
+    }
+
+    #[test]
+    fn test_search_semantic_request_deserialization() {
+        let json = serde_json::json!({
+            "query": "find authentication functions",
+            "limit": 5,
+            "score_threshold": 0.7,
+            "crate_filter": "my_crate"
+        });
+
+        let req: SearchSemanticRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.query, "find authentication functions");
+        assert_eq!(req.limit, 5);
+        assert_eq!(req.score_threshold, Some(0.7));
+        assert_eq!(req.crate_filter, Some("my_crate".to_string()));
+    }
+
+    #[test]
+    fn test_search_semantic_request_defaults() {
+        let json = serde_json::json!({
+            "query": "test"
+        });
+
+        let req: SearchSemanticRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.limit, 10); // default_limit
+        assert!(req.score_threshold.is_none());
+        assert!(req.crate_filter.is_none());
+    }
+
+    #[test]
+    fn test_query_graph_request_deserialization() {
+        let json = serde_json::json!({
+            "query": "MATCH (n) RETURN n LIMIT 10",
+            "parameters": {"name": "test"},
+            "limit": 20
+        });
+
+        let req: QueryGraphRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.query, "MATCH (n) RETURN n LIMIT 10");
+        assert_eq!(req.parameters.get("name").unwrap(), "test");
+        assert_eq!(req.limit, 20);
+    }
+
+    #[test]
+    fn test_health_response_serialization() {
+        let mut deps = HashMap::new();
+        deps.insert("postgres".to_string(), DependencyStatus {
+            status: "healthy".to_string(),
+            latency_ms: Some(5),
+            error: None,
+        });
+
+        let resp = HealthResponse {
+            status: "healthy".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            version: "0.1.0".to_string(),
+            dependencies: deps,
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["status"], "healthy");
+        assert_eq!(json["dependencies"]["postgres"]["status"], "healthy");
+        assert_eq!(json["dependencies"]["postgres"]["latency_ms"], 5);
+    }
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
