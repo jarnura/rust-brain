@@ -655,9 +655,187 @@ mod tests {
         let item = make_test_item();
         let payload = service.build_item_payload(&item, "test text");
         
-        assert_eq!(payload.get("fqn").unwrap().as_str().unwrap(), "test_crate::module::test_fn");
-        assert_eq!(payload.get("name").unwrap().as_str().unwrap(), "test_fn");
-        assert_eq!(payload.get("item_type").unwrap().as_str().unwrap(), "function");
-        assert_eq!(payload.get("crate_name").unwrap().as_str().unwrap(), "test_crate");
+        assert!(matches!(payload.get("fqn"), Some(PayloadValue::String(s)) if s == "test_crate::module::test_fn"));
+        assert!(matches!(payload.get("name"), Some(PayloadValue::String(s)) if s == "test_fn"));
+        assert!(matches!(payload.get("item_type"), Some(PayloadValue::String(s)) if s == "function"));
+        assert!(matches!(payload.get("crate_name"), Some(PayloadValue::String(s)) if s == "test_crate"));
+    }
+
+    #[test]
+    fn test_build_item_payload_has_module_path() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config).unwrap();
+
+        let item = make_test_item();
+        let payload = service.build_item_payload(&item, "test text");
+
+        assert!(matches!(payload.get("module_path"), Some(PayloadValue::String(s)) if s == "test_crate::module"));
+        assert!(matches!(payload.get("signature"), Some(PayloadValue::String(s)) if s.contains("test_fn")));
+        assert!(matches!(payload.get("start_line"), Some(PayloadValue::Integer(10))));
+        assert!(matches!(payload.get("end_line"), Some(PayloadValue::Integer(15))));
+        assert!(matches!(payload.get("has_generics"), Some(PayloadValue::Boolean(false))));
+    }
+
+    #[test]
+    fn test_build_item_payload_with_generics() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config).unwrap();
+
+        let mut item = make_test_item();
+        item.generic_params = vec![crate::parsers::GenericParam {
+            name: "T".to_string(),
+            kind: "type".to_string(),
+            bounds: vec!["Clone".to_string()],
+            default: None,
+        }];
+
+        let payload = service.build_item_payload(&item, "text");
+        assert!(matches!(payload.get("has_generics"), Some(PayloadValue::Boolean(true))));
+        assert!(payload.contains_key("generic_params"));
+    }
+
+    #[test]
+    fn test_build_item_payload_with_where_clauses() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config).unwrap();
+
+        let mut item = make_test_item();
+        item.where_clauses = vec![crate::parsers::WhereClause {
+            subject: "T".to_string(),
+            bounds: vec!["Send".to_string(), "Sync".to_string()],
+        }];
+
+        let payload = service.build_item_payload(&item, "text");
+        assert!(payload.contains_key("trait_bounds"));
+        assert!(payload.contains_key("where_clauses"));
+    }
+
+    #[test]
+    fn test_build_doc_payload() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config).unwrap();
+
+        let chunk = text_representation::DocChunk {
+            text: "This is doc text".to_string(),
+            source_fqn: "my_crate::module::item".to_string(),
+            source_item_type: "function".to_string(),
+            chunk_index: 0,
+        };
+
+        let payload = service.build_doc_payload(&chunk);
+        assert!(matches!(payload.get("source_fqn"), Some(PayloadValue::String(s)) if s == "my_crate::module::item"));
+        assert!(matches!(payload.get("crate_name"), Some(PayloadValue::String(s)) if s == "my_crate"));
+        assert!(matches!(payload.get("chunk_index"), Some(PayloadValue::Integer(0))));
+        assert!(matches!(payload.get("text"), Some(PayloadValue::String(s)) if s == "This is doc text"));
+    }
+
+    #[test]
+    fn test_doc_chunk_point_id_deterministic() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config).unwrap();
+
+        let chunk = text_representation::DocChunk {
+            text: "text".to_string(),
+            source_fqn: "crate::fn".to_string(),
+            source_item_type: "function".to_string(),
+            chunk_index: 0,
+        };
+
+        let id1 = service.doc_chunk_to_point_id(&chunk);
+        let id2 = service.doc_chunk_to_point_id(&chunk);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_doc_chunk_different_indices_different_ids() {
+        let config = EmbeddingConfig::default();
+        let service = EmbeddingService::new(config).unwrap();
+
+        let chunk0 = text_representation::DocChunk {
+            text: "text".to_string(),
+            source_fqn: "crate::fn".to_string(),
+            source_item_type: "function".to_string(),
+            chunk_index: 0,
+        };
+        let chunk1 = text_representation::DocChunk {
+            text: "text".to_string(),
+            source_fqn: "crate::fn".to_string(),
+            source_item_type: "function".to_string(),
+            chunk_index: 1,
+        };
+
+        assert_ne!(
+            service.doc_chunk_to_point_id(&chunk0),
+            service.doc_chunk_to_point_id(&chunk1)
+        );
+    }
+
+    #[test]
+    fn test_search_result_from_qdrant_result() {
+        let mut payload = HashMap::new();
+        payload.insert("fqn".to_string(), PayloadValue::from("crate::my_fn"));
+        payload.insert("name".to_string(), PayloadValue::from("my_fn"));
+        payload.insert("item_type".to_string(), PayloadValue::from("function"));
+        payload.insert("crate_name".to_string(), PayloadValue::from("crate"));
+        payload.insert("start_line".to_string(), PayloadValue::Integer(5));
+        payload.insert("end_line".to_string(), PayloadValue::Integer(10));
+        payload.insert("signature".to_string(), PayloadValue::from("fn my_fn()"));
+        payload.insert("doc_comment".to_string(), PayloadValue::from("A function"));
+
+        let qdrant_result = qdrant_client::SearchResult {
+            id: "some-id".to_string(),
+            score: 0.95,
+            payload,
+        };
+
+        let result: SearchResult = qdrant_result.into();
+        assert_eq!(result.fqn, "crate::my_fn");
+        assert_eq!(result.name, "my_fn");
+        assert_eq!(result.item_type, "function");
+        assert_eq!(result.crate_name, "crate");
+        assert_eq!(result.start_line, 5);
+        assert_eq!(result.end_line, 10);
+        assert_eq!(result.signature, "fn my_fn()");
+        assert_eq!(result.doc_comment, Some("A function".to_string()));
+        assert!((result.score - 0.95).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_search_result_from_missing_payload_fields() {
+        let payload = HashMap::new();
+        let qdrant_result = qdrant_client::SearchResult {
+            id: "id".to_string(),
+            score: 0.5,
+            payload,
+        };
+
+        let result: SearchResult = qdrant_result.into();
+        assert_eq!(result.fqn, "");
+        assert_eq!(result.name, "");
+        assert_eq!(result.start_line, 0);
+        assert!(result.doc_comment.is_none());
+    }
+
+    #[test]
+    fn test_embedding_config_default() {
+        let config = EmbeddingConfig::default();
+        assert_eq!(config.max_doc_chunk_size, MAX_DOC_CHUNK_SIZE);
+        assert_eq!(config.ollama.model, "nomic-embed-text");
+        assert_eq!(config.qdrant.vector_size, 768);
+    }
+
+    #[test]
+    fn test_service_creation() {
+        let service = EmbeddingService::new(EmbeddingConfig::default());
+        assert!(service.is_ok());
+    }
+
+    #[test]
+    fn test_service_with_urls() {
+        let service = EmbeddingService::with_urls(
+            "http://localhost:11434".to_string(),
+            "http://localhost:6333".to_string(),
+        );
+        assert!(service.is_ok());
     }
 }

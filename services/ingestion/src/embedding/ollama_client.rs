@@ -344,4 +344,46 @@ mod tests {
     fn test_expected_dimensions() {
         assert_eq!(EXPECTED_DIMENSIONS, 768);
     }
+
+    #[test]
+    fn test_max_batch_size() {
+        assert_eq!(MAX_BATCH_SIZE, 32);
+    }
+
+    #[test]
+    fn test_default_model() {
+        assert_eq!(DEFAULT_MODEL, "nomic-embed-text");
+    }
+
+    #[test]
+    fn test_client_creation() {
+        let client = OllamaClient::new(OllamaConfig::default());
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.model(), DEFAULT_MODEL);
+        assert_eq!(client.dimensions(), EXPECTED_DIMENSIONS);
+    }
+
+    #[test]
+    fn test_client_with_base_url() {
+        let client = OllamaClient::with_base_url("http://localhost:11434".to_string());
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_config_custom_values() {
+        let config = OllamaConfig {
+            base_url: "http://custom:8080".to_string(),
+            model: "custom-model".to_string(),
+            max_batch_size: 16,
+            timeout: Duration::from_secs(120),
+            max_retries: 3,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(60),
+        };
+        assert_eq!(config.base_url, "http://custom:8080");
+        assert_eq!(config.model, "custom-model");
+        assert_eq!(config.max_batch_size, 16);
+        assert_eq!(config.max_retries, 3);
+    }
 }

@@ -15,6 +15,9 @@
 //! rustbrain-ingestion --crate-path /path/to/crate --dry-run
 //! ```
 
+// Allow dead code for infrastructure that pipeline stages will use when fully integrated
+#![allow(dead_code)]
+
 pub mod parsers;
 pub mod typecheck;
 pub mod pipeline;
@@ -89,7 +92,7 @@ async fn main() -> Result<()> {
     
     // Initialize logging
     let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
-    let subscriber = FmtSubscriber::builder()
+    let _subscriber = FmtSubscriber::builder()
         .with_max_level(log_level)
         .with_target(false)
         .with_thread_ids(false)

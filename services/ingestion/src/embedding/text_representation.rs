@@ -5,8 +5,11 @@
 
 use crate::parsers::{GenericParam, ItemType, ParsedItem, Visibility, WhereClause};
 
-/// Maximum lines to include in body preview
-const MAX_BODY_PREVIEW_LINES: usize = 10;
+/// Maximum lines to include in body preview for long items
+const MAX_BODY_PREVIEW_LINES: usize = 20;
+
+/// Items shorter than this get their full body included
+const FULL_BODY_THRESHOLD_LINES: usize = 50;
 
 /// Text representation of a parsed item for embedding
 #[derive(Debug, Clone)]
@@ -46,6 +49,7 @@ pub fn generate_text_representation(item: &ParsedItem) -> TextRepresentation {
         ItemType::Macro => generate_macro_text(item),
         ItemType::Module => generate_module_text(item),
         ItemType::Use => generate_use_text(item),
+        ItemType::ExternBlock => generate_unknown_text(item, "extern"),
         ItemType::Unknown(s) => generate_unknown_text(item, s),
     };
     
@@ -533,12 +537,39 @@ fn extract_return_type_from_signature(signature: &str) -> String {
 
 /// Extract body preview (first N lines)
 fn extract_body_preview(body: &str, max_lines: usize) -> String {
-    body.lines()
-        .take(max_lines)
+    let line_count = body.lines().count();
+
+    // Include full body for short items (better embedding quality)
+    if line_count <= FULL_BODY_THRESHOLD_LINES {
+        return body.lines()
+            .enumerate()
+            .map(|(i, line)| format!("{:4}: {}", i + 1, line))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    // For longer items, show beginning and end for context
+    let head_lines = max_lines * 2 / 3; // ~13 lines from top
+    let tail_lines = max_lines - head_lines; // ~7 lines from bottom
+
+    let head: Vec<String> = body.lines()
+        .take(head_lines)
         .enumerate()
         .map(|(i, line)| format!("{:4}: {}", i + 1, line))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+
+    let all_lines: Vec<&str> = body.lines().collect();
+    let tail_start = line_count.saturating_sub(tail_lines);
+    let tail: Vec<String> = all_lines[tail_start..]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{:4}: {}", tail_start + i + 1, line))
+        .collect();
+
+    let mut result = head;
+    result.push(format!("  ... ({} lines omitted) ...", line_count - head_lines - tail_lines));
+    result.extend(tail);
+    result.join("\n")
 }
 
 /// Format doc comment for embedding
@@ -570,7 +601,7 @@ fn split_fqn(fqn: &str) -> (String, String) {
 fn extract_struct_fields(body: &str) -> String {
     let mut fields = Vec::new();
     let mut in_field = false;
-    let mut current_field = String::new();
+    let _current_field = String::new();
     let mut brace_count = 0;
     
     for line in body.lines() {
@@ -871,6 +902,183 @@ mod tests {
     }
     
     #[test]
+    fn test_generate_function_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::utils::do_thing".to_string(),
+            item_type: ItemType::Function,
+            name: "do_thing".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub fn do_thing(x: i32) -> bool".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: "Does a thing".to_string(),
+            start_line: 1,
+            end_line: 3,
+            body_source: "pub fn do_thing(x: i32) -> bool { x > 0 }".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "function");
+        assert!(!rep.is_doc_chunk);
+        assert!(rep.text.contains("do_thing"));
+        assert!(rep.text.contains("bool"));
+        assert!(rep.text.contains("my_crate"));
+    }
+
+    #[test]
+    fn test_generate_struct_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::MyStruct".to_string(),
+            item_type: ItemType::Struct,
+            name: "MyStruct".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub struct MyStruct".to_string(),
+            generic_params: vec![GenericParam {
+                name: "T".to_string(),
+                kind: "type".to_string(),
+                bounds: vec!["Clone".to_string()],
+                default: None,
+            }],
+            where_clauses: vec![],
+            attributes: vec!["#[derive(Debug, Clone)]".to_string()],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: "pub struct MyStruct<T: Clone> {\n    field: T,\n}".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "struct");
+        assert!(rep.text.contains("MyStruct"));
+        assert!(rep.text.contains("T: Clone"));
+        assert!(rep.text.contains("Debug, Clone"));
+    }
+
+    #[test]
+    fn test_generate_enum_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::Color".to_string(),
+            item_type: ItemType::Enum,
+            name: "Color".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub enum Color".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: "pub enum Color {\n    Red,\n    Green,\n    Blue,\n}".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "enum");
+        assert!(rep.text.contains("Color"));
+        assert!(rep.text.contains("Red"));
+    }
+
+    #[test]
+    fn test_generate_trait_text() {
+        let item = ParsedItem {
+            fqn: "my_crate::Processor".to_string(),
+            item_type: ItemType::Trait,
+            name: "Processor".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub trait Processor".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: "pub trait Processor {\n    fn process(&self);\n}".to_string(),
+        };
+
+        let rep = generate_text_representation(&item);
+        assert_eq!(rep.item_type, "trait");
+        assert!(rep.text.contains("Processor"));
+        assert!(rep.text.contains("process"));
+    }
+
+    #[test]
+    fn test_extract_doc_chunks_empty() {
+        let item = ParsedItem {
+            fqn: "test::func".to_string(),
+            item_type: ItemType::Function,
+            name: "func".to_string(),
+            visibility: Visibility::Public,
+            signature: "pub fn func()".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 1,
+            body_source: "pub fn func() {}".to_string(),
+        };
+
+        let chunks = extract_doc_chunks(&item, 100);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_extract_return_type() {
+        assert_eq!(extract_return_type_from_signature("fn foo() -> i32 {"), "i32");
+        assert_eq!(extract_return_type_from_signature("fn foo()"), "()");
+        assert_eq!(extract_return_type_from_signature("fn foo() -> Result<String, Error> where T: Clone"), "Result<String, Error>");
+    }
+
+    #[test]
+    fn test_extract_params() {
+        assert_eq!(extract_params_from_signature("fn foo(x: i32, y: String)"), "x: i32, y: String");
+        assert_eq!(extract_params_from_signature("fn foo()"), "");
+    }
+
+    #[test]
+    fn test_format_doc_comment() {
+        assert_eq!(format_doc_comment(""), "No documentation");
+        assert_eq!(format_doc_comment("Hello world"), "Documentation: Hello world");
+    }
+
+    #[test]
+    fn test_split_fqn_single_component() {
+        let (crate_name, module_path) = split_fqn("my_crate");
+        assert_eq!(crate_name, "my_crate");
+        assert_eq!(module_path, "my_crate");
+    }
+
+    #[test]
+    fn test_extract_derive_traits() {
+        let attrs = vec!["#[derive(Debug, Clone, Serialize)]".to_string()];
+        let result = extract_derive_traits(&attrs);
+        assert!(result.contains("Debug"));
+        assert!(result.contains("Clone"));
+        assert!(result.contains("Serialize"));
+    }
+
+    #[test]
+    fn test_extract_derive_traits_none() {
+        let attrs: Vec<String> = vec!["#[cfg(test)]".to_string()];
+        assert_eq!(extract_derive_traits(&attrs), "none");
+    }
+
+    #[test]
+    fn test_where_clauses_empty() {
+        assert_eq!(where_clauses_to_string(&[]), "none");
+    }
+
+    #[test]
+    fn test_where_clauses_with_bounds() {
+        let clauses = vec![WhereClause {
+            subject: "T".to_string(),
+            bounds: vec!["Clone".to_string(), "Send".to_string()],
+        }];
+        let result = where_clauses_to_string(&clauses);
+        assert!(result.contains("T: Clone + Send"));
+    }
+
+    #[test]
     fn test_generics_to_string() {
         let generics = vec![
             GenericParam {
@@ -890,5 +1098,35 @@ mod tests {
         let result = generics_to_string(&generics);
         assert!(result.contains("T: Clone + Send"));
         assert!(result.contains("'a"));
+    }
+
+    #[test]
+    fn test_body_preview_short_item_includes_full_body() {
+        // Items under FULL_BODY_THRESHOLD_LINES should include full body
+        let body = (1..=10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let preview = extract_body_preview(&body, MAX_BODY_PREVIEW_LINES);
+        // All 10 lines should be present
+        assert!(preview.contains("line 1"));
+        assert!(preview.contains("line 10"));
+        assert!(!preview.contains("omitted"));
+    }
+
+    #[test]
+    fn test_body_preview_long_item_shows_head_and_tail() {
+        // Items over FULL_BODY_THRESHOLD_LINES should show head + tail
+        let body = (1..=100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let preview = extract_body_preview(&body, MAX_BODY_PREVIEW_LINES);
+        // Should have head lines
+        assert!(preview.contains("line 1"));
+        // Should have tail lines
+        assert!(preview.contains("line 100"));
+        // Should have omission indicator
+        assert!(preview.contains("omitted"));
+    }
+
+    #[test]
+    fn test_full_body_threshold() {
+        assert_eq!(FULL_BODY_THRESHOLD_LINES, 50);
+        assert_eq!(MAX_BODY_PREVIEW_LINES, 20);
     }
 }

@@ -45,5 +45,8 @@ config = "0.14"
 # Pin home to avoid Rust 1.88 requirement
 home = "=0.5.9"
 
-# Build standalone, not as part of parent workspace
-[workspace]
+# Graph database
+neo4rs = "0.7"
+
+# Shared types
+rustbrain-common = { path = "../../crates/rustbrain-common" }

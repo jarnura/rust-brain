@@ -115,6 +115,7 @@ impl TreeSitterParser {
             "macro_invocation" | "macro_definition" => Some(ItemType::Macro),
             "mod_item" => Some(ItemType::Module),
             "use_declaration" => Some(ItemType::Use),
+            "foreign_mod_item" | "extern_crate_declaration" => Some(ItemType::ExternBlock),
             _ => None,
         }
     }
@@ -205,8 +206,21 @@ impl TreeSitterParser {
         let source_bytes = source.as_bytes();
         let tree = self.parser.lock().unwrap().parse(source, None)?;
         let root = tree.root_node();
-        
-        self.find_visibility(root, source_bytes)
+
+        // First try direct children of root (unlikely)
+        if let Some(vis) = self.find_visibility(root, source_bytes) {
+            return Some(vis);
+        }
+
+        // Then try children of the first item node (e.g., function_item, struct_item)
+        let mut cursor = root.walk();
+        if cursor.goto_first_child() {
+            if let Some(vis) = self.find_visibility(cursor.node(), source_bytes) {
+                return Some(vis);
+            }
+        }
+
+        None
     }
     
     /// Find visibility modifier in a node
@@ -443,9 +457,22 @@ pub struct Point {
 /// that does something.
 pub fn do_thing() {}
 "#;
-        
+
         let doc = parser.extract_doc_comments(source, 4);
         assert!(doc.contains("This is a function"));
         assert!(doc.contains("that does something"));
+    }
+
+    #[test]
+    fn test_parse_extern_crate() {
+        let parser = TreeSitterParser::new().unwrap();
+        let source = r#"
+extern crate serde;
+"#;
+        let skeletons = parser.extract_skeletons(source).unwrap();
+        assert!(!skeletons.is_empty());
+        let extern_item = skeletons.iter()
+            .find(|s| matches!(s.item_type, ItemType::ExternBlock));
+        assert!(extern_item.is_some(), "Should detect extern crate as ExternBlock");
     }
 }

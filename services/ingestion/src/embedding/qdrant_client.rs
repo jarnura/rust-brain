@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Collection name for code embeddings
@@ -578,5 +578,112 @@ mod tests {
             PayloadValue::Integer(i) => assert_eq!(i, 42),
             _ => panic!("Expected Integer variant"),
         }
+    }
+
+    #[test]
+    fn test_payload_value_from_i32() {
+        let v: PayloadValue = 42i32.into();
+        match v {
+            PayloadValue::Integer(i) => assert_eq!(i, 42),
+            _ => panic!("Expected Integer variant"),
+        }
+    }
+
+    #[test]
+    fn test_payload_value_from_usize() {
+        let v: PayloadValue = 100usize.into();
+        match v {
+            PayloadValue::Integer(i) => assert_eq!(i, 100),
+            _ => panic!("Expected Integer variant"),
+        }
+    }
+
+    #[test]
+    fn test_payload_value_from_bool() {
+        let v: PayloadValue = true.into();
+        match v {
+            PayloadValue::Boolean(b) => assert!(b),
+            _ => panic!("Expected Boolean variant"),
+        }
+    }
+
+    #[test]
+    fn test_payload_value_from_f64() {
+        let v: PayloadValue = 3.14f64.into();
+        match v {
+            PayloadValue::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            _ => panic!("Expected Float variant"),
+        }
+    }
+
+    #[test]
+    fn test_payload_value_from_owned_string() {
+        let v: PayloadValue = String::from("owned").into();
+        match v {
+            PayloadValue::String(s) => assert_eq!(s, "owned"),
+            _ => panic!("Expected String variant"),
+        }
+    }
+
+    #[test]
+    fn test_point_construction() {
+        let point = Point {
+            id: Uuid::nil(),
+            vector: vec![1.0, 2.0, 3.0],
+            payload: HashMap::new(),
+        };
+        assert_eq!(point.vector.len(), 3);
+        assert!(point.payload.is_empty());
+    }
+
+    #[test]
+    fn test_client_creation() {
+        let client = QdrantClient::new(QdrantConfig::default());
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.code_collection(), CODE_COLLECTION);
+        assert_eq!(client.doc_collection(), DOC_COLLECTION);
+        assert_eq!(client.vector_size(), 768);
+    }
+
+    #[test]
+    fn test_client_with_base_url() {
+        let client = QdrantClient::with_base_url("http://localhost:6333".to_string());
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_search_request_serialization() {
+        let req = SearchRequest {
+            vector: vec![0.1, 0.2, 0.3],
+            limit: Some(10),
+            score_threshold: Some(0.5),
+            filter: None,
+            with_payload: true,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["limit"], 10);
+        assert_eq!(json["with_payload"], true);
+        assert!(json.get("filter").is_none() || json["filter"].is_null());
+    }
+
+    #[test]
+    fn test_search_request_with_filter() {
+        let req = SearchRequest {
+            vector: vec![0.1],
+            limit: Some(5),
+            score_threshold: None,
+            filter: Some(Filter {
+                must: vec![Condition {
+                    key: "crate_name".to_string(),
+                    match_: Match {
+                        value: PayloadValue::from("my_crate"),
+                    },
+                }],
+            }),
+            with_payload: true,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("filter").is_some());
     }
 }
