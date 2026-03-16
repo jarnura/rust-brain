@@ -15,14 +15,37 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /build
 
-# Copy manifests first for better caching
+# Copy workspace manifest
 COPY Cargo.toml ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release && rm -rf src
 
-# Copy actual source and build
-COPY src ./src
-RUN touch src/main.rs && cargo build --release
+# Copy crate manifests
+COPY crates/rustbrain-common/Cargo.toml ./crates/rustbrain-common/
+COPY services/api/Cargo.toml ./services/api/
+COPY services/ingestion/Cargo.toml ./services/ingestion/
+
+# Create dummy source files for dependency caching
+RUN mkdir -p crates/rustbrain-common/src \
+    && mkdir -p services/api/src \
+    && mkdir -p services/ingestion/src \
+    && echo "pub fn dummy() {}" > crates/rustbrain-common/src/lib.rs \
+    && echo "fn main() {}" > services/api/src/main.rs \
+    && echo "fn main() {}" > services/ingestion/src/main.rs
+
+# Build dependencies
+RUN cargo build --release -p rustbrain-api
+
+# Now copy actual source
+COPY crates/rustbrain-common/src ./crates/rustbrain-common/src
+COPY services/api/src ./services/api/src
+COPY services/api/static ./services/api/static
+COPY services/ingestion/src ./services/ingestion/src
+
+# Touch to force rebuild
+RUN touch crates/rustbrain-common/src/lib.rs \
+    && touch services/api/src/main.rs
+
+# Build the API service
+RUN cargo build --release -p rustbrain-api
 
 # Runtime stage
 FROM debian:bookworm-slim AS runtime

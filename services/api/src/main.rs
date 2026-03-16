@@ -23,6 +23,18 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info};
 
 // =============================================================================
+// Playground - serve embedded HTML
+// =============================================================================
+
+async fn playground_html() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/html; charset=utf-8")],
+        include_str!("../static/playground.html"),
+    )
+}
+
+// =============================================================================
 // Configuration
 // =============================================================================
 
@@ -1891,6 +1903,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics_handler))
+        .route("/playground", get(playground_html))
         .route("/tools/search_semantic", post(search_semantic))
         .route("/tools/get_function", get(get_function))
         .route("/tools/get_callers", get(get_callers))

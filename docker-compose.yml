@@ -205,8 +205,8 @@ services:
 
   api:
     build:
-      context: ./services/api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/api/Dockerfile
     container_name: rustbrain-api
     ports:
       - "${API_PORT:-8088}:8080"
