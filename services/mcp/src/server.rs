@@ -248,7 +248,7 @@ impl McpServer {
 
     /// Handle an incoming message
     #[instrument(skip(self))]
-    async fn handle_message(&mut self, line: &str) -> Result<Option<JsonRpcResponse>> {
+    pub async fn handle_message(&mut self, line: &str) -> Result<Option<JsonRpcResponse>> {
         let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
@@ -415,7 +415,7 @@ impl McpServer {
     }
 
     /// Create an error response
-    fn error_response(&self, id: Option<Id>, code: i32, message: &str) -> JsonRpcResponse {
+    pub fn error_response(&self, id: Option<Id>, code: i32, message: &str) -> JsonRpcResponse {
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id,
@@ -438,8 +438,13 @@ mod tests {
             transport: crate::config::Transport::Stdio,
             api_base_url: "http://localhost:8088".to_string(),
             http_timeout: 5,
+            #[cfg(feature = "sse")]
+            port: 3001,
             max_search_results: 50,
             default_search_limit: 10,
+            opencode_host: "http://opencode:4096".to_string(),
+            opencode_auth_user: None,
+            opencode_auth_pass: None,
         }
     }
 

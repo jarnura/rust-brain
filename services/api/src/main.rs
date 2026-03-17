@@ -2,6 +2,7 @@
 //!
 //! Provides REST endpoints for code intelligence queries.
 
+pub mod opencode;
 pub mod config;
 pub mod errors;
 pub mod state;
@@ -10,6 +11,7 @@ pub mod handlers;
 mod gaps;
 
 use axum::{
+    response::Redirect,
     routing::{get, post},
     Router,
 };
@@ -18,11 +20,17 @@ use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use config::{Config, redact_url};
 use state::{AppState, Metrics};
+
+/// Redirect /playground to /playground/ for static file serving
+async fn playground_redirect() -> Redirect {
+    Redirect::permanent("/playground/")
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -67,6 +75,13 @@ async fn main() -> anyhow::Result<()> {
     // Create metrics
     let metrics = Arc::new(Metrics::new());
 
+    // Create OpenCode client
+    let opencode_client = opencode::OpenCodeClient::new(
+        config.opencode_host.clone(),
+        config.opencode_auth_user.clone(),
+        config.opencode_auth_pass.clone(),
+    );
+
     // Create app state
     let state = AppState {
         config: config.clone(),
@@ -74,15 +89,22 @@ async fn main() -> anyhow::Result<()> {
         neo4j_graph: Arc::new(neo4j_graph),
         http_client,
         metrics,
+        opencode_client,
     };
 
     // Build router
     let app = Router::new()
+        // Health & metrics
         .route("/health", get(handlers::health::health))
         .route("/metrics", get(handlers::health::metrics_handler))
-        .route("/playground", get(handlers::playground::playground_html))
+        // Playground (static file serving)
+        .route("/playground", get(playground_redirect))
+        .nest_service("/playground/", ServeDir::new("static").append_index_html_on_directories(true))
+        // Code intelligence tools
         .route("/tools/search_semantic", post(handlers::search::search_semantic))
         .route("/tools/chat", post(handlers::chat::chat_handler))
+        .route("/tools/chat/stream", get(handlers::chat::chat_stream_handler))
+        .route("/tools/chat/send", post(handlers::chat::chat_send_handler))
         .route("/tools/get_function", get(handlers::items::get_function))
         .route("/tools/get_callers", get(handlers::items::get_callers))
         .route("/tools/get_trait_impls", get(handlers::graph::get_trait_impls))
@@ -90,6 +112,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/get_module_tree", get(handlers::graph::get_module_tree))
         .route("/tools/query_graph", post(handlers::graph::query_graph))
         .route("/tools/aggregate_search", post(handlers::search::aggregate_search))
+        // OpenCode session management
+        .route("/tools/chat/sessions", post(handlers::chat::chat_sessions_create).get(handlers::chat::chat_sessions_list))
+        .route("/tools/chat/sessions/:id", get(handlers::chat::chat_sessions_get).delete(handlers::chat::chat_sessions_delete))
+        .route("/tools/chat/sessions/:id/fork", post(handlers::chat::chat_sessions_fork))
+        .route("/tools/chat/sessions/:id/abort", post(handlers::chat::chat_sessions_abort))
+        // Middleware
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .layer(TraceLayer::new_for_http())
         .with_state(state);

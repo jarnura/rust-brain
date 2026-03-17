@@ -132,6 +132,25 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
         }
     }
 
+    // Check OpenCode
+    let start = std::time::Instant::now();
+    match state.opencode_client.health_check().await {
+        Ok(true) => {
+            dependencies.insert("opencode".to_string(), DependencyStatus {
+                status: "healthy".to_string(),
+                latency_ms: Some(start.elapsed().as_millis() as u64),
+                error: None,
+            });
+        }
+        Ok(false) | Err(_) => {
+            dependencies.insert("opencode".to_string(), DependencyStatus {
+                status: "unhealthy".to_string(),
+                latency_ms: Some(start.elapsed().as_millis() as u64),
+                error: Some("OpenCode health check failed".to_string()),
+            });
+        }
+    }
+
     let all_healthy = dependencies.values().all(|d| d.status == "healthy");
     let status = if all_healthy { "healthy" } else { "degraded" };
 

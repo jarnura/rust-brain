@@ -222,6 +222,7 @@ services:
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       RUST_LOG: ${RUST_LOG:-info,rustbrain_api=debug}
       API_PORT: 8080
+      OPENCODE_HOST: http://opencode:4096
     depends_on:
       postgres:
         condition: service_healthy
@@ -270,6 +271,96 @@ services:
     # To use: docker exec -i rustbrain-mcp rustbrain-mcp
 
   # ---------------------------------------------------------------------------
+  # AI GATEWAY LAYER
+  # ---------------------------------------------------------------------------
+
+  litellm:
+    build:
+      context: ./configs/litellm
+      dockerfile: Dockerfile
+    container_name: rustbrain-litellm
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  mcp-sse:
+    build:
+      context: ./services/mcp
+      dockerfile: Dockerfile
+    container_name: rustbrain-mcp-sse
+    ports:
+      - "127.0.0.1:${MCP_SSE_PORT:-3001}:3001"
+    environment:
+      API_BASE_URL: http://api:8080
+      RUST_LOG: ${RUST_LOG:-info,rustbrain_mcp=debug}
+      MCP_TRANSPORT: sse
+      MCP_PORT: 3001
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  opencode:
+    build:
+      context: ./configs/opencode
+      dockerfile: Dockerfile
+    container_name: rustbrain-opencode
+    ports:
+      - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
+    volumes:
+      - opencode_data:/home/opencode/.local/share/opencode
+      - ./configs/opencode/config.json:/home/opencode/.config/opencode/config.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4096/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      mcp-sse:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------------------
   # INGESTION LAYER
   # ---------------------------------------------------------------------------
 
@@ -310,3 +401,4 @@ volumes:
   ollama_data:
   prometheus_data:
   grafana_data:
+  opencode_data:

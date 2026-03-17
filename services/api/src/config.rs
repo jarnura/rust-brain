@@ -28,6 +28,9 @@ pub struct Config {
     pub collection_name: String,
     pub chat_model: String,
     pub port: u16,
+    pub opencode_host: String,
+    pub opencode_auth_user: Option<String>,
+    pub opencode_auth_pass: Option<String>,
 }
 
 impl Config {
@@ -57,6 +60,10 @@ impl Config {
             port: std::env::var("API_PORT")
                 .map(|s| s.parse().unwrap_or(8080))
                 .unwrap_or(8080),
+            opencode_host: std::env::var("OPENCODE_HOST")
+                .unwrap_or_else(|_| "http://opencode:4096".to_string()),
+            opencode_auth_user: std::env::var("OPENCODE_AUTH_USER").ok(),
+            opencode_auth_pass: std::env::var("OPENCODE_AUTH_PASS").ok(),
         }
     }
 }
@@ -79,6 +86,9 @@ mod tests {
             collection_name: "rust_functions".to_string(),
             chat_model: "codellama:7b".to_string(),
             port: 8080,
+            opencode_host: "http://opencode:4096".to_string(),
+            opencode_auth_user: None,
+            opencode_auth_pass: None,
         };
 
         assert_eq!(config.embedding_dimensions, 768);

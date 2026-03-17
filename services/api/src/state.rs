@@ -1,6 +1,7 @@
 //! Application state and metrics for the rust-brain API server.
 
 use crate::config::Config;
+use crate::opencode::OpenCodeClient;
 use neo4rs::Graph;
 use prometheus::Registry;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ pub struct AppState {
     pub neo4j_graph: Arc<Graph>,
     pub http_client: reqwest::Client,
     pub metrics: Arc<Metrics>,
+    pub opencode_client: OpenCodeClient,
 }
 
 pub struct Metrics {
