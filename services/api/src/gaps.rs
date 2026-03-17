@@ -75,7 +75,8 @@ pub struct Recommendation {
 // Gap Analysis Implementation
 // =============================================================================
 
-use crate::{AppState, execute_neo4j_query};
+use crate::state::AppState;
+use crate::neo4j::execute_neo4j_query;
 
 impl GapAnalysis {
     /// Perform comprehensive gap analysis of the rust-brain system
@@ -497,7 +498,7 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
     ).await {
         Ok(results) => {
             let test_val = results.first()
-                .and_then(|r| r.as_array()?.first()?.as_i64());
+                .and_then(|r| r.get("test")?.as_i64());
             
             if test_val == Some(1) {
                 details.push("Neo4j Cypher queries are working".to_string());
@@ -543,17 +544,17 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
 // Data Quality Assessment
 // =============================================================================
 
-/// Helper to extract count from Neo4j row result (returns array format)
+/// Helper to extract count from Neo4j row result (row is a JSON object with a "count" key)
 fn extract_count(results: &[serde_json::Value]) -> usize {
     results.first()
-        .and_then(|r| r.as_array()?.first()?.as_i64())
+        .and_then(|r| r.get("count")?.as_i64())
         .unwrap_or(0) as usize
 }
 
-/// Helper to extract boolean from Neo4j row result
+/// Helper to extract boolean from Neo4j row result (row is a JSON object with a "has" key)
 fn extract_bool(results: &[serde_json::Value]) -> bool {
     results.first()
-        .and_then(|r| r.as_array()?.first()?.as_bool())
+        .and_then(|r| r.get("has")?.as_bool())
         .unwrap_or(false)
 }
 
@@ -875,6 +876,100 @@ mod tests {
         assert!(!recommendations.is_empty(), "Should generate recommendations for broken features");
     }
     
+    #[test]
+    fn test_extract_count_from_object_row() {
+        // execute_neo4j_query returns Vec<serde_json::Value> where each row is an object,
+        // e.g. RETURN count(n) as count → [{"count": 42}]
+        let rows = vec![serde_json::json!({"count": 42})];
+        assert_eq!(extract_count(&rows), 42);
+
+        // Zero rows
+        assert_eq!(extract_count(&[]), 0);
+
+        // Row missing "count" key
+        let bad_rows = vec![serde_json::json!({"other": 5})];
+        assert_eq!(extract_count(&bad_rows), 0);
+    }
+
+    #[test]
+    fn test_extract_bool_from_object_row() {
+        // RETURN count(r) > 0 as has → [{"has": true}]
+        let rows_true = vec![serde_json::json!({"has": true})];
+        assert!(extract_bool(&rows_true));
+
+        let rows_false = vec![serde_json::json!({"has": false})];
+        assert!(!extract_bool(&rows_false));
+
+        // Empty / missing key defaults to false
+        assert!(!extract_bool(&[]));
+        let bad_rows = vec![serde_json::json!({"other": true})];
+        assert!(!extract_bool(&bad_rows));
+    }
+
+    #[test]
+    fn test_gap_analysis_output_structure() {
+        let analysis = GapAnalysis {
+            features: vec![
+                FeatureStatus {
+                    name: "semantic_search".to_string(),
+                    status: FeatureState::Working,
+                    description: "Semantic search".to_string(),
+                    details: Some("Qdrant and Ollama healthy".to_string()),
+                },
+                FeatureStatus {
+                    name: "get_callers".to_string(),
+                    status: FeatureState::Partial,
+                    description: "Get callers".to_string(),
+                    details: None,
+                },
+            ],
+            data_quality: DataQuality {
+                neo4j_nodes: 500,
+                neo4j_relationships: 300,
+                qdrant_points: 200,
+                postgres_items: 150,
+                has_embeddings: true,
+                has_call_graph: true,
+                has_trait_impls: false,
+            },
+            known_issues: get_known_issues(),
+            recommendations: generate_recommendations(
+                &[
+                    FeatureStatus {
+                        name: "get_callers".to_string(),
+                        status: FeatureState::Partial,
+                        description: "Get callers".to_string(),
+                        details: None,
+                    },
+                ],
+                &DataQuality {
+                    neo4j_nodes: 500,
+                    neo4j_relationships: 300,
+                    qdrant_points: 200,
+                    postgres_items: 150,
+                    has_embeddings: true,
+                    has_call_graph: true,
+                    has_trait_impls: false,
+                },
+            ),
+        };
+
+        // Verify structure
+        assert_eq!(analysis.features.len(), 2);
+        assert_eq!(analysis.data_quality.neo4j_nodes, 500);
+        assert!(analysis.data_quality.has_embeddings);
+        assert!(!analysis.data_quality.has_trait_impls);
+        assert!(!analysis.known_issues.is_empty());
+
+        // Verify JSON serialization round-trip preserves numeric fields as non-zero
+        let json = serde_json::to_value(&analysis).expect("should serialize");
+        assert_eq!(json["data_quality"]["neo4j_nodes"], 500);
+        assert_eq!(json["data_quality"]["neo4j_relationships"], 300);
+        assert_eq!(json["data_quality"]["qdrant_points"], 200);
+        assert_eq!(json["features"][0]["name"], "semantic_search");
+        assert_eq!(json["features"][1]["status"], "Partial");
+    }
+
     #[test]
     fn test_serialization() {
         let analysis = GapAnalysis {

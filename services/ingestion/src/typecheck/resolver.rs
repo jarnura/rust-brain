@@ -5,7 +5,7 @@
 //! - **Analyzed**: Full syn parsing for precise type extraction
 //! - **Heuristic**: Regex + pattern matching as fallback for complex or unparseable code
 
-use crate::parsers::{GenericParam, DualParser};
+use crate::parsers::GenericParam;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use syn::{
@@ -88,16 +88,12 @@ pub struct TraitImplementation {
 }
 
 /// The main type resolver
-pub struct TypeResolver {
-    parser: DualParser,
-}
+pub struct TypeResolver {}
 
 impl TypeResolver {
     /// Create a new type resolver
     pub fn new() -> Self {
-        Self {
-            parser: DualParser::new().expect("Failed to create DualParser"),
-        }
+        Self {}
     }
     
     /// Analyze expanded source code for type information

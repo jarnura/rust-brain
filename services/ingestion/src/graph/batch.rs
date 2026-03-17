@@ -387,12 +387,15 @@ fn rel_property_to_bolt(value: &super::relationships::PropertyValue) -> Option<B
 }
 
 /// High-performance streaming batch inserter
+// TODO: used by future streaming ingestion pipeline
+#[allow(dead_code)]
 pub struct StreamingBatchInserter {
     graph: Arc<Graph>,
     config: BatchConfig,
     stats: Arc<RwLock<BatchStats>>,
 }
 
+#[allow(dead_code)]
 impl StreamingBatchInserter {
     /// Create a new streaming batch inserter
     pub fn new(graph: Arc<Graph>, config: BatchConfig) -> Self {

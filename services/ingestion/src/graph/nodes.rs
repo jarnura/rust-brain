@@ -603,6 +603,8 @@ impl NodeBuilder {
 }
 
 /// Batch insert nodes using UNWIND for efficiency
+// TODO: used by future bulk-ingestion stage
+#[allow(dead_code)]
 pub async fn batch_insert_nodes(
     graph: &Graph,
     nodes: &[NodeData],

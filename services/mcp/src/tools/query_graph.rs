@@ -1,9 +1,11 @@
 //! MCP tool: query_graph
 //!
-//! Execute custom Cypher queries against the code graph
+//! Execute pre-approved named query templates against the code graph.
+//! Arbitrary Cypher is not accepted; callers select from a fixed allowlist of
+//! parameterized templates resolved server-side in resolve_named_query().
 
 use crate::client::ApiClient;
-use crate::error::{McpError, Result};
+use crate::error::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::instrument;
@@ -11,18 +13,14 @@ use tracing::instrument;
 /// Request for graph query
 #[derive(Debug, Deserialize)]
 pub struct QueryGraphRequest {
-    /// Cypher query (read-only)
-    pub query: String,
-    /// Query parameters
+    /// Name of a pre-approved query template.
+    /// Available: find_functions_by_name, find_callers, find_callees,
+    /// find_trait_implementations, find_by_fqn, find_neighbors,
+    /// find_nodes_by_label, find_module_contents, count_by_label, find_crate_overview
+    pub query_name: String,
+    /// Parameters for the query template (e.g. fqn, name, crate_name, label, limit)
     #[serde(default)]
     pub parameters: HashMap<String, serde_json::Value>,
-    /// Maximum number of results
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-}
-
-fn default_limit() -> usize {
-    50
 }
 
 /// Response from graph query
@@ -39,23 +37,10 @@ pub struct GraphQueryResponse {
 /// Execute the query_graph tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<String> {
-    // Validate query is read-only
-    let query_lower = request.query.to_lowercase();
-    let forbidden_keywords = ["create", "delete", "set ", "remove", "merge"];
-    
-    for keyword in &forbidden_keywords {
-        if query_lower.contains(keyword) {
-            return Err(McpError::InvalidRequest(
-                "Only read-only queries are allowed. CREATE, DELETE, SET, REMOVE, and MERGE are not permitted.".to_string()
-            ));
-        }
-    }
-
     let response: GraphQueryResponse = client
         .post("/tools/query_graph", &serde_json::json!({
-            "query": request.query,
+            "query_name": request.query_name,
             "parameters": request.parameters,
-            "limit": request.limit.min(100),
         }))
         .await?;
 
@@ -68,7 +53,7 @@ pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<S
         response.row_count
     );
 
-    output.push_str(&format!("**Query:**\n```cypher\n{}\n```\n\n", response.query));
+    output.push_str(&format!("**Query:** `{}`\n\n", response.query));
 
     output.push_str("## Results\n\n");
 
@@ -137,28 +122,35 @@ fn format_value(value: &serde_json::Value) -> String {
 pub fn definition() -> serde_json::Value {
     serde_json::json!({
         "name": "query_graph",
-        "description": "Execute a custom Cypher query against the code knowledge graph. This is an advanced tool for exploring relationships that aren't covered by other tools. Only read-only queries are allowed.",
+        "description": "Execute a named query template against the code knowledge graph. \
+                        Choose from pre-approved templates to explore code relationships safely. \
+                        Pass 'limit' (1-100) in parameters to control result count.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {
+                "query_name": {
                     "type": "string",
-                    "description": "Cypher query (read-only). Example: 'MATCH (f:Function)-[:CALLS]->(g:Function) RETURN f.name, g.name LIMIT 10'"
+                    "description": "Name of the query template to run.",
+                    "enum": [
+                        "find_functions_by_name",
+                        "find_callers",
+                        "find_callees",
+                        "find_trait_implementations",
+                        "find_by_fqn",
+                        "find_neighbors",
+                        "find_nodes_by_label",
+                        "find_module_contents",
+                        "count_by_label",
+                        "find_crate_overview"
+                    ]
                 },
                 "parameters": {
                     "type": "object",
-                    "description": "Query parameters (optional)",
+                    "description": "Template parameters. Common keys: fqn (str), name (str), crate_name (str), label (str: Crate|Module|Function|Struct|Enum|Trait|Impl|Type|TypeAlias|Const|Static|Macro), limit (int 1-100, default 25).",
                     "additionalProperties": true
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default: 50, max: 100)",
-                    "default": 50,
-                    "minimum": 1,
-                    "maximum": 100
                 }
             },
-            "required": ["query"]
+            "required": ["query_name"]
         }
     })
 }
@@ -179,44 +171,47 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
-        assert!(schema["properties"]["query"].is_object());
+        assert!(schema["properties"]["query_name"].is_object());
         assert!(schema["properties"]["parameters"].is_object());
-        assert!(schema["properties"]["limit"].is_object());
-        
+
         let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("query")));
+        assert!(required.contains(&serde_json::json!("query_name")));
+    }
+
+    #[test]
+    fn test_definition_enum_values() {
+        let schema = &definition()["inputSchema"];
+        let enum_values = schema["properties"]["query_name"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(enum_values.contains(&serde_json::json!("find_functions_by_name")));
+        assert!(enum_values.contains(&serde_json::json!("find_callers")));
+        assert!(enum_values.contains(&serde_json::json!("count_by_label")));
     }
 
     #[test]
     fn test_query_graph_request_deserialization() {
         let json = r#"{
-            "query": "MATCH (f:Function) RETURN f.name",
-            "parameters": {"limit": 10},
-            "limit": 50
+            "query_name": "find_functions_by_name",
+            "parameters": {"name": "my_func", "limit": 10}
         }"#;
-        
+
         let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
-        
-        assert_eq!(request.query, "MATCH (f:Function) RETURN f.name");
+
+        assert_eq!(request.query_name, "find_functions_by_name");
+        assert_eq!(request.parameters.get("name").unwrap(), "my_func");
         assert_eq!(request.parameters.get("limit").unwrap(), 10);
-        assert_eq!(request.limit, 50);
     }
 
     #[test]
     fn test_query_graph_request_minimal() {
-        let json = r#"{"query": "MATCH (n) RETURN n"}"#;
+        let json = r#"{"query_name": "find_crate_overview"}"#;
         let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
-        
-        assert_eq!(request.query, "MATCH (n) RETURN n");
-        assert!(request.parameters.is_empty());
-        assert_eq!(request.limit, 50); // default
-    }
 
-    #[test]
-    fn test_default_limit_value() {
-        assert_eq!(default_limit(), 50);
+        assert_eq!(request.query_name, "find_crate_overview");
+        assert!(request.parameters.is_empty());
     }
 
     #[test]
@@ -342,15 +337,15 @@ mod tests {
     fn test_query_graph_request_with_parameters() {
         let mut params = HashMap::new();
         params.insert("name".to_string(), serde_json::json!("test_func"));
-        
+        params.insert("limit".to_string(), serde_json::json!(10));
+
         let request = QueryGraphRequest {
-            query: "MATCH (f:Function {name: $name}) RETURN f".to_string(),
+            query_name: "find_functions_by_name".to_string(),
             parameters: params,
-            limit: 10,
         };
-        
-        assert_eq!(request.query, "MATCH (f:Function {name: $name}) RETURN f");
+
+        assert_eq!(request.query_name, "find_functions_by_name");
         assert_eq!(request.parameters.get("name").unwrap(), "test_func");
-        assert_eq!(request.limit, 10);
+        assert_eq!(request.parameters.get("limit").unwrap(), 10);
     }
 }

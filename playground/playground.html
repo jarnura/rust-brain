@@ -382,7 +382,7 @@
 
         function renderTable(data) {
             if (data.error) {
-                return `<div class="text-red-400 p-4">${data.error}</div>`;
+                return `<div class="text-red-400 p-4">${escapeHtml(data.error)}</div>`;
             }
 
             // Extract array from common response structures
@@ -398,7 +398,7 @@
             } else if (data.usages) {
                 items = data.usages;
             } else {
-                return `<pre class="text-sm text-dark-200 font-mono whitespace-pre-wrap">${JSON.stringify(data, null, 2)}</pre>`;
+                return `<pre class="text-sm text-dark-200 font-mono whitespace-pre-wrap">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
             }
 
             if (items.length === 0) {
@@ -414,7 +414,7 @@
                 <table class="min-w-full divide-y divide-dark-700">
                     <thead>
                         <tr>
-                            ${keys.map(k => `<th class="px-4 py-2 text-left text-xs font-medium text-dark-400 uppercase">${k}</th>`).join('')}
+                            ${keys.map(k => `<th class="px-4 py-2 text-left text-xs font-medium text-dark-400 uppercase">${escapeHtml(k)}</th>`).join('')}
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-dark-700">
@@ -423,7 +423,7 @@
                                 ${keys.map(k => {
                                     const val = typeof item === 'object' ? item[k] : item;
                                     const display = typeof val === 'object' ? JSON.stringify(val) : val;
-                                    return `<td class="px-4 py-2 text-sm text-dark-300">${display ?? '-'}</td>`;
+                                    return `<td class="px-4 py-2 text-sm text-dark-300">${escapeHtml(display ?? '-')}</td>`;
                                 }).join('')}
                             </tr>
                         `).join('')}
@@ -457,7 +457,7 @@
                 } else if (/null/.test(match)) {
                     cls = 'text-dark-500'; // null
                 }
-                return `<span class="${cls}">${match}</span>`;
+                return `<span class="${cls}">${escapeHtml(match)}</span>`;
             });
         }
 
@@ -472,7 +472,7 @@
             const container = document.getElementById('queryHistory');
             container.innerHTML = queryHistory.map((h, i) => `
                 <button onclick="rerunQuery(${i})" class="w-full text-left text-xs bg-dark-700 hover:bg-dark-600 px-3 py-2 rounded flex items-center justify-between transition-colors">
-                    <span class="text-dark-300 truncate">${h.type}: ${h.query}</span>
+                    <span class="text-dark-300 truncate">${escapeHtml(h.type)}: ${escapeHtml(h.query)}</span>
                     <span class="text-dark-500 ml-2">${h.elapsed.toFixed(0)}ms</span>
                 </button>
             `).join('');

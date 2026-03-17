@@ -69,7 +69,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             crate_path: PathBuf::from("."),
-            database_url: "postgresql://rustbrain:rustbrain_dev_2024@localhost:5432/rustbrain".to_string(),
+            database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL environment variable must be set"),
             neo4j_url: None,
             embedding_url: None,
             stages: None,

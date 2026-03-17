@@ -62,6 +62,10 @@ impl OpenCodeClient {
         }
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let url = format!("{}{}", self.base_url, path);
         let builder = self.client.request(method, &url);
