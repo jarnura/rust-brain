@@ -30,6 +30,25 @@ fn compute_content_hash(content: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Redact password from database/connection URLs for safe logging
+///
+/// Examples:
+/// - postgres://user:password@host/db → postgres://user:***@host/db
+/// - bolt://user:password@host → bolt://user:***@host
+fn redact_url(url: &str) -> String {
+    if let Some(at_pos) = url.rfind('@') {
+        if let Some(colon_pos) = url[..at_pos].rfind(':') {
+            let scheme_and_user = &url[..colon_pos + 1];
+            let rest = &url[at_pos..];
+            format!("{}***{}", scheme_and_user, rest)
+        } else {
+            url.to_string()
+        }
+    } else {
+        url.to_string()
+    }
+}
+
 /// Maximum retries for transient network failures
 const MAX_RETRIES: usize = 3;
 
@@ -219,15 +238,11 @@ pub trait PipelineStage: Send + Sync {
 // =============================================================================
 
 /// Stage 1: Macro expansion via cargo expand
-pub struct ExpandStage {
-    parser: DualParser,
-}
+pub struct ExpandStage {}
 
 impl ExpandStage {
     pub fn new() -> Result<Self> {
-        Ok(Self {
-            parser: DualParser::new()?,
-        })
+        Ok(Self {})
     }
     
     fn get_git_hash(&self, repo_path: &Path) -> Option<String> {
@@ -1008,7 +1023,7 @@ impl PipelineStage for ExtractStage {
                         state.extracted_items.insert(item.fqn.clone(), id);
                         // Track cross-store reference
                         let crate_name = path.iter()
-                            .find_map(|p| source_files.iter().find(|sf| sf.path == *path).map(|sf| sf.crate_name.clone()))
+                            .find_map(|_p| source_files.iter().find(|sf| sf.path == *path).map(|sf| sf.crate_name.clone()))
                             .unwrap_or_default();
                         let ref_entry = state.store_references
                             .entry(item.fqn.clone())
@@ -1048,13 +1063,11 @@ impl PipelineStage for ExtractStage {
 use crate::graph::{GraphBuilder, GraphConfig, NodeData, NodeType, PropertyValue, RelationshipBuilder, RelationshipData};
 
 /// Stage 5: Build Neo4j relationship graph
-pub struct GraphStage {
-    neo4j_url: Option<String>,
-}
+pub struct GraphStage {}
 
 impl GraphStage {
     pub fn new() -> Self {
-        Self { neo4j_url: None }
+        Self {}
     }
     
     /// Convert a ParsedItemInfo to NodeData for Neo4j
@@ -1333,13 +1346,13 @@ impl PipelineStage for GraphStage {
         let config = GraphConfig {
             uri: neo4j_url,
             username: std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
-            password: std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "rustbrain_dev_2024".to_string()),
+            password: std::env::var("NEO4J_PASSWORD").expect("NEO4J_PASSWORD environment variable must be set"),
             database: std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string()),
             ..Default::default()
         };
         
         // Connect to Neo4j
-        info!("Connecting to Neo4j at {}", config.uri);
+        info!("Connecting to Neo4j at {}", redact_url(&config.uri));
         let graph_builder = match GraphBuilder::with_config(config).await {
             Ok(gb) => gb,
             Err(e) => {
@@ -2398,13 +2411,11 @@ impl GraphStage {
 // =============================================================================
 
 /// Stage 6: Create vector embeddings
-pub struct EmbedStage {
-    embedding_url: Option<String>,
-}
+pub struct EmbedStage {}
 
 impl EmbedStage {
     pub fn new() -> Self {
-        Self { embedding_url: None }
+        Self {}
     }
     
     /// Get Ollama URL from environment or config
@@ -2514,7 +2525,7 @@ impl PipelineStage for EmbedStage {
         let ollama_url = Self::get_ollama_url(ctx);
         let qdrant_url = Self::get_qdrant_url();
         
-        info!("Connecting to Ollama at {} and Qdrant at {}", ollama_url, qdrant_url);
+        info!("Connecting to Ollama at {} and Qdrant at {}", redact_url(&ollama_url), redact_url(&qdrant_url));
         
         // Create embedding service
         let embedding_service = match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
@@ -2730,7 +2741,7 @@ impl DataLifecycleManager {
 
         // Step 2: Delete from Neo4j (graph nodes/relationships) if available
         if let Some(neo4j) = neo4j_url {
-            match neo4rs::Graph::new(neo4j, "neo4j", "rustbrain_dev_2024").await {
+            match neo4rs::Graph::new(neo4j, std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()), std::env::var("NEO4J_PASSWORD").expect("NEO4J_PASSWORD environment variable must be set")).await {
                 Ok(graph) => {
                     let q = neo4rs::query(
                         "MATCH (n {crate_name: $crate_name}) DETACH DELETE n"

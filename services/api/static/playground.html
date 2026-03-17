@@ -1214,12 +1214,20 @@
             const messageEl = document.createElement('div');
             messageEl.className = `chat-message ${role}`;
             
-            // Convert markdown-like formatting
-            let formattedContent = content
-                .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
+            // Convert markdown-like formatting (escape HTML first to prevent XSS)
+            // Extract code blocks before escaping so their content is escaped independently
+            const codeBlocks = [];
+            let escaped = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+                const idx = codeBlocks.length;
+                codeBlocks.push(`<pre><code>${escapeHtml(code)}</code></pre>`);
+                return `\x00CODE${idx}\x00`;
+            });
+            escaped = escapeHtml(escaped);
+            let formattedContent = escaped
+                .replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`)
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                .replace(/\n/g, '<br>');
+                .replace(/\n/g, '<br>')
+                .replace(/\x00CODE(\d+)\x00/g, (_, idx) => codeBlocks[parseInt(idx, 10)]);
             
             messageEl.innerHTML = formattedContent;
             messagesEl.appendChild(messageEl);

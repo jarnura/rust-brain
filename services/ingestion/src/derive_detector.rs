@@ -23,7 +23,7 @@
 
 use anyhow::Result;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tracing::debug;
 
 /// Information about a derive attribute found in original source
@@ -64,8 +64,6 @@ pub struct DeriveDetector {
     derive_pattern: Regex,
     /// Pattern to match impl Trait for Type blocks
     impl_trait_pattern: Regex,
-    /// Pattern to match inherent impl blocks (impl Type)
-    impl_inherent_pattern: Regex,
 }
 
 impl DeriveDetector {
@@ -76,15 +74,10 @@ impl DeriveDetector {
             derive_pattern: Regex::new(
                 r"#\s*\[\s*derive\s*\(\s*([^)]+)\s*\)\s*\]"
             ).unwrap(),
-            
+
             // Match impl<generics> Trait for Type
             impl_trait_pattern: Regex::new(
                 r"impl\s*(?:<[^>]*>\s*)?([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s+for\s+([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)"
-            ).unwrap(),
-            
-            // Match impl<generics> Type (inherent impl)
-            impl_inherent_pattern: Regex::new(
-                r"impl\s*(?:<[^>]*>\s*)?([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\s*\{"
             ).unwrap(),
         }
     }
@@ -122,10 +115,6 @@ impl DeriveDetector {
     /// Find all derive attributes in original source
     fn find_derives(&self, source: &str) -> Vec<DeriveInfo> {
         let mut derives = Vec::new();
-        
-        // Track type names and their associated derives
-        let mut type_derives: HashMap<String, Vec<String>> = HashMap::new();
-        let mut type_lines: HashMap<String, usize> = HashMap::new();
         
         // First pass: find struct and enum declarations
         let struct_pattern = Regex::new(

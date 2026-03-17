@@ -25,6 +25,25 @@ pub const DEFAULT_NEO4J_URI: &str = "bolt://neo4j:7687";
 /// Default batch size for bulk operations
 pub const DEFAULT_BATCH_SIZE: usize = 1000;
 
+/// Redact password from database/connection URLs for safe logging
+///
+/// Examples:
+/// - postgres://user:password@host/db → postgres://user:***@host/db
+/// - bolt://user:password@host → bolt://user:***@host
+fn redact_url(url: &str) -> String {
+    if let Some(at_pos) = url.rfind('@') {
+        if let Some(colon_pos) = url[..at_pos].rfind(':') {
+            let scheme_and_user = &url[..colon_pos + 1];
+            let rest = &url[at_pos..];
+            format!("{}***{}", scheme_and_user, rest)
+        } else {
+            url.to_string()
+        }
+    } else {
+        url.to_string()
+    }
+}
+
 /// Graph builder configuration
 #[derive(Debug, Clone)]
 pub struct GraphConfig {
@@ -93,7 +112,7 @@ impl GraphBuilder {
 
     /// Create a new graph builder with custom configuration
     pub async fn with_config(config: GraphConfig) -> Result<Self> {
-        info!("Connecting to Neo4j at {}", config.uri);
+        info!("Connecting to Neo4j at {}", redact_url(&config.uri));
 
         let graph = Arc::new(Graph::new(&config.uri, &config.username, &config.password)
             .await

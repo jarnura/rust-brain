@@ -86,11 +86,6 @@ struct EmbedBatchResponse {
     embeddings: Vec<Vec<f64>>,
 }
 
-/// Error response from Ollama
-#[derive(Debug, Deserialize)]
-struct ErrorResponse {
-    error: Option<String>,
-}
 
 impl OllamaClient {
     /// Create a new Ollama client
