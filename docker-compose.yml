@@ -222,6 +222,23 @@ services:
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       RUST_LOG: ${RUST_LOG:-info,rustbrain_api=debug}
       API_PORT: 8080
+      # Model provider API key for openclaw agent --local
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      # OpenClaw config paths
+      NODE_PATH: /opt/openclaw/node_modules
+      PATH: /opt/openclaw/bin:/usr/local/bin:/usr/bin:/bin
+      # Increase Node.js heap size for openclaw agent
+      NODE_OPTIONS: --max-old-space-size=1536
+    volumes:
+      # Mount openclaw CLI from host
+      - /home/jarnura/.nvm/versions/node/v24.14.0/lib/node_modules/openclaw:/opt/openclaw:ro
+      # Mount openclaw config for agents and MCP tools (read-write for sessions)
+      - /home/jarnura/.openclaw:/home/rustbrain/.openclaw:rw
+      # Mount .mcp.json for MCP tool config
+      - /home/jarnura/projects/rust-brain/.mcp.json:/app/.mcp.json:ro
+      # Mount rust-brain project for agent workspace access
+      - /home/jarnura/projects/rust-brain:/home/jarnura/projects/rust-brain:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -242,7 +259,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
 
   # ---------------------------------------------------------------------------
   # MCP LAYER
