@@ -1,0 +1,213 @@
+//! OpenCode API client for session and message management.
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+// =============================================================================
+// Types
+// =============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: String,
+    pub role: String,
+    pub parts: Vec<MessagePart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessagePart {
+    Text {
+        text: String,
+    },
+    ToolInvocation {
+        tool_name: String,
+        args: serde_json::Value,
+        result: Option<serde_json::Value>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct SendMessageRequest {
+    content: String,
+}
+
+// =============================================================================
+// Client
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub struct OpenCodeClient {
+    client: reqwest::Client,
+    base_url: String,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+impl OpenCodeClient {
+    pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url,
+            username,
+            password,
+        }
+    }
+
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let url = format!("{}{}", self.base_url, path);
+        let builder = self.client.request(method, &url);
+        match (&self.username, &self.password) {
+            (Some(user), Some(pass)) => builder.basic_auth(user, Some(pass)),
+            (Some(user), None) => builder.basic_auth(user, None::<&str>),
+            _ => builder,
+        }
+    }
+
+    pub async fn health_check(&self) -> Result<bool> {
+        let resp = self
+            .request(reqwest::Method::GET, "/health")
+            .send()
+            .await
+            .context("health_check request failed")?;
+        Ok(resp.status().is_success())
+    }
+
+    pub async fn create_session(&self, title: Option<&str>) -> Result<Session> {
+        let body = serde_json::json!({ "title": title.unwrap_or("New Session") });
+        let resp = self
+            .request(reqwest::Method::POST, "/session")
+            .json(&body)
+            .send()
+            .await
+            .context("create_session request failed")?;
+        resp.error_for_status()?
+            .json::<Session>()
+            .await
+            .context("create_session parse failed")
+    }
+
+    pub async fn list_sessions(&self) -> Result<Vec<Session>> {
+        let resp = self
+            .request(reqwest::Method::GET, "/session")
+            .send()
+            .await
+            .context("list_sessions request failed")?;
+        resp.error_for_status()?
+            .json::<Vec<Session>>()
+            .await
+            .context("list_sessions parse failed")
+    }
+
+    pub async fn get_session(&self, session_id: &str) -> Result<Session> {
+        let path = format!("/session/{}", session_id);
+        let resp = self
+            .request(reqwest::Method::GET, &path)
+            .send()
+            .await
+            .context("get_session request failed")?;
+        resp.error_for_status()?
+            .json::<Session>()
+            .await
+            .context("get_session parse failed")
+    }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<()> {
+        let path = format!("/session/{}", session_id);
+        self.request(reqwest::Method::DELETE, &path)
+            .send()
+            .await
+            .context("delete_session request failed")?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn send_message(&self, session_id: &str, content: &str) -> Result<Message> {
+        let path = format!("/session/{}/message", session_id);
+        let body = SendMessageRequest {
+            content: content.to_string(),
+        };
+        let resp = self
+            .request(reqwest::Method::POST, &path)
+            .json(&body)
+            .send()
+            .await
+            .context("send_message request failed")?;
+        resp.error_for_status()?
+            .json::<Message>()
+            .await
+            .context("send_message parse failed")
+    }
+
+    pub async fn send_message_async(&self, session_id: &str, content: &str) -> Result<String> {
+        let path = format!("/session/{}/message/async", session_id);
+        let body = SendMessageRequest {
+            content: content.to_string(),
+        };
+        let resp = self
+            .request(reqwest::Method::POST, &path)
+            .json(&body)
+            .send()
+            .await
+            .context("send_message_async request failed")?;
+        let json: serde_json::Value = resp
+            .error_for_status()?
+            .json()
+            .await
+            .context("send_message_async parse failed")?;
+        json["id"]
+            .as_str()
+            .context("send_message_async: missing id field")
+            .map(|s| s.to_string())
+    }
+
+    pub async fn abort_session(&self, session_id: &str) -> Result<()> {
+        let path = format!("/session/{}/abort", session_id);
+        self.request(reqwest::Method::POST, &path)
+            .send()
+            .await
+            .context("abort_session request failed")?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+    ) -> Result<Session> {
+        let path = format!("/session/{}/fork", session_id);
+        let body = serde_json::json!({ "message_id": message_id });
+        let resp = self
+            .request(reqwest::Method::POST, &path)
+            .json(&body)
+            .send()
+            .await
+            .context("fork_session request failed")?;
+        resp.error_for_status()?
+            .json::<Session>()
+            .await
+            .context("fork_session parse failed")
+    }
+
+    pub async fn get_messages(&self, session_id: &str) -> Result<Vec<Message>> {
+        let path = format!("/session/{}/message", session_id);
+        let resp = self
+            .request(reqwest::Method::GET, &path)
+            .send()
+            .await
+            .context("get_messages request failed")?;
+        resp.error_for_status()?
+            .json::<Vec<Message>>()
+            .await
+            .context("get_messages parse failed")
+    }
+}

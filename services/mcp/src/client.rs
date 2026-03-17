@@ -1,4 +1,4 @@
-//! HTTP client for the rust-brain API
+//! HTTP clients for rust-brain API and OpenCode
 
 use crate::config::Config;
 use crate::error::{McpError, Result};
@@ -92,6 +92,70 @@ impl ApiClient {
     }
 }
 
+/// HTTP client wrapper for OpenCode
+#[derive(Debug, Clone)]
+pub struct OpenCodeClient {
+    client: Client,
+    host: String,
+    auth_user: Option<String>,
+    auth_pass: Option<String>,
+}
+
+impl OpenCodeClient {
+    /// Create a new OpenCode client
+    pub fn new(config: &Config) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(config.http_timeout))
+            .build()
+            .map_err(McpError::Http)?;
+
+        Ok(Self {
+            client,
+            host: config.opencode_host.clone(),
+            auth_user: config.opencode_auth_user.clone(),
+            auth_pass: config.opencode_auth_pass.clone(),
+        })
+    }
+
+    /// Make a GET request to OpenCode
+    #[instrument(skip(self), fields(path = %path))]
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let url = format!("{}{}", self.host.trim_end_matches('/'), path);
+        debug!("GET {}", url);
+
+        let mut request = self.client.get(&url);
+
+        if let (Some(user), Some(pass)) = (&self.auth_user, &self.auth_pass) {
+            request = request.basic_auth(user, Some(pass));
+        }
+
+        let response = request.send().await.map_err(McpError::Http)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::OpenCode(format!("{}: {}", status, body)));
+        }
+
+        response.json().await.map_err(McpError::Http)
+    }
+
+    /// Check if OpenCode is healthy
+    pub async fn health_check(&self) -> Result<bool> {
+        let url = format!("{}/health", self.host.trim_end_matches('/'));
+
+        let mut request = self.client.get(&url);
+
+        if let (Some(user), Some(pass)) = (&self.auth_user, &self.auth_pass) {
+            request = request.basic_auth(user, Some(pass));
+        }
+
+        let response = request.send().await.map_err(McpError::Http)?;
+
+        Ok(response.status().is_success())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +168,9 @@ mod tests {
             http_timeout: 5,
             max_search_results: 50,
             default_search_limit: 10,
+            opencode_host: "http://localhost:4096".to_string(),
+            opencode_auth_user: None,
+            opencode_auth_pass: None,
         }
     }
 

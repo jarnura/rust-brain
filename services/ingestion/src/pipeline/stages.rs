@@ -1008,7 +1008,7 @@ impl PipelineStage for ExtractStage {
                         state.extracted_items.insert(item.fqn.clone(), id);
                         // Track cross-store reference
                         let crate_name = path.iter()
-                            .find_map(|p| source_files.iter().find(|sf| sf.path == *path).map(|sf| sf.crate_name.clone()))
+                            .find_map(|_p| source_files.iter().find(|sf| sf.path == *path).map(|sf| sf.crate_name.clone()))
                             .unwrap_or_default();
                         let ref_entry = state.store_references
                             .entry(item.fqn.clone())

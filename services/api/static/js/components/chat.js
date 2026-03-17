@@ -1,0 +1,476 @@
+/**
+ * chat.js — Streaming chat component for rust-brain Playground
+ *
+ * Renders a chat panel with:
+ *  - Header: session title + connection status indicator
+ *  - Messages area: user (right, blue) / assistant (left, surface)
+ *  - Tool call indicators inline (icon, name, status, collapsible result)
+ *  - Textarea input (Shift+Enter newline, Enter send)
+ *  - Send / Abort / Clear buttons
+ *  - SSE streaming: chat:token, chat:tool_call, chat:complete, chat:error
+ */
+
+import { bus }       from '../lib/event-bus.js';
+import { state }     from '../lib/state.js';
+import { apiClient } from '../lib/api-client.js';
+import { sseClient } from '../lib/sse-client.js';
+import { renderMarkdown, escapeHtml } from '../lib/markdown.js';
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function generateId() {
+    return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatTime(date) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+const MAX_MESSAGES = 500;
+
+// ── ChatPanel ──────────────────────────────────────────────────────────────
+
+class ChatPanel {
+    /**
+     * @param {{ container: HTMLElement, bus: EventBus, apiClient: ApiClient, sseClient: SseClient, state: AppState }} deps
+     */
+    constructor({ container, bus: eventBus, apiClient: api, sseClient: sse, state: appState }) {
+        this._container = container;
+        this._bus       = eventBus;
+        this._api       = api;
+        this._sse       = sse;
+        this._state     = appState;
+
+        this._messages       = [];
+        this._streaming      = false;
+        this._currentAssistantEl = null;
+        this._currentTokens  = '';
+        this._renderPending  = false;
+        this._sessionId      = null;
+        this._connected      = false;
+        this._unsubs         = [];
+
+        this._render();
+        this._bindDom();
+        this._bindEvents();
+        this._initSession();
+    }
+
+    // ── DOM Construction ───────────────────────────────────────────────────
+
+    _render() {
+        this._container.innerHTML = `
+            <div class="chat-container">
+                <div class="chat-header">
+                    <div class="chat-header__title">
+                        <span class="chat-header__session">New Session</span>
+                        <span class="chat-header__status status-dot status-unknown"></span>
+                        <span class="chat-header__status-label">Disconnected</span>
+                    </div>
+                    <div class="chat-header__actions">
+                        <button class="chat-header__btn chat-header__btn--clear" title="Clear messages">Clear</button>
+                    </div>
+                </div>
+                <div class="chat-messages" role="log" aria-live="polite"></div>
+                <div class="chat-input-row">
+                    <textarea class="chat-input"
+                              placeholder="Ask about Rust code..."
+                              rows="1"
+                              aria-label="Chat message"></textarea>
+                    <button class="chat-send" title="Send (Enter)">Send</button>
+                    <button class="chat-abort" title="Abort generation" hidden>Abort</button>
+                </div>
+            </div>`;
+    }
+
+    _bindDom() {
+        const root = this._container;
+        this._els = {
+            sessionTitle: root.querySelector('.chat-header__session'),
+            statusDot:    root.querySelector('.chat-header__status'),
+            statusLabel:  root.querySelector('.chat-header__status-label'),
+            clearBtn:     root.querySelector('.chat-header__btn--clear'),
+            messagesArea: root.querySelector('.chat-messages'),
+            input:        root.querySelector('.chat-input'),
+            sendBtn:      root.querySelector('.chat-send'),
+            abortBtn:     root.querySelector('.chat-abort'),
+        };
+    }
+
+    // ── Event Binding ──────────────────────────────────────────────────────
+
+    _bindEvents() {
+        // Input: Shift+Enter = newline, Enter = send
+        this._els.input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this._sendMessage();
+            }
+        });
+
+        // Auto-resize textarea
+        this._els.input.addEventListener('input', () => this._autoResize());
+
+        // Buttons
+        this._els.sendBtn.addEventListener('click', () => this._sendMessage());
+        this._els.abortBtn.addEventListener('click', () => this._abort());
+        this._els.clearBtn.addEventListener('click', () => this._clearMessages());
+
+        // SSE events
+        this._unsubs.push(
+            this._bus.on('chat:token',     (d) => this._onToken(d)),
+            this._bus.on('chat:tool_call', (d) => this._onToolCall(d)),
+            this._bus.on('chat:complete',  (d) => this._onComplete(d)),
+            this._bus.on('chat:error',     (d) => this._onError(d)),
+            this._bus.on('sse:connected',  ()  => this._setConnected(true)),
+            this._bus.on('sse:reconnecting', () => this._setConnected(false)),
+        );
+
+        // State changes
+        this._unsubs.push(
+            this._bus.on('state:currentSession', ({ next }) => {
+                if (next) this._onSessionChanged(next);
+            }),
+        );
+    }
+
+    // ── Session Management ─────────────────────────────────────────────────
+
+    async _initSession() {
+        const existing = this._state.getKey('currentSession');
+        if (existing) {
+            this._onSessionChanged(existing);
+            return;
+        }
+
+        try {
+            const session = await this._api.createSession();
+            this._state.setCurrentSession(session);
+        } catch (err) {
+            this._appendSystemMessage(`Failed to create session: ${err.message}`);
+        }
+    }
+
+    _onSessionChanged(session) {
+        const id = session.session_id || session.id;
+        if (this._sessionId === id) return;
+
+        this._sessionId = id;
+        this._els.sessionTitle.textContent = session.title || `Session ${id.slice(0, 8)}`;
+        this._sse.disconnect();
+        this._sse.connect(id);
+        this._bus.emit('chat:session_changed', { sessionId: id });
+    }
+
+    // ── Send Message ───────────────────────────────────────────────────────
+
+    async _sendMessage() {
+        const raw = this._els.input.value.trim();
+        if (!raw || this._streaming) return;
+
+        // Lock immediately to prevent double-submit
+        this._setStreaming(true);
+
+        this._els.input.value = '';
+        this._autoResize();
+
+        // Render user bubble (escaped)
+        this._appendUserMessage(raw);
+
+        // Prepare streaming state
+        this._currentTokens = '';
+        this._currentAssistantEl = this._createAssistantBubble();
+
+        this._bus.emit('chat:message_sent', { sessionId: this._sessionId, message: raw });
+
+        try {
+            await this._api.sendChatAsync(this._sessionId, raw);
+        } catch (err) {
+            this._onError({ message: err.message });
+        }
+    }
+
+    // ── Streaming Handlers ─────────────────────────────────────────────────
+
+    _onToken({ token, text }) {
+        this._currentTokens += (token || text || '');
+
+        if (!this._renderPending) {
+            this._renderPending = true;
+            requestAnimationFrame(() => {
+                this._renderPending = false;
+                if (!this._currentAssistantEl) return;
+                const bubble = this._currentAssistantEl.querySelector('.chat-bubble');
+                bubble.innerHTML = renderMarkdown(this._currentTokens);
+                this._highlightCode(bubble);
+                this._scrollToBottom();
+            });
+        }
+    }
+
+    _onToolCall({ name, args, status, result }) {
+        if (!this._currentAssistantEl) {
+            this._currentAssistantEl = this._createAssistantBubble();
+        }
+
+        const parent = this._currentAssistantEl;
+        const existingTool = parent.querySelector(`[data-tool-name="${CSS.escape(name)}"]`);
+
+        if (existingTool) {
+            this._updateToolCallEl(existingTool, { status, result });
+        } else {
+            const toolEl = this._createToolCallEl({ name, args, status });
+            const bubble = parent.querySelector('.chat-bubble');
+            bubble.insertAdjacentElement('afterend', toolEl);
+        }
+        this._scrollToBottom();
+    }
+
+    _onComplete({ message, response }) {
+        // Finalize with accumulated tokens; only use event content as fallback
+        const content = this._currentTokens || message || response || '';
+
+        if (this._currentAssistantEl && content) {
+            const bubble = this._currentAssistantEl.querySelector('.chat-bubble');
+            bubble.innerHTML = renderMarkdown(content);
+            this._highlightCode(bubble);
+        }
+
+        // Finalize all running tool indicators
+        this._currentAssistantEl?.querySelectorAll('.tool-call--running')
+            .forEach(el => {
+                el.classList.remove('tool-call--running');
+                el.classList.add('tool-call--done');
+            });
+
+        this._finalizeStreaming();
+    }
+
+    _onError({ message, error }) {
+        const text = message || error || 'Unknown error';
+
+        if (this._currentAssistantEl) {
+            const errEl = document.createElement('div');
+            errEl.className = 'chat-error';
+            errEl.textContent = text;
+            this._currentAssistantEl.appendChild(errEl);
+        } else {
+            this._appendSystemMessage(text);
+        }
+
+        // Mark running tool calls as errored
+        this._currentAssistantEl?.querySelectorAll('.tool-call--running')
+            .forEach(el => {
+                el.classList.remove('tool-call--running');
+                el.classList.add('tool-call--error');
+            });
+
+        this._finalizeStreaming();
+    }
+
+    // ── Abort ──────────────────────────────────────────────────────────────
+
+    async _abort() {
+        if (!this._sessionId) return;
+        try {
+            await this._api.abortSession(this._sessionId);
+        } catch {
+            // best-effort
+        }
+        this._finalizeStreaming();
+    }
+
+    // ── Clear ──────────────────────────────────────────────────────────────
+
+    _clearMessages() {
+        if (this._streaming) {
+            this._abort();
+        }
+        this._messages = [];
+        this._els.messagesArea.innerHTML = '';
+        this._currentAssistantEl = null;
+        this._currentTokens = '';
+    }
+
+    // ── DOM Helpers ────────────────────────────────────────────────────────
+
+    _appendUserMessage(text) {
+        const id = generateId();
+        const el = document.createElement('div');
+        el.className = 'chat-message chat-message--user';
+        el.id = id;
+        el.innerHTML = `
+            <div class="chat-bubble">${escapeHtml(text)}</div>
+            <div class="chat-meta">${formatTime(new Date())}</div>`;
+
+        this._els.messagesArea.appendChild(el);
+        this._messages.push({ id, role: 'user', content: text, timestamp: Date.now() });
+        if (this._messages.length > MAX_MESSAGES) this._messages.shift();
+        this._scrollToBottom();
+    }
+
+    _createAssistantBubble() {
+        const id = generateId();
+        const el = document.createElement('div');
+        el.className = 'chat-message chat-message--assistant';
+        el.id = id;
+        el.innerHTML = `
+            <div class="chat-bubble"><span class="spinner"></span></div>
+            <div class="chat-meta">${formatTime(new Date())}</div>`;
+
+        this._els.messagesArea.appendChild(el);
+        this._messages.push({ id, role: 'assistant', content: '', timestamp: Date.now() });
+        if (this._messages.length > MAX_MESSAGES) this._messages.shift();
+        this._scrollToBottom();
+        return el;
+    }
+
+    _createToolCallEl({ name, args, status }) {
+        const statusClass = status === 'error' ? 'tool-call--error'
+            : status === 'done' ? 'tool-call--done'
+            : 'tool-call--running';
+
+        const el = document.createElement('div');
+        el.className = `tool-call ${statusClass}`;
+        el.dataset.toolName = name;
+
+        const argsStr = args ? (typeof args === 'string' ? args : JSON.stringify(args)) : '';
+        const truncatedArgs = argsStr.length > 80 ? argsStr.slice(0, 80) + '...' : argsStr;
+
+        el.innerHTML = `
+            <span class="tool-call__icon">${statusClass.includes('running') ? '<span class="spinner"></span>' : (statusClass.includes('error') ? '\u2717' : '\u2713')}</span>
+            <span class="tool-call__name">${escapeHtml(name)}</span>
+            <span class="tool-call__args" title="${escapeHtml(argsStr)}">${escapeHtml(truncatedArgs)}</span>
+            <button class="tool-call__toggle" aria-expanded="false" hidden>details</button>
+            <div class="tool-call__result" hidden></div>`;
+
+        // Collapsible result toggle
+        const toggleBtn = el.querySelector('.tool-call__toggle');
+        const resultDiv = el.querySelector('.tool-call__result');
+        toggleBtn.addEventListener('click', () => {
+            const expanded = toggleBtn.getAttribute('aria-expanded') === 'true';
+            toggleBtn.setAttribute('aria-expanded', String(!expanded));
+            resultDiv.hidden = expanded;
+        });
+
+        return el;
+    }
+
+    _updateToolCallEl(el, { status, result }) {
+        // Update status class
+        el.classList.remove('tool-call--running', 'tool-call--done', 'tool-call--error');
+        const statusClass = status === 'error' ? 'tool-call--error'
+            : status === 'done' ? 'tool-call--done'
+            : 'tool-call--running';
+        el.classList.add(statusClass);
+
+        // Update icon
+        const icon = el.querySelector('.tool-call__icon');
+        if (statusClass.includes('running')) {
+            icon.innerHTML = '<span class="spinner"></span>';
+        } else if (statusClass.includes('error')) {
+            icon.textContent = '\u2717';
+        } else {
+            icon.textContent = '\u2713';
+        }
+
+        // Populate result
+        if (result !== undefined && result !== null) {
+            const toggleBtn = el.querySelector('.tool-call__toggle');
+            const resultDiv = el.querySelector('.tool-call__result');
+            toggleBtn.hidden = false;
+
+            const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+            resultDiv.innerHTML = `<pre>${escapeHtml(resultStr)}</pre>`;
+        }
+    }
+
+    _appendSystemMessage(text) {
+        const el = document.createElement('div');
+        el.className = 'chat-message chat-message--system';
+        el.innerHTML = `<div class="chat-bubble chat-bubble--system">${escapeHtml(text)}</div>`;
+        this._els.messagesArea.appendChild(el);
+        this._scrollToBottom();
+    }
+
+    // ── State Helpers ──────────────────────────────────────────────────────
+
+    _setStreaming(active) {
+        this._streaming = active;
+        this._els.sendBtn.hidden  = active;
+        this._els.abortBtn.hidden = !active;
+        this._els.input.disabled  = active;
+        this._els.sendBtn.disabled = active;
+    }
+
+    _finalizeStreaming() {
+        this._setStreaming(false);
+        this._currentAssistantEl = null;
+        this._currentTokens = '';
+        this._els.input.focus();
+    }
+
+    _setConnected(connected) {
+        this._connected = connected;
+        const dot   = this._els.statusDot;
+        const label = this._els.statusLabel;
+
+        dot.classList.remove('status-healthy', 'status-unknown', 'status-degraded');
+
+        if (connected) {
+            dot.classList.add('status-healthy');
+            label.textContent = 'Connected';
+        } else {
+            dot.classList.add('status-degraded');
+            label.textContent = 'Reconnecting...';
+        }
+    }
+
+    _scrollToBottom() {
+        const area = this._els.messagesArea;
+        requestAnimationFrame(() => {
+            area.scrollTop = area.scrollHeight;
+        });
+    }
+
+    _autoResize() {
+        const el = this._els.input;
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    }
+
+    _highlightCode(container) {
+        if (typeof hljs !== 'undefined') {
+            container.querySelectorAll('pre code').forEach(block => {
+                hljs.highlightElement(block);
+            });
+        }
+    }
+
+    // ── Cleanup ────────────────────────────────────────────────────────────
+
+    destroy() {
+        for (const unsub of this._unsubs) unsub();
+        this._unsubs = [];
+        this._sse.disconnect();
+        this._container.innerHTML = '';
+    }
+}
+
+// ── Module init (called by playground.js lazy-loader) ──────────────────────
+
+let panel = null;
+
+export function init(container) {
+    if (panel) panel.destroy();
+    panel = new ChatPanel({
+        container,
+        bus,
+        apiClient,
+        sseClient,
+        state,
+    });
+}
+
+export { ChatPanel };
+export default ChatPanel;

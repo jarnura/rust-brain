@@ -36,6 +36,10 @@ pub enum McpError {
     /// MCP protocol error
     #[error("MCP protocol error: {0}")]
     Protocol(String),
+
+    /// OpenCode error
+    #[error("OpenCode error: {0}")]
+    OpenCode(String),
 }
 
 impl McpError {
@@ -50,6 +54,7 @@ impl McpError {
             McpError::Json(_) => -6,
             McpError::Io(_) => -7,
             McpError::Protocol(_) => -8,
+            McpError::OpenCode(_) => -9,
         }
     }
 

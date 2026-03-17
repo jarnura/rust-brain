@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "rust-brain": {
-      "command": "/home/jarnura/projects/rust-brain/services/mcp/target/release/rustbrain-mcp",
-      "args": ["--transport", "stdio", "--api-base-url", "http://localhost:8088"]
-    }
-  }
-}

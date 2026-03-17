@@ -11,9 +11,9 @@ created: 2026-03-14
 last_updated: 2026-03-14T11:25:00+05:30
 
 # CURRENT STATUS
-current_phase: PHASE_2
-current_task: ingestion-service-api-fix
-status: PARTIAL - Code generated, needs API compatibility fixes
+current_phase: PHASE_5
+current_task: opencode-integration-complete
+status: ACTIVE - Unified playground UI, MCP servers (stdio + SSE), LiteLLM routing deployed
 
 # PHASE STATUS
 phases:
@@ -60,10 +60,24 @@ phases:
 
   PHASE_4:
     name: "Integration Testing & Documentation"
-    status: PARTIAL
+    status: PASSED
+    completed: 2026-03-16T14:30:00+05:30
     tasks:
       phase4-test: PASSED (test fixtures created)
       phase4-docs: PASSED (architecture.md, runbook.md, 2 ADRs)
+
+  PHASE_5:
+    name: "OpenCode Integration & Unified Playground"
+    status: PASSED
+    completed: 2026-03-17T10:15:00+05:30
+    details:
+      unified_playground: DEPLOYED (10 tabs: dashboard, search, graph, chat, cypher, types, traits, modules, audit, gaps)
+      mcp_stdio_server: DEPLOYED (tool definitions, argument marshaling)
+      mcp_sse_server: DEPLOYED (HTTP streaming transport for IDEs)
+      litellm_integration: CONFIGURED (model routing, fallbacks, cost tracking)
+      keyboard_shortcuts: IMPLEMENTED (Cmd+K palette, Cmd+1-9 panels, Cmd+/, Cmd+B, Esc)
+      streaming_responses: ENABLED (SSE for chat, async tool invocations)
+      tool_call_visibility: COMPLETE (render tool invocations + results in UI)
 
 # INFRASTRUCTURE STATUS
 infrastructure:
@@ -151,10 +165,45 @@ next_steps:
 
 # SERVICE ENDPOINTS
 endpoints:
+  playground_ui: http://localhost:8088/playground
+  opencode_ide: http://localhost:4096
+  litellm_proxy: http://localhost:4000
+  mcp_sse_server: ws://localhost:3001
+  tool_api_rest: http://localhost:8088/tools
   grafana: http://localhost:3000
   neo4j_browser: http://localhost:7474
   qdrant_dashboard: http://localhost:6333/dashboard
   pgweb: http://localhost:8082
   prometheus: http://localhost:9090
   ollama_api: http://localhost:11434
-  tool_api: http://localhost:8080
+
+# NEW ENDPOINTS (PHASE_5)
+api_endpoints:
+  playground:
+    path: GET /playground
+    description: Unified playground UI
+    features: [dashboard, search, callgraph, chat, cypher, types, traits, modules, audit, gaps]
+
+  chat_stream:
+    path: POST /chat
+    description: Streaming chat with tool integration
+    transport: SSE
+    features: [markdown_rendering, tool_visibility, async_invocation]
+
+  tool_search:
+    path: POST /tools/search_semantic
+    description: Semantic code search via MCP
+    streaming: true
+
+  tool_callgraph:
+    path: GET /tools/get_callers?fqn=
+    description: Call graph traversal via MCP
+
+  mcp_tools:
+    path: GET /mcp/tools
+    description: List available MCP tools
+
+  mcp_invoke:
+    path: POST /mcp/invoke
+    description: Invoke tool with streaming results
+    transport: SSE

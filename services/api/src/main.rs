@@ -2,36 +2,40 @@
 //!
 //! Provides REST endpoints for code intelligence queries.
 
+pub mod opencode;
+
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Redirect, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
+use futures_util::stream::Stream;
 use neo4rs::Graph;
 use prometheus::{Encoder, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info};
 
 // =============================================================================
-// Playground - serve embedded HTML
+// Playground - redirect to static assets
 // =============================================================================
 
-async fn playground_html() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [("Content-Type", "text/html; charset=utf-8")],
-        include_str!("../static/playground.html"),
-    )
+async fn playground_redirect() -> impl IntoResponse {
+    Redirect::permanent("/playground/")
 }
 
 // =============================================================================
@@ -39,6 +43,7 @@ async fn playground_html() -> impl IntoResponse {
 // =============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Config {
     database_url: String,
     neo4j_uri: String,
@@ -51,6 +56,9 @@ struct Config {
     collection_name: String,
     chat_model: String,
     port: u16,
+    opencode_host: String,
+    opencode_auth_user: Option<String>,
+    opencode_auth_pass: Option<String>,
 }
 
 impl Config {
@@ -80,6 +88,10 @@ impl Config {
             port: std::env::var("API_PORT")
                 .map(|s| s.parse().unwrap_or(8080))
                 .unwrap_or(8080),
+            opencode_host: std::env::var("OPENCODE_HOST")
+                .unwrap_or_else(|_| "http://opencode:4096".to_string()),
+            opencode_auth_user: std::env::var("OPENCODE_AUTH_USER").ok(),
+            opencode_auth_pass: std::env::var("OPENCODE_AUTH_PASS").ok(),
         }
     }
 }
@@ -95,12 +107,110 @@ struct AppState {
     neo4j_graph: Arc<Graph>,
     http_client: reqwest::Client,
     metrics: Arc<Metrics>,
+    opencode_client: opencode::OpenCodeClient,
+}
+
+// =============================================================================
+// OpenCode session types
+// =============================================================================
+
+#[derive(Debug, Serialize)]
+struct SessionDetail {
+    session: opencode::Session,
+    messages: Vec<opencode::Message>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForkRequest {
+    message_id: Option<String>,
+}
+
+// =============================================================================
+// OpenCode session handlers
+// =============================================================================
+
+async fn chat_sessions_create(State(state): State<AppState>) -> impl IntoResponse {
+    match state.opencode_client.create_session(None).await {
+        Ok(session) => (StatusCode::CREATED, Json(serde_json::json!(session))).into_response(),
+        Err(e) => {
+            error!("create_session error: {e}");
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn chat_sessions_list(State(state): State<AppState>) -> impl IntoResponse {
+    match state.opencode_client.list_sessions().await {
+        Ok(sessions) => Json(sessions).into_response(),
+        Err(e) => {
+            error!("list_sessions error: {e}");
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn chat_sessions_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let (session_res, messages_res) = tokio::join!(
+        state.opencode_client.get_session(&id),
+        state.opencode_client.get_messages(&id),
+    );
+    match (session_res, messages_res) {
+        (Ok(session), Ok(messages)) => Json(SessionDetail { session, messages }).into_response(),
+        (Err(e), _) | (_, Err(e)) => {
+            error!("get_session/{id} error: {e}");
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn chat_sessions_fork(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ForkRequest>,
+) -> impl IntoResponse {
+    match state.opencode_client.fork_session(&id, body.message_id.as_deref()).await {
+        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Err(e) => {
+            error!("fork_session/{id} error: {e}");
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn chat_sessions_abort(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.opencode_client.abort_session(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            error!("abort_session/{id} error: {e}");
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn chat_sessions_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.opencode_client.delete_session(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            error!("delete_session/{id} error: {e}");
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
 }
 
 // =============================================================================
 // Metrics
 // =============================================================================
 
+#[allow(dead_code)]
 struct Metrics {
     registry: Registry,
     requests_total: prometheus::CounterVec,
@@ -143,6 +253,7 @@ impl Metrics {
         self.requests_total.with_label_values(&[endpoint, method]).inc();
     }
     
+    #[allow(dead_code)]
     fn record_error(&self, endpoint: &str, error_code: &str) {
         self.errors_total.with_label_values(&[endpoint, error_code]).inc();
     }
@@ -209,6 +320,7 @@ impl IntoResponse for AppError {
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct SearchSemanticRequest {
     query: String,
     #[serde(default = "default_limit")]
@@ -368,6 +480,7 @@ struct ModuleItem {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct QueryGraphRequest {
     query: String,
     #[serde(default)]
@@ -432,6 +545,17 @@ struct ChatRequest {
 struct ChatResponse {
     response: String,
     session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamQuery {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatSendRequest {
+    session_id: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1517,7 +1641,11 @@ mod tests {
             embedding_model: "nomic-embed-text".to_string(),
             embedding_dimensions: 768,
             collection_name: "rust_functions".to_string(),
+            chat_model: "codellama:7b".to_string(),
             port: 8080,
+            opencode_host: "http://opencode:4096".to_string(),
+            opencode_auth_user: None,
+            opencode_auth_pass: None,
         };
 
         assert_eq!(config.embedding_dimensions, 768);
@@ -1949,10 +2077,10 @@ mod tests {
 }
 
 // =============================================================================
-// Chat Handler
+// Chat Handlers
 // =============================================================================
 
-/// Chat endpoint that uses Ollama for code-aware conversations
+/// Chat endpoint that uses OpenCode for code-aware conversations
 async fn chat_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
@@ -1960,56 +2088,191 @@ async fn chat_handler(
     state.metrics.record_request("chat", "POST");
     debug!("Chat request: {:?}", req.message);
 
-    // Generate or use existing session ID
-    let session_id = req.session_id.unwrap_or_else(|| {
-        format!("rustbrain-{}", chrono::Utc::now().timestamp_millis())
-    });
+    // Create or reuse an OpenCode session
+    let session = if let Some(sid) = &req.session_id {
+        state.opencode_client.get_session(sid).await
+            .map_err(|e| AppError::Internal(format!("Failed to get session: {}", e)))?
+    } else {
+        state.opencode_client.create_session(Some("rust-brain chat")).await
+            .map_err(|e| AppError::Internal(format!("Failed to create session: {}", e)))?
+    };
 
-    // Build a system prompt that makes the AI aware of the rust-brain tools
-    let system_prompt = r#"You are a helpful AI assistant with access to a Rust codebase knowledge graph. 
-You can help users understand code, find functions, trace call graphs, and answer questions about the codebase.
-The codebase has been indexed with semantic search, call graphs, and type information.
-Be concise but thorough in your responses. When discussing code, reference specific functions or modules when relevant."#;
+    // Send message via OpenCode and wait for the response
+    let message = state.opencode_client.send_message(&session.id, &req.message).await
+        .map_err(|e| AppError::Internal(format!("Failed to send message: {}", e)))?;
 
-    // Call Ollama chat API
-    let chat_request = serde_json::json!({
-        "model": state.config.chat_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": req.message}
-        ],
-        "stream": false
-    });
+    // Extract text from MessagePart::Text variants
+    let response_text: String = message.parts.iter()
+        .filter_map(|part| match part {
+            opencode::MessagePart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    let response = state.http_client
-        .post(format!("{}/api/chat", state.config.ollama_host))
-        .json(&chat_request)
-        .send()
-        .await
-        .map_err(|e| AppError::Ollama(format!("Failed to call Ollama chat: {}", e)))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Ollama(format!("Ollama chat failed: {} - {}", status, body)));
-    }
-
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Ollama(format!("Failed to parse Ollama response: {}", e)))?;
-
-    // Extract the assistant's message from the response
-    let assistant_message = result.get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("I couldn't generate a response. Please try again.")
-        .to_string();
+    let response_text = if response_text.is_empty() {
+        "I couldn't generate a response. Please try again.".to_string()
+    } else {
+        response_text
+    };
 
     Ok(Json(ChatResponse {
-        response: assistant_message,
-        session_id,
+        response: response_text,
+        session_id: session.id,
     }))
+}
+
+/// SSE streaming endpoint — bridges OpenCode /event SSE to the client
+async fn chat_stream_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ChatStreamQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    state.metrics.record_request("chat_stream", "GET");
+
+    // Validate session_id to prevent query-string injection
+    if !params.session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err(AppError::BadRequest("Invalid session_id".to_string()));
+    }
+
+    let events_url = format!(
+        "{}/event?sessionId={}",
+        state.config.opencode_host, params.session_id
+    );
+
+    // Connect to OpenCode SSE with optional basic auth
+    let mut req = state.http_client.get(&events_url);
+    if let (Some(user), Some(pass)) = (
+        &state.config.opencode_auth_user,
+        &state.config.opencode_auth_pass,
+    ) {
+        req = req.basic_auth(user, Some(pass));
+    }
+
+    let response = req
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to connect to OpenCode SSE: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(AppError::Internal(format!(
+            "OpenCode SSE connection failed: {}",
+            response.status()
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(100);
+
+    // Spawn a task that reads the upstream SSE stream, transforms events, and
+    // forwards them into the mpsc channel.
+    tokio::spawn(async move {
+        let mut buffer = String::new();
+        let mut response = response;
+
+        while let Ok(Some(chunk)) = response.chunk().await {
+            let text = match String::from_utf8(chunk.to_vec()) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            buffer.push_str(&text);
+
+            // Normalize CRLF to LF so the delimiter check works for both
+            buffer = buffer.replace("\r\n", "\n");
+
+            // Process complete SSE event blocks (delimited by blank lines)
+            while let Some(pos) = buffer.find("\n\n") {
+                let event_block = buffer[..pos].to_string();
+                buffer = buffer[pos + 2..].to_string();
+
+                // Reset per-event state so a missing `event:` line doesn't
+                // inherit the previous event's type.
+                let mut event_type = String::new();
+                let mut data = String::new();
+
+                for line in event_block.lines() {
+                    if let Some(et) = line.strip_prefix("event: ") {
+                        event_type = et.to_string();
+                    } else if let Some(d) = line.strip_prefix("data: ") {
+                        // Append for multi-line data fields per the SSE spec
+                        if !data.is_empty() {
+                            data.push('\n');
+                        }
+                        data.push_str(d);
+                    }
+                }
+
+                if let Some(evt) = transform_sse_event(&event_type, &data) {
+                    if tx.send(Ok(evt)).await.is_err() {
+                        return; // client disconnected
+                    }
+                }
+            }
+        }
+    });
+
+    let stream = futures_util::stream::unfold(rx, |mut rx| async {
+        rx.recv().await.map(|item| (item, rx))
+    });
+
+    Ok(Sse::new(stream))
+}
+
+/// Transform an upstream OpenCode SSE event into a client-facing SSE Event.
+fn transform_sse_event(event_type: &str, data: &str) -> Option<Event> {
+    let json: serde_json::Value = serde_json::from_str(data).ok()?;
+
+    let transformed = match event_type {
+        "message.part.updated" => {
+            let content = json
+                .get("part")
+                .and_then(|p| p.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
+            serde_json::json!({ "type": "token", "content": content })
+        }
+        "message.updated" => {
+            serde_json::json!({ "type": "complete" })
+        }
+        et if et.starts_with("tool.") || et.contains("tool_call") => {
+            let tool = json
+                .get("tool_name")
+                .or_else(|| json.get("name"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("unknown");
+            let status = json
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("running");
+            serde_json::json!({ "type": "tool_call", "tool": tool, "status": status })
+        }
+        "session.error" => {
+            let message = json
+                .get("error")
+                .or_else(|| json.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
+            serde_json::json!({ "type": "error", "message": message })
+        }
+        _ => return None,
+    };
+
+    Event::default().json_data(transformed).ok()
+}
+
+/// Async message send — fires into OpenCode and returns 204 immediately
+async fn chat_send_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ChatSendRequest>,
+) -> Result<StatusCode, AppError> {
+    state.metrics.record_request("chat_send", "POST");
+
+    state
+        .opencode_client
+        .send_message_async(&req.session_id, &req.message)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to send message: {}", e)))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // =============================================================================
@@ -2059,6 +2322,13 @@ async fn main() -> anyhow::Result<()> {
     // Create metrics
     let metrics = Arc::new(Metrics::new());
 
+    // Create OpenCode client
+    let opencode_client = opencode::OpenCodeClient::new(
+        config.opencode_host.clone(),
+        config.opencode_auth_user.clone(),
+        config.opencode_auth_pass.clone(),
+    );
+
     // Create app state
     let state = AppState {
         config: config.clone(),
@@ -2066,15 +2336,19 @@ async fn main() -> anyhow::Result<()> {
         neo4j_graph: Arc::new(neo4j_graph),
         http_client,
         metrics,
+        opencode_client,
     };
     
     // Build router
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics_handler))
-        .route("/playground", get(playground_html))
+        .route("/playground", get(playground_redirect))
+        .nest_service("/playground/", ServeDir::new("static").append_index_html_on_directories(true))
         .route("/tools/search_semantic", post(search_semantic))
         .route("/tools/chat", post(chat_handler))
+        .route("/tools/chat/stream", get(chat_stream_handler))
+        .route("/tools/chat/send", post(chat_send_handler))
         .route("/tools/get_function", get(get_function))
         .route("/tools/get_callers", get(get_callers))
         .route("/tools/get_trait_impls", get(get_trait_impls))
@@ -2082,6 +2356,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/get_module_tree", get(get_module_tree))
         .route("/tools/query_graph", post(query_graph))
         .route("/tools/aggregate_search", post(aggregate_search))
+        .route("/tools/chat/sessions", post(chat_sessions_create).get(chat_sessions_list))
+        .route("/tools/chat/sessions/:id", get(chat_sessions_get).delete(chat_sessions_delete))
+        .route("/tools/chat/sessions/:id/fork", post(chat_sessions_fork))
+        .route("/tools/chat/sessions/:id/abort", post(chat_sessions_abort))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .layer(TraceLayer::new_for_http())
         .with_state(state);

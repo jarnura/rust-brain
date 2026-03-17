@@ -42,7 +42,7 @@ pub struct Config {
 
     /// Port for SSE mode
     #[cfg(feature = "sse")]
-    #[arg(long, env = "MCP_PORT", default_value = "3000")]
+    #[arg(long, env = "MCP_PORT", default_value = "3001")]
     pub port: u16,
 
     /// Maximum number of search results
@@ -52,6 +52,18 @@ pub struct Config {
     /// Default search limit
     #[arg(long, env = "DEFAULT_SEARCH_LIMIT", default_value = "10")]
     pub default_search_limit: usize,
+
+    /// OpenCode host URL
+    #[arg(long, env = "OPENCODE_HOST", default_value = "http://opencode:4096")]
+    pub opencode_host: String,
+
+    /// OpenCode authentication username
+    #[arg(long, env = "OPENCODE_AUTH_USER")]
+    pub opencode_auth_user: Option<String>,
+
+    /// OpenCode authentication password
+    #[arg(long, env = "OPENCODE_AUTH_PASS")]
+    pub opencode_auth_pass: Option<String>,
 }
 
 impl Default for Config {
@@ -61,9 +73,12 @@ impl Default for Config {
             api_base_url: "http://localhost:8088".to_string(),
             http_timeout: 30,
             #[cfg(feature = "sse")]
-            port: 3000,
+            port: 3001,
             max_search_results: 50,
             default_search_limit: 10,
+            opencode_host: "http://opencode:4096".to_string(),
+            opencode_auth_user: None,
+            opencode_auth_pass: None,
         }
     }
 }

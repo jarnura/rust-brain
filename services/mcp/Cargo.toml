@@ -40,7 +40,7 @@ url = "2.5"
 [features]
 default = ["stdio"]
 stdio = []
-sse = ["axum", "tower-http"]
+sse = ["axum", "tower-http", "tokio-stream/sync"]
 
 [dev-dependencies]
 # HTTP mocking for tests

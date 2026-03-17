@@ -23,7 +23,7 @@
 
 use anyhow::Result;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tracing::debug;
 
 /// Information about a derive attribute found in original source
@@ -124,8 +124,8 @@ impl DeriveDetector {
         let mut derives = Vec::new();
         
         // Track type names and their associated derives
-        let mut type_derives: HashMap<String, Vec<String>> = HashMap::new();
-        let mut type_lines: HashMap<String, usize> = HashMap::new();
+        let _type_derives: HashMap<String, Vec<String>> = HashMap::new();
+        let _type_lines: HashMap<String, usize> = HashMap::new();
         
         // First pass: find struct and enum declarations
         let struct_pattern = Regex::new(
