@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+docs/
+LICENSE
+README.md
+PROJECT_STATE.md
+
+# Scripts (not needed for build)
+scripts/
+
+# Tests
+tests/
+
+# Configs (not needed for build, some may have permission issues)
+configs/
+
+# Target directory (not needed for build)
+target/
+target-repo/
+
+# Environment files
+.env
+.env.example
+
+# Docker files
+docker-compose.yml
+Dockerfile
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1449,9 +1449,55 @@ impl PipelineStage for GraphStage {
         let _contains_count = relationships.len();
         
         // 2. Create IMPLEMENTS and FOR relationships for impl blocks
+        // IMPORTANT: We need to create Trait nodes for external traits first,
+        // since the relationship MERGE requires both nodes to exist.
         let mut impl_count = 0;
         let mut for_count = 0;
-        
+        let mut external_trait_nodes: Vec<NodeData> = Vec::new();
+        let mut seen_external_traits: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // First pass: collect all external traits that need nodes created
+        for impl_item in &impl_items {
+            if let Some(trait_name) = Self::extract_trait_from_impl(&impl_item.attributes) {
+                let trait_fqn = Self::find_trait_fqn(&parsed_items, &trait_name, &impl_item.fqn)
+                    .unwrap_or_else(|| trait_name.clone());
+
+                // Check if this trait exists in parsed items (local trait)
+                let is_local_trait = parsed_items.values()
+                    .flat_map(|items| items.iter())
+                    .any(|item| item.item_type == "trait" && item.fqn == trait_fqn);
+
+                // If not local, we need to create a Trait node for it
+                if !is_local_trait && !seen_external_traits.contains(&trait_fqn) {
+                    seen_external_traits.insert(trait_fqn.clone());
+                    external_trait_nodes.push(NodeData {
+                        id: trait_fqn.clone(),
+                        fqn: trait_fqn.clone(),
+                        name: trait_name.clone(),
+                        node_type: NodeType::Trait,
+                        properties: {
+                            let mut props = HashMap::new();
+                            props.insert("external".to_string(), PropertyValue::from(true));
+                            props
+                        },
+                    });
+                }
+            }
+        }
+
+        // Insert external trait nodes before creating relationships
+        if !external_trait_nodes.is_empty() {
+            info!("Creating {} external trait nodes for IMPLEMENTS relationships", external_trait_nodes.len());
+            match graph_builder.create_nodes_batch(external_trait_nodes).await {
+                Ok(_) => info!("Successfully inserted external trait nodes"),
+                Err(e) => warn!("Failed to insert external trait nodes: {}", e),
+            }
+            if let Err(e) = graph_builder.flush().await {
+                warn!("Failed to flush external trait nodes: {}", e);
+            }
+        }
+
+        // Second pass: create IMPLEMENTS relationships
         for impl_item in &impl_items {
             // Extract trait name from attributes (format: impl_for=TraitName)
             if let Some(trait_name) = Self::extract_trait_from_impl(&impl_item.attributes) {
@@ -1460,14 +1506,14 @@ impl PipelineStage for GraphStage {
                 // Try to find it in parsed items first, otherwise use the trait name directly
                 let trait_fqn = Self::find_trait_fqn(&parsed_items, &trait_name, &impl_item.fqn)
                     .unwrap_or_else(|| trait_name.clone());
-                
+
                 relationships.push(RelationshipBuilder::create_implements(
                     impl_item.fqn.clone(),
                     trait_fqn,
                 ));
                 impl_count += 1;
             }
-            
+
             // Create FOR relationship: Impl → Type (the type being implemented for)
             if let Some(self_type) = Self::extract_impl_self_type(&impl_item.fqn, &impl_item.name) {
                 // The type FQN should be constructible from the module path + type name
@@ -1476,7 +1522,7 @@ impl PipelineStage for GraphStage {
                 } else {
                     self_type.clone()
                 };
-                
+
                 relationships.push(RelationshipBuilder::create_for(
                     impl_item.fqn.clone(),
                     type_fqn,
@@ -1484,7 +1530,7 @@ impl PipelineStage for GraphStage {
                 for_count += 1;
             }
         }
-        
+
         info!("Created {} IMPLEMENTS and {} FOR relationships", impl_count, for_count);
         
         // 3. Create HAS_FIELD relationships for structs

@@ -14,7 +14,7 @@ use neo4rs::Graph;
 use prometheus::{Encoder, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -49,6 +49,7 @@ struct Config {
     embedding_model: String,
     embedding_dimensions: usize,
     collection_name: String,
+    chat_model: String,
     port: u16,
 }
 
@@ -74,6 +75,8 @@ impl Config {
                 .unwrap_or(768),
             collection_name: std::env::var("QDRANT_COLLECTION")
                 .unwrap_or_else(|_| "rust_functions".to_string()),
+            chat_model: std::env::var("CHAT_MODEL")
+                .unwrap_or_else(|_| "codellama:7b".to_string()),
             port: std::env::var("API_PORT")
                 .map(|s| s.parse().unwrap_or(8080))
                 .unwrap_or(8080),
@@ -417,6 +420,20 @@ struct AggregateSearchResponse {
     results: Vec<AggregatedResult>,
 }
 
+// Chat request/response structures
+#[derive(Debug, Deserialize)]
+struct ChatRequest {
+    message: String,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatResponse {
+    response: String,
+    session_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AggregatedResult {
     /// Semantic search score from Qdrant
@@ -713,35 +730,45 @@ async fn get_trait_impls(
 ) -> Result<Json<TraitImplsResponse>, AppError> {
     state.metrics.record_request("get_trait_impls", "GET");
     debug!("Get trait impls for: {}", query.trait_name);
-    
-    // Query matches the actual IMPLEMENTS relationship structure:
+
+    // Query matches the IMPLEMENTS relationship structure:
     // (impl:Impl)-[:IMPLEMENTS]->(trait:Trait)
+    // We match by trait name OR fqn to support both local and external traits
     let cypher = r#"
-        MATCH (impl:Impl)-[:IMPLEMENTS]->(trait:Trait {name: $trait_name})
-        RETURN impl.fqn as impl_fqn, impl.name as impl_name, trait.name as trait_name, 
+        MATCH (impl:Impl)-[:IMPLEMENTS]->(trait:Trait)
+        WHERE trait.name = $trait_name OR trait.fqn CONTAINS $trait_name OR trait.fqn = $trait_name
+        RETURN impl.fqn as impl_fqn, impl.name as impl_name, trait.name as trait_name, trait.fqn as trait_fqn,
                impl.start_line as start_line
         LIMIT $limit
         "#;
-    
+
     let params = serde_json::json!({
         "trait_name": query.trait_name,
         "limit": query.limit as i32,
     });
-    
+
     let results = execute_neo4j_query(&state, cypher, params).await?;
-    
+
     let implementations = results
         .into_iter()
         .filter_map(|r| {
+            // Extract type name from impl_name (format: "TraitName_TypeName" for trait impls)
+            let impl_name = r.get("impl_name").and_then(|v| v.as_str()).unwrap_or("");
+            let type_name = if impl_name.contains('_') {
+                impl_name.split('_').nth(1).unwrap_or(impl_name).to_string()
+            } else {
+                impl_name.to_string()
+            };
+
             Some(TraitImpl {
                 impl_fqn: r.get("impl_fqn")?.as_str()?.to_string(),
-                type_name: r.get("impl_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                type_name,
                 file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 start_line: r.get("start_line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
             })
         })
         .collect();
-    
+
     Ok(Json(TraitImplsResponse {
         trait_name: query.trait_name,
         implementations,
@@ -755,20 +782,27 @@ async fn find_usages_of_type(
     state.metrics.record_request("find_usages_of_type", "GET");
     debug!("Find usages of type: {}", query.type_name);
     
-    let cypher = format!(
-        r#"
-        MATCH (n)-[:USES_TYPE]->(t:Type {{name: $type_name}})
+    // Query matches all type-like nodes (Struct, Enum, Trait, TypeAlias, Type)
+    // because types are stored with their specific labels, not a generic :Type label.
+    // We match by name OR fqn to support both short names and fully qualified names.
+    let cypher = r#"
+        MATCH (n)-[:USES_TYPE]->(t)
+        WHERE (t:Struct OR t:Enum OR t:Trait OR t:TypeAlias OR t:Type)
+        AND (t.name = $type_name OR t.fqn = $type_name OR t.fqn ENDS WITH $fqn_suffix)
         RETURN n.fqn as fqn, n.name as name, labels(n)[0] as kind, n.file_path as file_path, n.start_line as line
         LIMIT $limit
-        "#
-    );
+        "#;
+    
+    // Create FQN suffix for partial matching (e.g., "MyType" matches "crate::module::MyType")
+    let fqn_suffix = format!("::{}", query.type_name);
     
     let params = serde_json::json!({
         "type_name": query.type_name,
+        "fqn_suffix": fqn_suffix,
         "limit": query.limit as i32,
     });
     
-    let results = execute_neo4j_query(&state, &cypher, params).await?;
+    let results = execute_neo4j_query(&state, cypher, params).await?;
     
     let usages = results
         .into_iter()
@@ -777,8 +811,8 @@ async fn find_usages_of_type(
                 fqn: r.get("fqn")?.as_str()?.to_string(),
                 name: r.get("name")?.as_str()?.to_string(),
                 kind: r.get("kind")?.as_str()?.to_string(),
-                file_path: r.get("file_path")?.as_str()?.to_string(),
-                line: r.get("line")?.as_i64()? as u32,
+                file_path: r.get("file_path")?.as_str().unwrap_or("").to_string(),
+                line: r.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
             })
         })
         .collect();
@@ -796,65 +830,136 @@ async fn get_module_tree(
     state.metrics.record_request("get_module_tree", "GET");
     debug!("Get module tree for crate: {}", query.crate_name);
     
-    let cypher = format!(
-        r#"
-        MATCH (root:Module {{crate_name: $crate_name, is_crate_root: true}})
-        OPTIONAL MATCH (root)-[r:CONTAINS*]->(child:Module)
-        WITH root, collect(DISTINCT child) as modules
-        OPTIONAL MATCH (root)-[:DEFINES]->(item)
-        WITH root, modules, collect({{name: item.name, kind: labels(item)[0], visibility: item.visibility}}) as root_items
-        RETURN root.name as root_name, root.path as root_path, modules, root_items
-        "#
-    );
+    // Query all modules for this crate, extracting crate name from FQN
+    // Note: Module nodes don't have crate_name property; we derive it from fqn
+    // Items are linked via CONTAINS relationship, not DEFINES
+    let cypher = r#"
+        // Get all modules for this crate (crate name is first part of FQN)
+        MATCH (m:Module)
+        WHERE split(m.fqn, '::')[0] = $crate_name
+        WITH collect(m) as all_modules
+        
+        // Get all parent-child module relationships within this crate
+        OPTIONAL MATCH (parent:Module)-[:CONTAINS]->(child:Module)
+        WHERE split(parent.fqn, '::')[0] = $crate_name AND split(child.fqn, '::')[0] = $crate_name
+        WITH all_modules, collect({parent: parent.fqn, child: child.fqn}) as module_hierarchy
+        
+        // Get items for each module (using CONTAINS, not DEFINES)
+        OPTIONAL MATCH (m:Module)-[:CONTAINS]->(item)
+        WHERE split(m.fqn, '::')[0] = $crate_name AND NOT item:Module
+        WITH all_modules, module_hierarchy, 
+             collect({module_fqn: m.fqn, name: item.name, kind: labels(item)[0], visibility: item.visibility}) as all_items
+        
+        RETURN all_modules, module_hierarchy, all_items
+        "#;
     
     let params = serde_json::json!({
         "crate_name": query.crate_name,
     });
     
-    let results = execute_neo4j_query(&state, &cypher, params).await?;
+    let results = execute_neo4j_query(&state, cypher, params).await?;
     
     let root = if let Some(first) = results.first() {
-        let root_name = first.get("root_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&query.crate_name)
-            .to_string();
-        let root_path = first.get("root_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        
-        let root_items: Vec<ModuleItem> = first.get("root_items")
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items.iter().filter_map(|item| {
-                    Some(ModuleItem {
-                        name: item.get("name")?.as_str()?.to_string(),
-                        kind: item.get("kind")?.as_str()?.to_string(),
-                        visibility: item.get("visibility").and_then(|v| v.as_str()).unwrap_or("private").to_string(),
-                    })
-                }).collect()
-            })
-            .unwrap_or_default();
-        
-        let modules: Vec<ModuleNode> = first.get("modules")
+        // Parse all modules
+        let modules_map: std::collections::HashMap<String, ModuleNode> = first.get("all_modules")
             .and_then(|v| v.as_array())
             .map(|mods| {
                 mods.iter().filter_map(|m| {
-                    Some(ModuleNode {
-                        name: m.get("name")?.as_str()?.to_string(),
-                        path: m.get("path")?.as_str()?.to_string(),
+                    let fqn = m.get("fqn")?.as_str()?.to_string();
+                    let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    Some((fqn.clone(), ModuleNode {
+                        name,
+                        path: fqn,
                         children: vec![],
                         items: vec![],
-                    })
+                    }))
                 }).collect()
             })
             .unwrap_or_default();
         
+        // Parse module hierarchy (parent -> children)
+        let mut children_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut has_parent: HashSet<String> = HashSet::new();
+        
+        if let Some(hierarchy) = first.get("module_hierarchy").and_then(|v| v.as_array()) {
+            for rel in hierarchy {
+                if let (Some(parent_fqn), Some(child_fqn)) = (
+                    rel.get("parent").and_then(|v| v.as_str()),
+                    rel.get("child").and_then(|v| v.as_str())
+                ) {
+                    children_map.entry(parent_fqn.to_string()).or_default().push(child_fqn.to_string());
+                    has_parent.insert(child_fqn.to_string());
+                }
+            }
+        }
+        
+        // Parse items grouped by module
+        let mut items_map: std::collections::HashMap<String, Vec<ModuleItem>> = std::collections::HashMap::new();
+        if let Some(items) = first.get("all_items").and_then(|v| v.as_array()) {
+            for item in items {
+                if let Some(module_fqn) = item.get("module_fqn").and_then(|v| v.as_str()) {
+                    items_map.entry(module_fqn.to_string()).or_default().push(ModuleItem {
+                        name: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        kind: item.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                        visibility: item.get("visibility").and_then(|v| v.as_str()).unwrap_or("private").to_string(),
+                    });
+                }
+            }
+        }
+        
+        // Build tree structure
+        let mut modules_map = modules_map;
+        
+        // Assign items to modules
+        for (fqn, items) in items_map {
+            if let Some(module) = modules_map.get_mut(&fqn) {
+                module.items = items;
+            }
+        }
+        
+        // Find root modules (modules without a parent within the same crate)
+        // These are direct children of the crate root
+        let root_modules: Vec<String> = modules_map.keys()
+            .filter(|fqn| !has_parent.contains(*fqn))
+            .cloned()
+            .collect();
+        
+        // Build children recursively
+        fn build_children(
+            fqn: &str,
+            modules_map: &mut std::collections::HashMap<String, ModuleNode>,
+            children_map: &std::collections::HashMap<String, Vec<String>>,
+        ) -> ModuleNode {
+            let mut node = modules_map.remove(fqn).unwrap_or_else(|| ModuleNode {
+                name: fqn.split("::").last().unwrap_or(fqn).to_string(),
+                path: fqn.to_string(),
+                children: vec![],
+                items: vec![],
+            });
+            
+            if let Some(child_fqns) = children_map.get(fqn) {
+                for child_fqn in child_fqns {
+                    let child_node = build_children(child_fqn, modules_map, children_map);
+                    node.children.push(child_node);
+                }
+            }
+            
+            node
+        }
+        
+        // Build tree starting from root modules
+        let mut root_children: Vec<ModuleNode> = Vec::new();
+        for root_fqn in &root_modules {
+            let node = build_children(root_fqn, &mut modules_map, &children_map);
+            root_children.push(node);
+        }
+        
+        // Create synthetic crate root since there's no actual crate root Module node
         ModuleNode {
-            name: root_name,
-            path: root_path,
-            children: modules,
-            items: root_items,
+            name: query.crate_name.clone(),
+            path: query.crate_name.clone(),
+            children: root_children,
+            items: vec![],
         }
     } else {
         ModuleNode {
@@ -1844,6 +1949,70 @@ mod tests {
 }
 
 // =============================================================================
+// Chat Handler
+// =============================================================================
+
+/// Chat endpoint that uses Ollama for code-aware conversations
+async fn chat_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, AppError> {
+    state.metrics.record_request("chat", "POST");
+    debug!("Chat request: {:?}", req.message);
+
+    // Generate or use existing session ID
+    let session_id = req.session_id.unwrap_or_else(|| {
+        format!("rustbrain-{}", chrono::Utc::now().timestamp_millis())
+    });
+
+    // Build a system prompt that makes the AI aware of the rust-brain tools
+    let system_prompt = r#"You are a helpful AI assistant with access to a Rust codebase knowledge graph. 
+You can help users understand code, find functions, trace call graphs, and answer questions about the codebase.
+The codebase has been indexed with semantic search, call graphs, and type information.
+Be concise but thorough in your responses. When discussing code, reference specific functions or modules when relevant."#;
+
+    // Call Ollama chat API
+    let chat_request = serde_json::json!({
+        "model": state.config.chat_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": req.message}
+        ],
+        "stream": false
+    });
+
+    let response = state.http_client
+        .post(format!("{}/api/chat", state.config.ollama_host))
+        .json(&chat_request)
+        .send()
+        .await
+        .map_err(|e| AppError::Ollama(format!("Failed to call Ollama chat: {}", e)))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Ollama(format!("Ollama chat failed: {} - {}", status, body)));
+    }
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| AppError::Ollama(format!("Failed to parse Ollama response: {}", e)))?;
+
+    // Extract the assistant's message from the response
+    let assistant_message = result.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("I couldn't generate a response. Please try again.")
+        .to_string();
+
+    Ok(Json(ChatResponse {
+        response: assistant_message,
+        session_id,
+    }))
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -1905,6 +2074,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/metrics", get(metrics_handler))
         .route("/playground", get(playground_html))
         .route("/tools/search_semantic", post(search_semantic))
+        .route("/tools/chat", post(chat_handler))
         .route("/tools/get_function", get(get_function))
         .route("/tools/get_callers", get(get_callers))
         .route("/tools/get_trait_impls", get(get_trait_impls))
