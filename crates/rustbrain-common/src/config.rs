@@ -19,15 +19,23 @@ pub struct DatabaseConfig {
     pub ollama_url: String,
 }
 
-impl Default for DatabaseConfig {
-    fn default() -> Self {
+impl DatabaseConfig {
+    /// Load from environment variables.
+    /// Panics with a clear message if required credentials are missing.
+    pub fn from_env() -> Self {
         Self {
-            postgres_url: "postgresql://rustbrain:rustbrain_dev_2024@localhost:5432/rustbrain".to_string(),
-            neo4j_uri: "bolt://neo4j:7687".to_string(),
-            neo4j_user: "neo4j".to_string(),
-            neo4j_password: "rustbrain_dev_2024".to_string(),
-            qdrant_url: "http://qdrant:6333".to_string(),
-            ollama_url: "http://ollama:11434".to_string(),
+            postgres_url: std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL environment variable must be set"),
+            neo4j_uri: std::env::var("NEO4J_URI")
+                .unwrap_or_else(|_| "bolt://neo4j:7687".to_string()),
+            neo4j_user: std::env::var("NEO4J_USER")
+                .unwrap_or_else(|_| "neo4j".to_string()),
+            neo4j_password: std::env::var("NEO4J_PASSWORD")
+                .expect("NEO4J_PASSWORD environment variable must be set"),
+            qdrant_url: std::env::var("QDRANT_HOST")
+                .unwrap_or_else(|_| "http://qdrant:6333".to_string()),
+            ollama_url: std::env::var("OLLAMA_HOST")
+                .unwrap_or_else(|_| "http://ollama:11434".to_string()),
         }
     }
 }
@@ -61,9 +69,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_database_config_default() {
-        let config = DatabaseConfig::default();
-        assert!(config.postgres_url.contains("rustbrain"));
+    fn test_database_config_fields() {
+        let config = DatabaseConfig {
+            postgres_url: "postgresql://user:pass@localhost:5432/db".to_string(),
+            neo4j_uri: "bolt://localhost:7687".to_string(),
+            neo4j_user: "neo4j".to_string(),
+            neo4j_password: "secret".to_string(),
+            qdrant_url: "http://localhost:6333".to_string(),
+            ollama_url: "http://localhost:11434".to_string(),
+        };
+        assert!(config.postgres_url.starts_with("postgresql://"));
         assert!(config.neo4j_uri.starts_with("bolt://"));
     }
 

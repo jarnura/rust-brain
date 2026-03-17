@@ -15,8 +15,6 @@
 //! rustbrain-ingestion --crate-path /path/to/crate --dry-run
 //! ```
 
-// Allow dead code for infrastructure that pipeline stages will use when fully integrated
-#![allow(dead_code)]
 
 pub mod parsers;
 pub mod typecheck;
@@ -105,12 +103,9 @@ async fn main() -> Result<()> {
     // Build pipeline configuration
     let config = PipelineConfig {
         crate_path: args.crate_path.clone(),
-        database_url: args.database_url.unwrap_or_else(|| {
-            std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| {
-                    "postgresql://rustbrain:rustbrain_dev_2024@postgres:5432/rustbrain".to_string()
-                })
-        }),
+        database_url: args.database_url
+            .or_else(|| std::env::var("DATABASE_URL").ok())
+            .expect("DATABASE_URL must be provided via --database-url flag or DATABASE_URL environment variable"),
         neo4j_url: args.neo4j_url,
         embedding_url: args.embedding_url,
         stages: args.stages,

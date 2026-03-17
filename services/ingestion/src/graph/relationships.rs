@@ -446,6 +446,8 @@ impl RelationshipBuilder {
 }
 
 /// Batch insert relationships using UNWIND for efficiency
+// TODO: used by future bulk-ingestion stage
+#[allow(dead_code)]
 pub async fn batch_insert_relationships(
     graph: &Graph,
     relationships: &[RelationshipData],

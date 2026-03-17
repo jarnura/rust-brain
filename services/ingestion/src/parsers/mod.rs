@@ -58,6 +58,10 @@ pub struct ParsedItem {
     
     /// Full source code of the item body
     pub body_source: String,
+
+    /// Source of macro generation, e.g., "derive(Debug)"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<String>,
 }
 
 /// Skeleton item from tree-sitter (lightweight, fast)
@@ -236,6 +240,7 @@ impl DualParser {
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
             body_source: item_source.to_string(),
+            generated_by: None,
         }
     }
 }

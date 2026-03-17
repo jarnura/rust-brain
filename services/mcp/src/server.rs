@@ -234,7 +234,7 @@ impl McpServer {
                 Ok(None) => continue, // Notification, no response
                 Err(e) => {
                     error!("Error handling message: {}", e);
-                    serde_json::to_string(&self.error_response(None, -32603, &e.to_string()))?
+                    serde_json::to_string(&self.error_response(None, -32603, "Internal error"))?
                 }
             };
 
@@ -396,11 +396,15 @@ impl McpServer {
             Ok(text) => vec![Content::Text { text }],
             Err(e) => {
                 error!("Tool error: {}", e);
-                vec![
-                    Content::Text {
-                        text: format!("Error: {}", e),
-                    },
-                ]
+                // Return a client-safe message; internal details are logged above.
+                let client_message = match &e {
+                    McpError::NotFound(msg) => format!("Not found: {}", msg),
+                    McpError::InvalidRequest(msg) => format!("Invalid request: {}", msg),
+                    McpError::Api(msg) => format!("API error: {}", msg),
+                    // Http errors may contain URLs; IO errors may contain file paths.
+                    _ => "Internal error".to_string(),
+                };
+                vec![Content::Text { text: client_message }]
             }
         };
 

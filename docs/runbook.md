@@ -144,7 +144,7 @@ docker-compose exec postgres pg_isready -U rustbrain -d rustbrain
 curl -s http://localhost:7474
 
 # Cypher query
-docker-compose exec neo4j cypher-shell -u neo4j -p rustbrain_dev_2024 "RETURN 1"
+docker-compose exec neo4j cypher-shell -u neo4j -p <your-password> "RETURN 1"
 ```
 
 #### Qdrant
@@ -489,7 +489,7 @@ docker stats
 
 # Execute command in container
 docker-compose exec postgres psql -U rustbrain -d rustbrain
-docker-compose exec neo4j cypher-shell -u neo4j -p rustbrain_dev_2024
+docker-compose exec neo4j cypher-shell -u neo4j -p <your-password>
 
 # Copy file from container
 docker cp rustbrain-postgres:/var/lib/postgresql/data ./postgres-backup
@@ -508,9 +508,9 @@ Key variables in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `POSTGRES_USER` | rustbrain | Database user |
-| `POSTGRES_PASSWORD` | rustbrain_dev_2024 | Database password |
+| `POSTGRES_PASSWORD` | <your-password> | Database password |
 | `POSTGRES_DB` | rustbrain | Database name |
-| `NEO4J_PASSWORD` | rustbrain_dev_2024 | Neo4j password |
+| `NEO4J_PASSWORD` | <your-password> | Neo4j password |
 | `GRAFANA_PASSWORD` | rustbrain | Grafana admin password |
 | `EMBEDDING_MODEL` | nomic-embed-text | Embedding model |
 | `EMBEDDING_DIMENSIONS` | 768 | Vector dimensions |

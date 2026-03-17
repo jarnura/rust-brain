@@ -56,10 +56,10 @@ Edit `.env` to customize settings (defaults work for most cases):
 ```bash
 # Key settings (defaults shown)
 POSTGRES_USER=rustbrain
-POSTGRES_PASSWORD=rustbrain_dev_2024
+POSTGRES_PASSWORD=<your-password>
 POSTGRES_DB=rustbrain
 
-NEO4J_PASSWORD=rustbrain_dev_2024
+NEO4J_PASSWORD=<your-password>
 GRAFANA_PASSWORD=rustbrain
 
 # AI Models
@@ -118,7 +118,7 @@ Tool API             ✓ OK
 | Service | URL | Default Credentials |
 |---------|-----|---------------------|
 | Grafana | http://localhost:3000 | admin / rustbrain |
-| Neo4j Browser | http://localhost:7474 | neo4j / rustbrain_dev_2024 |
+| Neo4j Browser | http://localhost:7474 | neo4j / <your-password> |
 | Qdrant Dashboard | http://localhost:6333/dashboard | None |
 | Pgweb | http://localhost:8081 | Auto-connected |
 | Prometheus | http://localhost:9090 | None |
@@ -169,7 +169,7 @@ docker-compose exec postgres psql -U rustbrain -d rustbrain -c \
 
 # Check Neo4j for graph nodes
 curl -s http://localhost:7474/db/neo4j/tx/commit \
-  -u neo4j:rustbrain_dev_2024 \
+  -u neo4j:<your-password> \
   -H "Content-Type: application/json" \
   -d '{"statements":[{"statement":"MATCH (n) RETURN count(n)"}]}' | jq .
 

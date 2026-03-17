@@ -916,6 +916,7 @@ mod tests {
             start_line: 1,
             end_line: 3,
             body_source: "pub fn do_thing(x: i32) -> bool { x > 0 }".to_string(),
+            generated_by: None,
         };
 
         let rep = generate_text_representation(&item);
@@ -946,6 +947,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             body_source: "pub struct MyStruct<T: Clone> {\n    field: T,\n}".to_string(),
+            generated_by: None,
         };
 
         let rep = generate_text_representation(&item);
@@ -970,6 +972,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             body_source: "pub enum Color {\n    Red,\n    Green,\n    Blue,\n}".to_string(),
+            generated_by: None,
         };
 
         let rep = generate_text_representation(&item);
@@ -993,6 +996,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             body_source: "pub trait Processor {\n    fn process(&self);\n}".to_string(),
+            generated_by: None,
         };
 
         let rep = generate_text_representation(&item);
@@ -1016,6 +1020,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             body_source: "pub fn func() {}".to_string(),
+            generated_by: None,
         };
 
         let chunks = extract_doc_chunks(&item, 100);

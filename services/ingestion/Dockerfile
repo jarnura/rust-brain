@@ -48,7 +48,7 @@ RUN mkdir -p /workspace/target-repo
 
 # Set environment
 ENV RUST_LOG=info,rustbrain_ingestion=debug
-ENV DATABASE_URL=postgresql://rustbrain:rustbrain_dev_2024@postgres:5432/rustbrain
+# DATABASE_URL must be passed at runtime via docker-compose or -e flag
 
 # Default command
 ENTRYPOINT ["rustbrain-ingestion"]

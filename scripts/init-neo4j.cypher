@@ -26,3 +26,15 @@ CREATE INDEX function_visibility_idx IF NOT EXISTS FOR (f:Function) ON (f.visibi
 CREATE INDEX function_async_idx IF NOT EXISTS FOR (f:Function) ON (f.is_async);
 CREATE INDEX function_unsafe_idx IF NOT EXISTS FOR (f:Function) ON (f.is_unsafe);
 CREATE INDEX function_generic_idx IF NOT EXISTS FOR (f:Function) ON (f.is_generic);
+
+// =============================================================================
+// Read-only API user
+// =============================================================================
+// Used by the API service for the query_graph endpoint.
+// CREATE USER works on Community and Enterprise editions (Neo4j 4.0+).
+// Update the password here AND set NEO4J_READONLY_PASSWORD in your .env before deploying.
+CREATE USER rustbrain_readonly IF NOT EXISTS
+  SET PASSWORD 'rustbrain_readonly_dev_2024'
+  CHANGE NOT REQUIRED;
+// GRANT ROLE is Enterprise Edition only. Uncomment on Enterprise to enforce read-only at the DB level:
+// GRANT ROLE reader TO rustbrain_readonly;

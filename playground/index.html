@@ -312,11 +312,11 @@
                     return `
                         <div class="rounded-lg p-4 ${statusClass}">
                             <div class="flex items-center justify-between mb-1">
-                                <span class="text-sm font-medium text-dark-100">${s.name}</span>
+                                <span class="text-sm font-medium text-dark-100">${escapeHtml(s.name)}</span>
                                 <span>${statusIcon}</span>
                             </div>
                             <div class="text-xs text-dark-400">
-                                ${s.latency ? `${s.latency}ms` : s.status}
+                                ${s.latency ? `${escapeHtml(String(s.latency))}ms` : escapeHtml(s.status)}
                             </div>
                         </div>
                     `;
@@ -324,7 +324,7 @@
             } catch (error) {
                 grid.innerHTML = `
                     <div class="col-span-7 bg-red-900/30 border border-red-700 rounded-lg p-4 text-center">
-                        <span class="text-red-400">Failed to fetch service status: ${error.message}</span>
+                        <span class="text-red-400">Failed to fetch service status: ${escapeHtml(error.message)}</span>
                     </div>
                 `;
             }
