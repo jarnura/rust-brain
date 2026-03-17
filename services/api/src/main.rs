@@ -17,6 +17,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
+use std::process::Command;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -1952,7 +1953,7 @@ mod tests {
 // Chat Handler
 // =============================================================================
 
-/// Chat endpoint that uses Ollama for code-aware conversations
+/// Chat endpoint that uses OpenClaw agent for code-aware conversations
 async fn chat_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
@@ -1965,44 +1966,44 @@ async fn chat_handler(
         format!("rustbrain-{}", chrono::Utc::now().timestamp_millis())
     });
 
-    // Build a system prompt that makes the AI aware of the rust-brain tools
-    let system_prompt = r#"You are a helpful AI assistant with access to a Rust codebase knowledge graph. 
-You can help users understand code, find functions, trace call graphs, and answer questions about the codebase.
-The codebase has been indexed with semantic search, call graphs, and type information.
-Be concise but thorough in your responses. When discussing code, reference specific functions or modules when relevant."#;
+    // Call openclaw agent with main agent
+    // The agent has access to MCP tools for code intelligence queries
+    let output = Command::new("openclaw")
+        .arg("agent")
+        .arg("--local")
+        .arg("--agent")
+        .arg("main")
+        .arg("--session-id")
+        .arg(&session_id)
+        .arg("--message")
+        .arg(&req.message)
+        .arg("--json")
+        .output()
+        .map_err(|e| AppError::Internal(format!("Failed to call openclaw: {}", e)))?;
 
-    // Call Ollama chat API
-    let chat_request = serde_json::json!({
-        "model": state.config.chat_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": req.message}
-        ],
-        "stream": false
-    });
-
-    let response = state.http_client
-        .post(format!("{}/api/chat", state.config.ollama_host))
-        .json(&chat_request)
-        .send()
-        .await
-        .map_err(|e| AppError::Ollama(format!("Failed to call Ollama chat: {}", e)))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Ollama(format!("Ollama chat failed: {} - {}", status, body)));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        error!("OpenClaw agent failed: stderr={}, stdout={}", stderr, stdout);
+        return Err(AppError::Internal(format!(
+            "OpenClaw agent failed: {}",
+            stderr
+        )));
     }
 
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Ollama(format!("Failed to parse Ollama response: {}", e)))?;
+    // Parse the JSON response from openclaw
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| AppError::Internal(format!("Failed to parse openclaw response: {}", e)))?;
 
     // Extract the assistant's message from the response
-    let assistant_message = result.get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
+    // OpenClaw returns the agent's reply in the "payloads[0].text" field
+    let assistant_message = result
+        .get("payloads")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("text"))
+        .and_then(|t| t.as_str())
         .unwrap_or("I couldn't generate a response. Please try again.")
         .to_string();
 
