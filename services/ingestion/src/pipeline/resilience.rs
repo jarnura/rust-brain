@@ -92,7 +92,8 @@ pub struct MemorySnapshot {
     pub pressure: MemoryPressure,
 }
 
-/// Read RSS from `/proc/self/statm` and total memory from `/proc/meminfo`.
+/// Read RSS from `/proc/self/statm` and total memory from `/proc/meminfo`,
+/// capped by the container's cgroup memory limit when running in a container.
 ///
 /// `/proc/self/statm` fields (in pages): size resident shared text lib data dt
 /// We read field 1 (resident) and multiply by page size.
@@ -103,16 +104,24 @@ fn read_memory_snapshot() -> Option<MemorySnapshot> {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
     let rss_bytes = rss_pages * page_size;
 
-    // Read total memory from /proc/meminfo
+    // Read host total memory from /proc/meminfo
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let total_kb: u64 = meminfo
+    let host_total_kb: u64 = meminfo
         .lines()
         .find(|l| l.starts_with("MemTotal:"))?
         .split_whitespace()
         .nth(1)?
         .parse()
         .ok()?;
-    let total_bytes = total_kb * 1024;
+    let host_total_bytes = host_total_kb * 1024;
+
+    // Read cgroup memory limit (container-aware).
+    // Use the smaller of host memory and cgroup limit.
+    let cgroup_limit = read_cgroup_memory_limit();
+    let total_bytes = match cgroup_limit {
+        Some(limit) if limit < host_total_bytes => limit,
+        _ => host_total_bytes,
+    };
 
     let ratio = if total_bytes > 0 {
         rss_bytes as f64 / total_bytes as f64
@@ -126,6 +135,34 @@ fn read_memory_snapshot() -> Option<MemorySnapshot> {
         ratio,
         pressure: MemoryPressure::from_ratio(ratio),
     })
+}
+
+/// Read the cgroup memory limit, trying cgroup v2 first, then v1.
+/// Returns `None` if no cgroup limit is set or the limit is effectively unlimited.
+fn read_cgroup_memory_limit() -> Option<u64> {
+    // cgroup v2: /sys/fs/cgroup/memory.max — contains a number or "max"
+    if let Ok(content) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
+        let trimmed = content.trim();
+        if trimmed != "max" {
+            if let Ok(limit) = trimmed.parse::<u64>() {
+                return Some(limit);
+            }
+        }
+        return None;
+    }
+
+    // cgroup v1: /sys/fs/cgroup/memory/memory.limit_in_bytes
+    // A value near u64::MAX (e.g. 9223372036854771712) means no limit.
+    if let Ok(content) = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
+        if let Ok(limit) = content.trim().parse::<u64>() {
+            // Values above 1 exbibyte are effectively "no limit"
+            if limit < (1u64 << 60) {
+                return Some(limit);
+            }
+        }
+    }
+
+    None
 }
 
 /// Background thread that polls memory every 500ms and publishes pressure
