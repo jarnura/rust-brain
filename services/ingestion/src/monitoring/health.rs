@@ -15,7 +15,7 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -121,7 +121,7 @@ impl Default for ProgressTracker {
 // =============================================================================
 
 /// JSON response for `/health/progress`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
     pub tier: String,
@@ -320,7 +320,17 @@ mod tests {
     #[tokio::test]
     async fn test_health_progress_json() {
         let state = test_state();
-        state.progress.mark_started();
+        // Set started_at_ms to 5 seconds ago so items_per_sec() returns a
+        // meaningful value and eta_seconds is Some.
+        let five_secs_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            - 5_000;
+        state
+            .progress
+            .started_at_ms
+            .store(five_secs_ago, Ordering::Relaxed);
         state.progress.set_total(100);
         state.progress.record_items(10);
         let app = health_router(state);

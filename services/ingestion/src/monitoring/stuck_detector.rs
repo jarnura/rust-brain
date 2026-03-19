@@ -103,7 +103,9 @@ impl StuckDetector {
     pub fn heartbeat(&self, stage_index: usize) {
         debug_assert!(stage_index < NUM_STAGES, "stage_index out of range");
         if stage_index < NUM_STAGES {
-            let ms = self.epoch.elapsed().as_millis() as u64;
+            // Use max(1) so a heartbeat in the first millisecond is never
+            // confused with "stage not started" (which is represented as 0).
+            let ms = (self.epoch.elapsed().as_millis() as u64).max(1);
             self.heartbeats[stage_index].store(ms, Ordering::Relaxed);
         }
     }
@@ -230,7 +232,9 @@ impl StuckDetectorHandle {
     pub fn heartbeat(&self, stage_index: usize) {
         debug_assert!(stage_index < NUM_STAGES, "stage_index out of range");
         if stage_index < NUM_STAGES {
-            let ms = self.epoch.elapsed().as_millis() as u64;
+            // Use max(1) so a heartbeat in the first millisecond is never
+            // confused with "stage not started" (which is represented as 0).
+            let ms = (self.epoch.elapsed().as_millis() as u64).max(1);
             self.heartbeats[stage_index].store(ms, Ordering::Relaxed);
         }
     }
@@ -271,7 +275,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "expected no stuck alerts");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_stage_triggers_alert() {
         let mut thresholds = [Duration::from_secs(60); NUM_STAGES];
         // Make the parse stage (index 1) have a tiny threshold.
@@ -285,17 +289,19 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut rx = detector.watchdog_loop(Duration::from_millis(30), cancel.clone());
 
-        // Wait long enough for the threshold to expire.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for the first alert with a generous timeout.
+        let alert = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for stuck alert")
+            .expect("channel closed without alert");
         cancel.cancel();
 
-        let alert = rx.try_recv().expect("expected a stuck alert");
         assert_eq!(alert.stage_index, 1);
         assert_eq!(alert.stage_name, "parse");
         assert_eq!(alert.level, EscalationLevel::Warning);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn escalation_progresses() {
         let mut thresholds = [Duration::from_secs(60); NUM_STAGES];
         thresholds[0] = Duration::from_millis(30);
@@ -306,18 +312,22 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut rx = detector.watchdog_loop(Duration::from_millis(20), cancel.clone());
 
-        // Collect alerts for enough ticks to reach CircuitBreak (4+ ticks).
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Collect alerts until we see escalation beyond Warning.
+        let mut levels = Vec::new();
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(alert) = rx.recv().await {
+                levels.push(alert.level.clone());
+                if levels.iter().any(|l| *l != EscalationLevel::Warning) {
+                    break;
+                }
+            }
+        })
+        .await;
         cancel.cancel();
 
-        let mut levels = Vec::new();
-        while let Ok(alert) = rx.try_recv() {
-            levels.push(alert.level.clone());
-        }
-
+        assert!(result.is_ok(), "timed out waiting for escalation");
         assert!(!levels.is_empty(), "expected escalation alerts");
         assert_eq!(levels[0], EscalationLevel::Warning);
-        // Should eventually escalate beyond Warning.
         assert!(
             levels.iter().any(|l| *l != EscalationLevel::Warning),
             "expected escalation beyond Warning, got: {levels:?}",
