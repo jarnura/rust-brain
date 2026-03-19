@@ -537,8 +537,12 @@ async fn embed_stage(
     accountant: MemoryAccountant,
     mut rx: mpsc::Receiver<GraphResult>,
 ) -> Result<StageResult> {
+    use crate::parsers::ParsedItem;
+    use crate::pipeline::{parse_item_type, parse_visibility};
+
     let start = Instant::now();
     let mut embedded_count = 0;
+    let mut failed_count = 0;
 
     if config.dry_run {
         // Drain the channel without processing
@@ -546,24 +550,108 @@ async fn embed_stage(
         return Ok(StageResult::skipped("embed"));
     }
 
+    // Resolve service URLs
+    let ollama_url = config
+        .embedding_url
+        .clone()
+        .or_else(|| std::env::var("OLLAMA_HOST").ok())
+        .unwrap_or_else(|| "http://ollama:11434".to_string());
+    let qdrant_url = std::env::var("QDRANT_HOST")
+        .unwrap_or_else(|_| "http://qdrant:6333".to_string());
+
+    // Create and initialise embedding service
+    let embedding_service = match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
+        Ok(s) => s,
+        Err(e) => {
+            // Drain remaining items so upstream stages don't block
+            while rx.recv().await.is_some() {}
+            return Ok(StageResult::failed(
+                "embed",
+                format!("Failed to create embedding service: {}", e),
+            ));
+        }
+    };
+
+    if let Err(e) = embedding_service.initialize().await {
+        while rx.recv().await.is_some() {}
+        return Ok(StageResult::failed(
+            "embed",
+            format!("Embedding service initialization failed: {}", e),
+        ));
+    }
+
+    const BATCH_SIZE: usize = 100;
+
     while let Some(graph_result) = rx.recv().await {
         let est_bytes = graph_result.items.len() as u64 * 4096;
         let _guard = accountant.reserve("embed", est_bytes).await;
 
-        embedded_count += graph_result.items.len();
         debug!(
             "embed: received {} items from crate {}",
             graph_result.items.len(),
             graph_result.crate_name
         );
+
+        // Convert ParsedItemInfo → ParsedItem for EmbeddingService
+        let parsed_items: Vec<ParsedItem> = graph_result
+            .items
+            .iter()
+            .map(|info| ParsedItem {
+                fqn: info.fqn.clone(),
+                item_type: parse_item_type(&info.item_type),
+                name: info.name.clone(),
+                visibility: parse_visibility(&info.visibility),
+                signature: info.signature.clone(),
+                generic_params: info.generic_params.clone(),
+                where_clauses: info.where_clauses.clone(),
+                attributes: info.attributes.clone(),
+                doc_comment: info.doc_comment.clone(),
+                start_line: info.start_line,
+                end_line: info.end_line,
+                body_source: info.body_source.clone(),
+                generated_by: info.generated_by.clone(),
+            })
+            .collect();
+
+        // Embed in batches
+        for (batch_num, chunk) in parsed_items.chunks(BATCH_SIZE).enumerate() {
+            match embedding_service.embed_items(chunk).await {
+                Ok(results) => {
+                    embedded_count += results.len();
+                    debug!("Embedded {} items in batch {}", results.len(), batch_num + 1);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to embed batch {} for crate {}: {}",
+                        batch_num + 1,
+                        graph_result.crate_name,
+                        e
+                    );
+                    failed_count += chunk.len();
+                }
+            }
+        }
     }
 
     let duration = start.elapsed();
-    info!(
-        "Embed stage: {} items processed in {:?}",
-        embedded_count, duration
-    );
-    Ok(StageResult::success("embed", embedded_count, 0, duration))
+
+    if failed_count > 0 && embedded_count == 0 {
+        Ok(StageResult::failed("embed", "All embedding attempts failed"))
+    } else if failed_count > 0 {
+        Ok(StageResult::partial(
+            "embed",
+            embedded_count,
+            failed_count,
+            duration,
+            format!("{} items embedded, {} failed", embedded_count, failed_count),
+        ))
+    } else {
+        info!(
+            "Embed stage: {} items embedded in {:?}",
+            embedded_count, duration
+        );
+        Ok(StageResult::success("embed", embedded_count, 0, duration))
+    }
 }
 
 // ============================================================================

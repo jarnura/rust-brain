@@ -14,7 +14,7 @@ use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -27,6 +27,20 @@ fn trim_memory() {
     }
 }
 use walkdir::WalkDir;
+
+// Pre-compiled regexes for hot-loop usage (avoids O(N*M) recompilation)
+static TYPE_ANNOTATION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"let\s+(?:mut\s+)?(\w+)\s*:\s*([A-Z]\w+)").unwrap()
+});
+static CONSTRUCTOR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"let\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w+)::").unwrap()
+});
+static METHOD_CALL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(\w+)\.(\w+)\s*\(").unwrap()
+});
+static STRUCT_INSTANTIATION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]*)\s*\{").unwrap()
+});
 
 /// Default timeout for cargo expand (3 minutes per crate)
 const CARGO_EXPAND_TIMEOUT: Duration = Duration::from_secs(180);
@@ -976,8 +990,8 @@ impl ParseStage {
                 where_clauses = EXCLUDED.where_clauses,
                 attributes = EXCLUDED.attributes,
                 visibility = EXCLUDED.visibility,
-                source_file_id = EXCLUDED.source_file_id,
-                generated_by = EXCLUDED.generated_by,
+                source_file_id = COALESCE(EXCLUDED.source_file_id, extracted_items.source_file_id),
+                generated_by = COALESCE(EXCLUDED.generated_by, extracted_items.generated_by),
                 updated_at = NOW()
             "#
         )
@@ -1268,8 +1282,8 @@ impl ExtractStage {
                 where_clauses = EXCLUDED.where_clauses,
                 attributes = EXCLUDED.attributes,
                 visibility = EXCLUDED.visibility,
-                source_file_id = EXCLUDED.source_file_id,
-                generated_by = EXCLUDED.generated_by,
+                source_file_id = COALESCE(EXCLUDED.source_file_id, extracted_items.source_file_id),
+                generated_by = COALESCE(EXCLUDED.generated_by, extracted_items.generated_by),
                 updated_at = NOW()
             RETURNING id
             "#
@@ -1375,7 +1389,7 @@ impl PipelineStage for ExtractStage {
             SET source_file_id = sf.id
             FROM source_files sf
             WHERE ei.source_file_id IS NULL
-              AND sf.file_path = SPLIT_PART(ei.fqn, '::', 1)
+              AND sf.module_path = regexp_replace(ei.fqn, '::[^:]+$', '')
             "#
         )
         .execute(pool)
@@ -1424,6 +1438,23 @@ impl GraphStage {
         Self {}
     }
     
+    /// Convert an item_type string to its Neo4j node label
+    fn item_type_to_label(item_type: &str) -> &'static str {
+        match item_type {
+            "function" => "Function",
+            "struct" => "Struct",
+            "enum" => "Enum",
+            "trait" => "Trait",
+            "impl" => "Impl",
+            "type_alias" => "TypeAlias",
+            "const" => "Const",
+            "static" => "Static",
+            "macro" => "Macro",
+            "module" => "Module",
+            _ => "Type",
+        }
+    }
+
     /// Convert a ParsedItemInfo to NodeData for Neo4j
     fn item_to_node(item: &ParsedItemInfo) -> NodeData {
         let node_type = match item.item_type.as_str() {
@@ -1812,6 +1843,8 @@ impl PipelineStage for GraphStage {
                             relationships.push(RelationshipBuilder::create_contains(
                                 parent_fqn.clone(),
                                 item.fqn.clone(),
+                                "Crate",
+                                Self::item_type_to_label(&item.item_type),
                             ));
                         }
                     } else {
@@ -1819,6 +1852,8 @@ impl PipelineStage for GraphStage {
                         relationships.push(RelationshipBuilder::create_contains(
                             parent_fqn.clone(),
                             item.fqn.clone(),
+                            "Module",
+                            Self::item_type_to_label(&item.item_type),
                         ));
                     }
                 }
@@ -2355,19 +2390,16 @@ impl GraphStage {
         let mut local_types: HashMap<String, String> = HashMap::new();
 
         // Track local variable types from let bindings
-        let type_annotation_re = regex::Regex::new(r"let\s+(?:mut\s+)?(\w+)\s*:\s*([A-Z]\w+)").unwrap();
-        let constructor_re = regex::Regex::new(r"let\s+(?:mut\s+)?(\w+)\s*=\s*([A-Z]\w+)::").unwrap();
-
         for line in body_source.lines() {
             let trimmed = line.trim();
             // Track type annotations: let x: Type = ...
-            if let Some(caps) = type_annotation_re.captures(trimmed) {
+            if let Some(caps) = TYPE_ANNOTATION_RE.captures(trimmed) {
                 let var_name = caps.get(1).unwrap().as_str().to_string();
                 let type_name = caps.get(2).unwrap().as_str().to_string();
                 local_types.insert(var_name, type_name);
             }
             // Track constructor calls: let x = Type::new()
-            if let Some(caps) = constructor_re.captures(trimmed) {
+            if let Some(caps) = CONSTRUCTOR_RE.captures(trimmed) {
                 let var_name = caps.get(1).unwrap().as_str().to_string();
                 let type_name = caps.get(2).unwrap().as_str().to_string();
                 local_types.insert(var_name, type_name);
@@ -2375,15 +2407,13 @@ impl GraphStage {
         }
 
         // Now find method calls on tracked variables and self
-        let method_call_re = regex::Regex::new(r"(\w+)\.(\w+)\s*\(").unwrap();
-
         for (line_num, line) in body_source.lines().enumerate() {
             let trimmed = line.trim();
             if trimmed.starts_with("//") || trimmed.starts_with("#") {
                 continue;
             }
 
-            for caps in method_call_re.captures_iter(trimmed) {
+            for caps in METHOD_CALL_RE.captures_iter(trimmed) {
                 let receiver = caps.get(1).unwrap().as_str();
                 let method = caps.get(2).unwrap().as_str();
 
@@ -2731,14 +2761,11 @@ impl GraphStage {
             
             // Pattern 4: Type { ... } - struct instantiation
             // Look for pattern: identifier { (not preceded by keywords)
-            let struct_pattern = regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]*)\s*\{").ok();
-            if let Some(re) = struct_pattern {
-                for cap in re.captures_iter(line) {
-                    if let Some(type_name) = cap.get(1) {
-                        let type_name = type_name.as_str();
-                        if !Self::is_primitive_type(type_name) {
-                            types.push((type_name.to_string(), line_num + 1));
-                        }
+            for cap in STRUCT_INSTANTIATION_RE.captures_iter(line) {
+                if let Some(type_name) = cap.get(1) {
+                    let type_name = type_name.as_str();
+                    if !Self::is_primitive_type(type_name) {
+                        types.push((type_name.to_string(), line_num + 1));
                     }
                 }
             }
@@ -2891,8 +2918,7 @@ impl PipelineStage for EmbedStage {
         
         // Initialize (ensure collections exist, check model)
         if let Err(e) = embedding_service.initialize().await {
-            warn!("Embedding service initialization warning: {}", e);
-            // Continue anyway - the service might still work
+            return Ok(StageResult::failed("embed", format!("Embedding service initialization failed: {}", e)));
         }
         
         // Collect all items for embedding
@@ -2982,7 +3008,7 @@ impl PipelineStage for EmbedStage {
 }
 
 /// Parse item type string to ItemType enum
-fn parse_item_type(s: &str) -> ItemType {
+pub fn parse_item_type(s: &str) -> ItemType {
     match s {
         "function" => ItemType::Function,
         "struct" => ItemType::Struct,
@@ -3000,7 +3026,7 @@ fn parse_item_type(s: &str) -> ItemType {
 }
 
 /// Parse visibility string to Visibility enum
-fn parse_visibility(s: &str) -> Visibility {
+pub fn parse_visibility(s: &str) -> Visibility {
     match s {
         "pub" => Visibility::Public,
         "pub_crate" => Visibility::PubCrate,

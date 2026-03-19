@@ -15,7 +15,7 @@ pub mod streaming_runner;
 pub mod circuit_breaker;
 pub mod resilience;
 
-pub use stages::{PipelineStage, StageResult, StageError, StageStatus};
+pub use stages::{PipelineStage, StageResult, StageError, StageStatus, parse_item_type, parse_visibility};
 pub use runner::PipelineRunner;
 pub use memory_accountant::{MemoryAccountant, MemoryGuard, channel_capacity};
 pub use streaming_runner::StreamingPipelineRunner;
@@ -261,6 +261,20 @@ pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
 mod tests {
     use super::*;
     
+    /// Helper to create a PipelineConfig for testing (no DATABASE_URL required)
+    fn test_config() -> PipelineConfig {
+        PipelineConfig {
+            crate_path: PathBuf::from("."),
+            database_url: "postgresql://test:test@localhost:5432/test".to_string(),
+            neo4j_url: None,
+            embedding_url: None,
+            stages: None,
+            dry_run: false,
+            continue_on_error: true,
+            max_concurrency: 4,
+        }
+    }
+    
     #[test]
     fn test_pipeline_id_default() {
         let id = PipelineId::default();
@@ -269,7 +283,7 @@ mod tests {
     
     #[test]
     fn test_should_run_stage() {
-        let mut config = PipelineConfig::default();
+        let mut config = test_config();
 
         // No stages specified = run all
         assert!(should_run_stage(&config, "expand"));
@@ -297,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_config_default() {
-        let config = PipelineConfig::default();
+        let config = test_config();
         assert_eq!(config.crate_path, PathBuf::from("."));
         assert!(config.neo4j_url.is_none());
         assert!(config.embedding_url.is_none());
@@ -309,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_context_creation() {
-        let config = PipelineConfig::default();
+        let config = test_config();
         let ctx = PipelineContext::new(config);
         assert!(!ctx.id.0.is_nil());
     }
@@ -317,7 +331,7 @@ mod tests {
     #[test]
     fn test_pipeline_context_with_id() {
         let id = Uuid::new_v4();
-        let config = PipelineConfig::default();
+        let config = test_config();
         let ctx = PipelineContext::with_id(id, config);
         assert_eq!(ctx.id.0, id);
     }
@@ -367,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_state_default() {
-        let config = PipelineConfig::default();
+        let config = test_config();
         let ctx = PipelineContext::new(config);
         let state = ctx.state.read().await;
         assert!(state.source_files.is_empty());
@@ -388,7 +402,7 @@ mod tests {
     fn test_should_run_stage_empty_list() {
         let config = PipelineConfig {
             stages: Some(vec![]),
-            ..Default::default()
+            ..test_config()
         };
         // Empty list means no stages should run
         assert!(!should_run_stage(&config, "expand"));
