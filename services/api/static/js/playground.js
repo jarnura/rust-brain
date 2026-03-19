@@ -13,9 +13,7 @@
 
 // ── highlight.js registration ──────────────────────────────────────────────
 if (window.hljs) {
-  hljs.registerLanguage('rust', window.hljsDefineRust || (() => {}));
   hljs.configure({ ignoreUnescapedHTML: true });
-  hljs.highlightAll();
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -271,7 +269,8 @@ window.addEventListener('resize', () => {
 });
 
 // ── Initialise ─────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+// ES modules are deferred, so DOMContentLoaded may have already fired
+function initPlayground() {
   switchTab('dashboard');
 
   // Enhanced command palette (eager — not tab-scoped)
@@ -283,7 +282,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const lazyComponents = {
     dashboard: () => import('./components/dashboard.js'),
     search:    () => import('./components/search.js'),
-    callgraph: () => import('./components/callgraph.js'),
+    callgraph: () => import('./components/call-graph.js'),
     chat:      () => import('./components/chat.js'),
     cypher:    () => import('./components/cypher.js'),
     types:     () => import('./components/type-usages.js'),
@@ -308,4 +307,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Trigger dashboard init on first load
   document.dispatchEvent(new CustomEvent('playground:tab-change', { detail: { tab: 'dashboard' } }));
-});
+
+  updateConnectionStatus();
+  setInterval(updateConnectionStatus, 30000);
+}
+
+async function updateConnectionStatus() {
+  const statusDot = document.getElementById('sidebar-status');
+  const statusLabel = document.getElementById('sidebar-status-label');
+  
+  try {
+    const resp = await fetch('/health');
+    const data = await resp.json();
+    
+    if (data.status === 'healthy') {
+      statusDot.className = 'status-dot status-healthy';
+      statusLabel.textContent = 'Connected';
+    } else {
+      statusDot.className = 'status-dot status-degraded';
+      statusLabel.textContent = 'Degraded';
+    }
+  } catch {
+    statusDot.className = 'status-dot status-unhealthy';
+    statusLabel.textContent = 'Disconnected';
+  }
+}
+
+// Run immediately if DOM ready, otherwise wait
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initPlayground);
+} else {
+  initPlayground();
+}

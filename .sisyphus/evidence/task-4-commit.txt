@@ -1,0 +1,14 @@
+d4be3fa chore: Set up .opencode directory with symlink and structure
+66ab476 chore: Add global AGENTS.md and OpenCode specific configuration
+On branch feature/chat-agent
+Your branch is ahead of 'origin/feature/chat-agent' by 2 commits.
+  (use "git push" to publish your local commits)
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.openclaw/
+	.sisyphus/
+	agents/openclaw/
+
+nothing added to commit but untracked files present (use "git add" to track)
+COMMIT SUCCESSFUL

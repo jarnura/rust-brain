@@ -34,6 +34,7 @@ pub struct FunctionDetail {
     pub end_line: u32,
     pub module_path: Option<String>,
     pub crate_name: Option<String>,
+    pub body_source: Option<String>,
     pub callers: Vec<CallerInfo>,
     pub callees: Vec<CalleeInfo>,
 }
@@ -63,10 +64,10 @@ pub async fn get_function(
     state.metrics.record_request("get_function", "GET");
     debug!("Get function: {}", query.fqn);
 
-    let row = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<String>, i32, i32, Option<String>, Option<String>)>(
+    let row = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<String>, i32, i32, Option<String>, Option<String>, Option<String>)>(
         r#"
         SELECT e.fqn, e.name, e.item_type, e.visibility, e.signature, e.doc_comment as docstring,
-               sf.file_path, e.start_line, e.end_line, sf.module_path, sf.crate_name
+               sf.file_path, e.start_line, e.end_line, sf.module_path, sf.crate_name, e.body_source
         FROM extracted_items e
         LEFT JOIN source_files sf ON e.source_file_id = sf.id
         WHERE e.fqn = $1
@@ -77,12 +78,17 @@ pub async fn get_function(
     .await
     .map_err(|e| AppError::Database(format!("Failed to query function: {}", e)))?;
 
-    let (fqn, name, item_type, visibility, signature, docstring, file_path, start_line, end_line, module_path, crate_name) =
+    let (fqn, name, item_type, visibility, signature, docstring, file_path, start_line, end_line, module_path, crate_name, body_source) =
         row.ok_or_else(|| AppError::NotFound(format!("Item not found: {}", query.fqn)))?;
 
-    // Get callers from Neo4j and convert to CallerInfo
-    let caller_nodes = get_callers_from_neo4j(&state, &query.fqn, 1).await?;
-    let callers: Vec<CallerInfo> = caller_nodes
+    // Fetch callers (1-hop) and callees concurrently — bounded queries are fast
+    let (caller_result, callee_result) = tokio::join!(
+        get_callers_from_neo4j(&state, &query.fqn, 1),
+        get_callees_from_neo4j(&state, &query.fqn),
+    );
+
+    let callers: Vec<CallerInfo> = caller_result
+        .unwrap_or_default()
         .into_iter()
         .map(|n| CallerInfo {
             fqn: n.fqn,
@@ -91,9 +97,7 @@ pub async fn get_function(
             line: n.line,
         })
         .collect();
-
-    // Get callees from Neo4j
-    let callees = get_callees_from_neo4j(&state, &query.fqn).await?;
+    let callees = callee_result.unwrap_or_default();
 
     Ok(Json(FunctionDetail {
         fqn,
@@ -107,6 +111,7 @@ pub async fn get_function(
         end_line: end_line as u32,
         module_path,
         crate_name,
+        body_source,
         callers,
         callees,
     }))

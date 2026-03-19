@@ -124,7 +124,10 @@ async function fetchStats() {
     STAT_QUERIES.map(async ({ id, query }) => {
       try {
         const res  = await apiClient.queryGraph(query, {}, 1);
-        counts[id] = res.results?.[0]?.[0] ?? 0;
+        const row  = res.results?.[0];
+        counts[id] = row != null
+          ? (typeof row === 'object' ? Object.values(row)[0] : row)
+          : 0;
       } catch {
         counts[id] = null;
       }
@@ -133,9 +136,7 @@ async function fetchStats() {
 
   try {
     const health = await apiClient.getHealth();
-    embedCount = health.dependencies?.qdrant?.vector_count
-      ?? health.stats?.embeddings
-      ?? null;
+    embedCount = health.dependencies?.qdrant?.points_count ?? null;
   } catch { /* leave null */ }
 
   el.innerHTML = renderStatCards(counts, embedCount);

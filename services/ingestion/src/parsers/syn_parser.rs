@@ -12,11 +12,23 @@ use crate::parsers::{GenericParam, ItemType, ParsedItem, SkeletonItem, Visibilit
 use anyhow::{anyhow, Context, Result};
 use quote::ToTokens;
 use syn::{
-    Attribute, GenericParam as SynGenericParam, Item as SynItem, ItemFn, ItemStruct, ItemEnum, ItemTrait, ItemImpl,
-    ItemType as SynItemType, ItemConst, ItemStatic, ItemMod, ItemUse, ItemForeignMod, ItemExternCrate,
-    ReturnType, Type, Visibility as SynVisibility, WhereClause as SynWhereClause,
-    WherePredicate,
+    Attribute, GenericParam as SynGenericParam, Item as SynItem, ItemConst, ItemEnum,
+    ItemExternCrate, ItemFn, ItemForeignMod, ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait,
+    ItemType as SynItemType, ItemUse, ReturnType, Type, Visibility as SynVisibility,
+    WhereClause as SynWhereClause, WherePredicate,
 };
+
+/// Maximum body_source length to store (to prevent memory explosion with expanded code)
+const MAX_BODY_SOURCE_LEN: usize = 200;
+
+/// Truncate body_source aggressively to prevent OOM on large expanded codebases
+fn truncate_body_source(source: &str) -> String {
+    if source.len() <= MAX_BODY_SOURCE_LEN {
+        source.to_string()
+    } else {
+        format!("[BODY: {} bytes]", source.len())
+    }
+}
 
 /// Syn-based parser for deep analysis
 pub struct SynParser;
@@ -26,7 +38,7 @@ impl SynParser {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// Parse a single item from source
     pub fn parse_item(
         &self,
@@ -35,12 +47,16 @@ impl SynParser {
         skeleton: &SkeletonItem,
     ) -> Result<ParsedItem> {
         // Try to parse as a valid Rust item
-        let item: SynItem = syn::parse_str(source)
-            .with_context(|| format!("Failed to parse item: {}", source.lines().next().unwrap_or("")))?;
-        
+        let item: SynItem = syn::parse_str(source).with_context(|| {
+            format!(
+                "Failed to parse item: {}",
+                source.lines().next().unwrap_or("")
+            )
+        })?;
+
         self.item_to_parsed(item, source, module_path, skeleton)
     }
-    
+
     /// Convert syn Item to ParsedItem
     fn item_to_parsed(
         &self,
@@ -51,21 +67,35 @@ impl SynParser {
     ) -> Result<ParsedItem> {
         match item {
             SynItem::Fn(fn_item) => self.parse_function(fn_item, source, module_path, skeleton),
-            SynItem::Struct(struct_item) => self.parse_struct(struct_item, source, module_path, skeleton),
+            SynItem::Struct(struct_item) => {
+                self.parse_struct(struct_item, source, module_path, skeleton)
+            }
             SynItem::Enum(enum_item) => self.parse_enum(enum_item, source, module_path, skeleton),
-            SynItem::Trait(trait_item) => self.parse_trait(trait_item, source, module_path, skeleton),
+            SynItem::Trait(trait_item) => {
+                self.parse_trait(trait_item, source, module_path, skeleton)
+            }
             SynItem::Impl(impl_item) => self.parse_impl(impl_item, source, module_path, skeleton),
-            SynItem::Type(type_item) => self.parse_type_alias(type_item, source, module_path, skeleton),
-            SynItem::Const(const_item) => self.parse_const(const_item, source, module_path, skeleton),
-            SynItem::Static(static_item) => self.parse_static(static_item, source, module_path, skeleton),
+            SynItem::Type(type_item) => {
+                self.parse_type_alias(type_item, source, module_path, skeleton)
+            }
+            SynItem::Const(const_item) => {
+                self.parse_const(const_item, source, module_path, skeleton)
+            }
+            SynItem::Static(static_item) => {
+                self.parse_static(static_item, source, module_path, skeleton)
+            }
             SynItem::Mod(mod_item) => self.parse_module(mod_item, source, module_path, skeleton),
             SynItem::Use(use_item) => self.parse_use(use_item, source, module_path, skeleton),
-            SynItem::ForeignMod(foreign_mod) => self.parse_foreign_mod(foreign_mod, source, module_path, skeleton),
-            SynItem::ExternCrate(extern_crate) => self.parse_extern_crate(extern_crate, source, module_path, skeleton),
+            SynItem::ForeignMod(foreign_mod) => {
+                self.parse_foreign_mod(foreign_mod, source, module_path, skeleton)
+            }
+            SynItem::ExternCrate(extern_crate) => {
+                self.parse_extern_crate(extern_crate, source, module_path, skeleton)
+            }
             _ => Err(anyhow!("Unsupported item type: {:?}", item)),
         }
     }
-    
+
     /// Parse a function item
     fn parse_function(
         &self,
@@ -81,7 +111,7 @@ impl SynParser {
         let where_clauses = self.extract_where_clauses(&item.sig.generics.where_clause);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Function,
@@ -94,11 +124,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a struct item
     fn parse_struct(
         &self,
@@ -114,7 +144,7 @@ impl SynParser {
         let where_clauses = self.extract_where_clauses(&item.generics.where_clause);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Struct,
@@ -127,11 +157,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse an enum item
     fn parse_enum(
         &self,
@@ -147,7 +177,7 @@ impl SynParser {
         let where_clauses = self.extract_where_clauses(&item.generics.where_clause);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Enum,
@@ -160,11 +190,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a trait item
     fn parse_trait(
         &self,
@@ -196,14 +226,18 @@ impl SynParser {
         }
 
         // Collect async method names for downstream consumers
-        let async_methods: Vec<String> = item.items.iter().filter_map(|ti| {
-            if let syn::TraitItem::Fn(method) = ti {
-                if method.sig.asyncness.is_some() {
-                    return Some(method.sig.ident.to_string());
+        let async_methods: Vec<String> = item
+            .items
+            .iter()
+            .filter_map(|ti| {
+                if let syn::TraitItem::Fn(method) = ti {
+                    if method.sig.asyncness.is_some() {
+                        return Some(method.sig.ident.to_string());
+                    }
                 }
-            }
-            None
-        }).collect();
+                None
+            })
+            .collect();
 
         if !async_methods.is_empty() {
             attributes.push(format!("async_methods={}", async_methods.join(",")));
@@ -221,11 +255,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse an impl block
     fn parse_impl(
         &self,
@@ -236,10 +270,12 @@ impl SynParser {
     ) -> Result<ParsedItem> {
         // Extract the self type name
         let self_type = self.type_to_string(&item.self_ty);
-        
+
         // Determine if this is a trait impl
         let (name, trait_fqn) = if let Some((_, path, _)) = &item.trait_ {
-            let trait_name = path.segments.iter()
+            let trait_name = path
+                .segments
+                .iter()
                 .map(|s| s.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");
@@ -247,20 +283,20 @@ impl SynParser {
         } else {
             (self_type.clone(), None)
         };
-        
+
         let visibility = Visibility::Public; // Impl blocks don't have visibility
         let signature = self.extract_impl_signature(&item);
         let generic_params = self.extract_generic_params(&item.generics);
         let where_clauses = self.extract_where_clauses(&item.generics.where_clause);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         // For impl blocks, we might want to include trait info in attributes
         let mut final_attributes = attributes;
         if let Some(trait_name) = trait_fqn {
             final_attributes.push(format!("impl_for={}", trait_name));
         }
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Impl,
@@ -273,11 +309,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a type alias
     fn parse_type_alias(
         &self,
@@ -293,7 +329,7 @@ impl SynParser {
         let where_clauses = self.extract_where_clauses(&item.generics.where_clause);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::TypeAlias,
@@ -306,11 +342,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a const item
     fn parse_const(
         &self,
@@ -324,7 +360,7 @@ impl SynParser {
         let signature = self.extract_const_signature(&item);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Const,
@@ -337,11 +373,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a static item
     fn parse_static(
         &self,
@@ -355,7 +391,7 @@ impl SynParser {
         let signature = self.extract_static_signature(&item);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Static,
@@ -368,11 +404,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a module item
     fn parse_module(
         &self,
@@ -386,7 +422,7 @@ impl SynParser {
         let signature = format!("mod {}", name);
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name),
             item_type: ItemType::Module,
@@ -399,11 +435,11 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a use declaration
     fn parse_use(
         &self,
@@ -416,7 +452,7 @@ impl SynParser {
         let visibility = self.convert_visibility(&item.vis);
         let signature = format!("use {}", name);
         let attributes = self.extract_attributes(&item.attrs);
-        
+
         Ok(ParsedItem {
             fqn: format!("{}::{}", module_path, name.replace("::", "_")),
             item_type: ItemType::Use,
@@ -429,11 +465,11 @@ impl SynParser {
             doc_comment: String::new(),
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
-    
+
     /// Parse a foreign mod (extern block)
     fn parse_foreign_mod(
         &self,
@@ -442,7 +478,9 @@ impl SynParser {
         module_path: &str,
         skeleton: &SkeletonItem,
     ) -> Result<ParsedItem> {
-        let abi_name = item.abi.name
+        let abi_name = item
+            .abi
+            .name
             .as_ref()
             .map(|n| n.value())
             .unwrap_or_else(|| "C".to_string());
@@ -463,7 +501,7 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
@@ -498,7 +536,7 @@ impl SynParser {
             doc_comment,
             start_line: skeleton.start_line,
             end_line: skeleton.end_line,
-            body_source: source.to_string(),
+            body_source: truncate_body_source(source),
             generated_by: None,
         })
     }
@@ -506,7 +544,7 @@ impl SynParser {
     // ========================================================================
     // Helper Methods
     // ========================================================================
-    
+
     /// Convert syn visibility to our Visibility enum
     fn convert_visibility(&self, vis: &SynVisibility) -> Visibility {
         match vis {
@@ -514,7 +552,7 @@ impl SynParser {
             SynVisibility::Restricted(restricted) => {
                 // Check if it's pub(crate), pub(super), or pub(in path)
                 let path_str = restricted.path.to_token_stream().to_string();
-                
+
                 // The path in syn includes the leading `in` for pub(in path)
                 if path_str == "crate" {
                     Visibility::PubCrate
@@ -527,7 +565,7 @@ impl SynParser {
             SynVisibility::Inherited => Visibility::Private,
         }
     }
-    
+
     /// Extract generic parameters from syn Generics
     fn extract_generic_params(&self, generics: &syn::Generics) -> Vec<GenericParam> {
         generics
@@ -540,14 +578,15 @@ impl SynParser {
                         .iter()
                         .map(|b| self.type_bound_to_string(b))
                         .collect();
-                    
+
                     GenericParam {
                         name: type_param.ident.to_string(),
                         kind: "type".to_string(),
                         bounds,
-                        default: type_param.default.as_ref().map(|d| {
-                            d.to_token_stream().to_string().replace(" ", "")
-                        }),
+                        default: type_param
+                            .default
+                            .as_ref()
+                            .map(|d| d.to_token_stream().to_string().replace(" ", "")),
                     }
                 }
                 SynGenericParam::Lifetime(lifetime_param) => {
@@ -556,7 +595,7 @@ impl SynParser {
                         .iter()
                         .map(|l| format!("'{}", l.ident))
                         .collect();
-                    
+
                     GenericParam {
                         name: format!("'{}", lifetime_param.lifetime.ident),
                         kind: "lifetime".to_string(),
@@ -564,20 +603,19 @@ impl SynParser {
                         default: None,
                     }
                 }
-                SynGenericParam::Const(const_param) => {
-                    GenericParam {
-                        name: const_param.ident.to_string(),
-                        kind: "const".to_string(),
-                        bounds: vec![const_param.ty.to_token_stream().to_string()],
-                        default: const_param.default.as_ref().map(|d| {
-                            d.to_token_stream().to_string()
-                        }),
-                    }
-                }
+                SynGenericParam::Const(const_param) => GenericParam {
+                    name: const_param.ident.to_string(),
+                    kind: "const".to_string(),
+                    bounds: vec![const_param.ty.to_token_stream().to_string()],
+                    default: const_param
+                        .default
+                        .as_ref()
+                        .map(|d| d.to_token_stream().to_string()),
+                },
             })
             .collect()
     }
-    
+
     /// Extract where clauses from syn WhereClause
     fn extract_where_clauses(&self, where_clause: &Option<SynWhereClause>) -> Vec<WhereClause> {
         where_clause
@@ -586,33 +624,29 @@ impl SynParser {
                 wc.predicates
                     .iter()
                     .filter_map(|pred| match pred {
-                        WherePredicate::Type(pred_type) => {
-                            Some(WhereClause {
-                                subject: self.type_to_string(&pred_type.bounded_ty),
-                                bounds: pred_type
-                                    .bounds
-                                    .iter()
-                                    .map(|b| self.type_bound_to_string(b))
-                                    .collect(),
-                            })
-                        }
-                        WherePredicate::Lifetime(pred_lifetime) => {
-                            Some(WhereClause {
-                                subject: format!("'{}", pred_lifetime.lifetime.ident),
-                                bounds: pred_lifetime
-                                    .bounds
-                                    .iter()
-                                    .map(|l| format!("'{}", l.ident))
-                                    .collect(),
-                            })
-                        }
+                        WherePredicate::Type(pred_type) => Some(WhereClause {
+                            subject: self.type_to_string(&pred_type.bounded_ty),
+                            bounds: pred_type
+                                .bounds
+                                .iter()
+                                .map(|b| self.type_bound_to_string(b))
+                                .collect(),
+                        }),
+                        WherePredicate::Lifetime(pred_lifetime) => Some(WhereClause {
+                            subject: format!("'{}", pred_lifetime.lifetime.ident),
+                            bounds: pred_lifetime
+                                .bounds
+                                .iter()
+                                .map(|l| format!("'{}", l.ident))
+                                .collect(),
+                        }),
                         _ => None,
                     })
                     .collect()
             })
             .unwrap_or_default()
     }
-    
+
     /// Extract attributes as strings
     fn extract_attributes(&self, attrs: &[Attribute]) -> Vec<String> {
         let mut result: Vec<String> = attrs
@@ -644,7 +678,7 @@ impl SynParser {
             })
             .collect()
     }
-    
+
     /// Extract doc comments from attributes
     fn extract_doc_from_attrs(&self, attrs: &[Attribute]) -> String {
         attrs
@@ -669,16 +703,16 @@ impl SynParser {
             .collect::<Vec<_>>()
             .join("\n")
     }
-    
+
     /// Extract function signature
     fn extract_function_signature(&self, item: &ItemFn) -> String {
         let sig = &item.sig;
-        
+
         let mut parts = Vec::new();
-        
+
         // Visibility
         parts.push(item.vis.to_token_stream().to_string());
-        
+
         // Const/async/unsafe
         if sig.constness.is_some() {
             parts.push("const".to_string());
@@ -689,27 +723,33 @@ impl SynParser {
         if sig.unsafety.is_some() {
             parts.push("unsafe".to_string());
         }
-        
+
         // fn name<generics>(params) -> return_type
         parts.push("fn".to_string());
         parts.push(sig.ident.to_string());
-        
+
         // Generic params
         if !sig.generics.params.is_empty() {
-            parts.push(sig.generics.split_for_impl().0.to_token_stream().to_string());
+            parts.push(
+                sig.generics
+                    .split_for_impl()
+                    .0
+                    .to_token_stream()
+                    .to_string(),
+            );
         }
-        
+
         // Parameters
         parts.push(sig.inputs.to_token_stream().to_string());
-        
+
         // Return type
         if let ReturnType::Type(_, ty) = &sig.output {
             parts.push(format!("-> {}", ty.to_token_stream()));
         }
-        
+
         parts.join(" ")
     }
-    
+
     /// Extract struct signature
     fn extract_struct_signature(&self, item: &ItemStruct) -> String {
         let mut parts = vec![
@@ -717,14 +757,20 @@ impl SynParser {
             "struct".to_string(),
             item.ident.to_string(),
         ];
-        
+
         if !item.generics.params.is_empty() {
-            parts.push(item.generics.split_for_impl().0.to_token_stream().to_string());
+            parts.push(
+                item.generics
+                    .split_for_impl()
+                    .0
+                    .to_token_stream()
+                    .to_string(),
+            );
         }
-        
+
         parts.join(" ")
     }
-    
+
     /// Extract enum signature
     fn extract_enum_signature(&self, item: &ItemEnum) -> String {
         let mut parts = vec![
@@ -732,31 +778,41 @@ impl SynParser {
             "enum".to_string(),
             item.ident.to_string(),
         ];
-        
+
         if !item.generics.params.is_empty() {
-            parts.push(item.generics.split_for_impl().0.to_token_stream().to_string());
+            parts.push(
+                item.generics
+                    .split_for_impl()
+                    .0
+                    .to_token_stream()
+                    .to_string(),
+            );
         }
-        
+
         parts.join(" ")
     }
-    
+
     /// Extract trait signature
     fn extract_trait_signature(&self, item: &ItemTrait) -> String {
-        let mut parts = vec![
-            item.vis.to_token_stream().to_string(),
-        ];
-        
+        let mut parts = vec![item.vis.to_token_stream().to_string()];
+
         if item.unsafety.is_some() {
             parts.push("unsafe".to_string());
         }
-        
+
         parts.push("trait".to_string());
         parts.push(item.ident.to_string());
-        
+
         if !item.generics.params.is_empty() {
-            parts.push(item.generics.split_for_impl().0.to_token_stream().to_string());
+            parts.push(
+                item.generics
+                    .split_for_impl()
+                    .0
+                    .to_token_stream()
+                    .to_string(),
+            );
         }
-        
+
         // Add supertraits
         if !item.supertraits.is_empty() {
             parts.push(":".to_string());
@@ -768,22 +824,28 @@ impl SynParser {
                     .join(" + "),
             );
         }
-        
+
         parts.join(" ")
     }
-    
+
     /// Extract impl signature
     fn extract_impl_signature(&self, item: &ItemImpl) -> String {
         let mut parts = vec!["impl".to_string()];
-        
+
         if item.unsafety.is_some() {
             parts.insert(0, "unsafe".to_string());
         }
-        
+
         if !item.generics.params.is_empty() {
-            parts.push(item.generics.split_for_impl().0.to_token_stream().to_string());
+            parts.push(
+                item.generics
+                    .split_for_impl()
+                    .0
+                    .to_token_stream()
+                    .to_string(),
+            );
         }
-        
+
         if let Some((neg, path, _)) = &item.trait_ {
             if neg.is_some() {
                 parts.push("!".to_string());
@@ -791,12 +853,12 @@ impl SynParser {
             parts.push(path.to_token_stream().to_string());
             parts.push("for".to_string());
         }
-        
+
         parts.push(item.self_ty.to_token_stream().to_string());
-        
+
         parts.join(" ")
     }
-    
+
     /// Extract type alias signature
     fn extract_type_alias_signature(&self, item: &SynItemType) -> String {
         format!(
@@ -806,7 +868,7 @@ impl SynParser {
             item.ty.to_token_stream()
         )
     }
-    
+
     /// Extract const signature
     fn extract_const_signature(&self, item: &ItemConst) -> String {
         let mut sig = format!(
@@ -815,12 +877,12 @@ impl SynParser {
             item.ident,
             item.ty.to_token_stream()
         );
-        
+
         sig.push_str(&format!(" = {}", item.expr.to_token_stream()));
-        
+
         sig
     }
-    
+
     /// Extract static signature
     fn extract_static_signature(&self, item: &ItemStatic) -> String {
         let mut sig = format!(
@@ -829,22 +891,22 @@ impl SynParser {
             item.ident,
             item.ty.to_token_stream()
         );
-        
+
         sig.push_str(&format!(" = {}", item.expr.to_token_stream()));
-        
+
         sig
     }
-    
+
     /// Convert a type to string
     fn type_to_string(&self, ty: &Type) -> String {
         ty.to_token_stream().to_string()
     }
-    
+
     /// Convert a type bound to string
     fn type_bound_to_string(&self, bound: &syn::TypeParamBound) -> String {
         bound.to_token_stream().to_string()
     }
-    
+
     /// Convert use tree to string
     fn use_tree_to_string(&self, tree: &syn::UseTree) -> String {
         tree.to_token_stream().to_string()
@@ -860,7 +922,7 @@ impl Default for SynParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn make_skeleton(start: usize, end: usize) -> SkeletonItem {
         SkeletonItem {
             item_type: ItemType::Function,
@@ -871,25 +933,29 @@ mod tests {
             end_line: 1,
         }
     }
-    
+
     #[test]
     fn test_parse_function() {
         let parser = SynParser::new();
         let source = r#"pub fn hello<T: Clone + Send>(x: T) -> T where T: 'static {
     x.clone()
 }"#;
-        
+
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
-        
+
         assert_eq!(result.name, "hello");
         assert!(matches!(result.visibility, Visibility::Public));
         assert_eq!(result.generic_params.len(), 1);
         assert_eq!(result.generic_params[0].name, "T");
-        assert!(result.generic_params[0].bounds.contains(&"Clone".to_string()));
-        assert!(result.generic_params[0].bounds.contains(&"Send".to_string()));
+        assert!(result.generic_params[0]
+            .bounds
+            .contains(&"Clone".to_string()));
+        assert!(result.generic_params[0]
+            .bounds
+            .contains(&"Send".to_string()));
     }
-    
+
     #[test]
     fn test_parse_struct_with_generics() {
         let parser = SynParser::new();
@@ -898,16 +964,16 @@ pub struct Container<T, U: Sync> {
     inner: T,
     other: U,
 }"#;
-        
+
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
-        
+
         assert_eq!(result.name, "Container");
         assert_eq!(result.generic_params.len(), 2);
         assert_eq!(result.generic_params[0].name, "T");
         assert_eq!(result.generic_params[1].name, "U");
     }
-    
+
     #[test]
     fn test_parse_where_clause() {
         let parser = SynParser::new();
@@ -918,23 +984,27 @@ where
 {
     true
 }"#;
-        
+
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
-        
+
         assert!(result.where_clauses.len() >= 2);
-        
-        let t_clause = result.where_clauses.iter()
+
+        let t_clause = result
+            .where_clauses
+            .iter()
             .find(|c| c.subject == "T")
             .expect("Should have T clause");
         assert!(t_clause.bounds.contains(&"Clone".to_string()));
-        
-        let u_clause = result.where_clauses.iter()
+
+        let u_clause = result
+            .where_clauses
+            .iter()
             .find(|c| c.subject == "U")
             .expect("Should have U clause");
         assert!(u_clause.bounds.contains(&"Sync".to_string()));
     }
-    
+
     #[test]
     fn test_parse_impl() {
         let parser = SynParser::new();
@@ -943,38 +1013,41 @@ where
         self.inner.clone()
     }
 }"#;
-        
+
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
-        
+
         assert!(matches!(result.item_type, ItemType::Impl));
         assert!(result.name.contains("MyTrait"));
-        assert!(result.attributes.iter().any(|a| a.contains("impl_for=MyTrait")));
+        assert!(result
+            .attributes
+            .iter()
+            .any(|a| a.contains("impl_for=MyTrait")));
     }
-    
+
     #[test]
     fn test_visibility_parsing() {
         let parser = SynParser::new();
-        
+
         // Test pub
         let source = "pub fn test() {}";
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
         assert!(matches!(result.visibility, Visibility::Public));
-        
+
         // Test pub(crate)
         let source = "pub(crate) fn test() {}";
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
         assert!(matches!(result.visibility, Visibility::PubCrate));
-        
+
         // Test private
         let source = "fn test() {}";
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
         assert!(matches!(result.visibility, Visibility::Private));
     }
-    
+
     #[test]
     fn test_attribute_extraction() {
         let parser = SynParser::new();
@@ -984,15 +1057,15 @@ where
 pub struct Point {
     x: i32,
 }"#;
-        
+
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
-        
+
         assert!(result.attributes.iter().any(|a| a.contains("derive")));
         assert!(result.attributes.iter().any(|a| a.contains("cfg")));
         assert!(result.attributes.iter().any(|a| a.contains("inline")));
     }
-    
+
     #[test]
     fn test_doc_comment_extraction() {
         let parser = SynParser::new();
@@ -1062,9 +1135,14 @@ pub fn test() {}"#;
         assert!(matches!(result.item_type, ItemType::Trait));
         assert_eq!(result.name, "AsyncService");
         assert!(result.attributes.iter().any(|a| a == "async_trait=true"));
-        assert!(result.attributes.iter().any(|a| a.starts_with("async_methods=")));
+        assert!(result
+            .attributes
+            .iter()
+            .any(|a| a.starts_with("async_methods=")));
         // Verify the async method names are tracked
-        let async_methods_attr = result.attributes.iter()
+        let async_methods_attr = result
+            .attributes
+            .iter()
             .find(|a| a.starts_with("async_methods="))
             .unwrap();
         assert!(async_methods_attr.contains("connect"));
@@ -1083,7 +1161,10 @@ pub fn test() {}"#;
 
         assert!(matches!(result.item_type, ItemType::Trait));
         assert!(!result.attributes.iter().any(|a| a == "async_trait=true"));
-        assert!(!result.attributes.iter().any(|a| a.starts_with("async_methods=")));
+        assert!(!result
+            .attributes
+            .iter()
+            .any(|a| a.starts_with("async_methods=")));
     }
 
     #[test]
@@ -1098,7 +1179,9 @@ pub fn platform_specific() {}"#;
         // Should have the raw cfg attributes
         assert!(result.attributes.iter().any(|a| a.contains("cfg")));
         // Should have the structured cfg_conditions metadata
-        let cfg_attr = result.attributes.iter()
+        let cfg_attr = result
+            .attributes
+            .iter()
             .find(|a| a.starts_with("cfg_conditions="))
             .expect("Should have cfg_conditions attribute");
         assert!(cfg_attr.contains("feature"));
@@ -1113,6 +1196,9 @@ pub fn simple() {}"#;
         let skeleton = make_skeleton(0, source.len());
         let result = parser.parse_item(source, "test", &skeleton).unwrap();
 
-        assert!(!result.attributes.iter().any(|a| a.starts_with("cfg_conditions=")));
+        assert!(!result
+            .attributes
+            .iter()
+            .any(|a| a.starts_with("cfg_conditions=")));
     }
 }

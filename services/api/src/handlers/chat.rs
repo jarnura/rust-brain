@@ -42,15 +42,31 @@ pub async fn chat_handler(
     state.metrics.record_request("chat", "POST");
     debug!("Chat request: {:?}", req.message);
 
-    // Try OpenCode first, fall back to Ollama
-    let session_id = req.session_id.clone().unwrap_or_else(|| {
-        format!("rustbrain-{}", chrono::Utc::now().timestamp_millis())
-    });
+    // Try OpenCode first, fall back to Ollama.
+    // Reuse existing session if the frontend passed one; otherwise create a new one.
+    let opencode_session_id = if let Some(ref sid) = req.session_id {
+        if sid.starts_with("ses_") {
+            Some(sid.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Attempt OpenCode
-    match state.opencode_client.create_session(Some("Chat")).await {
-        Ok(session) => {
-            match state.opencode_client.send_message(&session.id, &req.message).await {
+    let session_result = match opencode_session_id {
+        Some(sid) => Ok(sid),
+        None => state
+            .opencode_client
+            .create_session(Some("Chat"))
+            .await
+            .map(|s| s.id),
+    };
+
+    match session_result {
+        Ok(sid) => {
+            match state.opencode_client.send_message(&sid, &req.message).await {
                 Ok(msg) => {
                     let response_text = msg.parts.iter()
                         .filter_map(|p| match p {
@@ -66,7 +82,7 @@ pub async fn chat_handler(
                         } else {
                             response_text
                         },
-                        session_id: session.id,
+                        session_id: sid,
                     }));
                 }
                 Err(e) => {
@@ -78,6 +94,10 @@ pub async fn chat_handler(
             warn!("OpenCode create_session failed, falling back to Ollama: {}", e);
         }
     }
+
+    let session_id = req.session_id.clone().unwrap_or_else(|| {
+        format!("rustbrain-{}", chrono::Utc::now().timestamp_millis())
+    });
 
     // Fallback: Ollama
     let system_prompt = r#"You are a helpful AI assistant with access to a Rust codebase knowledge graph.
@@ -128,18 +148,30 @@ Be concise but thorough in your responses. When discussing code, reference speci
 // OpenCode SSE Streaming
 // =============================================================================
 
-/// SSE stream endpoint — bridges OpenCode events to the playground
+/// SSE stream endpoint — bridges OpenCode events to the playground.
+///
+/// Translates OpenCode event types into frontend-friendly events:
+///   message.part.delta  (type=text)  → "token"  {token}
+///   message.part.updated (type=text, with final text) → (buffered, emitted on finish)
+///   message.part.updated (type=tool-invocation) → "tool_call" {name,args,status,result}
+///   message.part.updated (type=step-finish)     → "complete" {message}
+///   session.status (idle after busy)            → "complete" {message}
 pub async fn chat_stream_handler(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let base_url = state.opencode_client.base_url().to_string();
 
     let stream = async_stream::stream! {
-        // Connect to OpenCode SSE endpoint
         let url = format!("{}/event", base_url);
         match reqwest::get(&url).await {
             Ok(resp) => {
                 let mut buffer = String::new();
+                let mut accumulated_text = String::new();
+                let mut was_busy = false;
+                // Track part IDs → types to filter reasoning deltas
+                let mut part_types: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                // Track message IDs → roles to filter user message events
+                let mut message_roles: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                 let bytes_stream = resp.bytes_stream();
                 use futures_util::StreamExt;
                 let mut bytes_stream = std::pin::pin!(bytes_stream);
@@ -148,16 +180,145 @@ pub async fn chat_stream_handler(
                     match chunk {
                         Ok(bytes) => {
                             buffer.push_str(&String::from_utf8_lossy(&bytes));
-                            // Parse SSE lines
+
                             while let Some(pos) = buffer.find("\n\n") {
                                 let event_str = buffer[..pos].to_string();
                                 buffer = buffer[pos + 2..].to_string();
 
-                                // Extract data field
-                                for line in event_str.lines() {
-                                    if let Some(data) = line.strip_prefix("data: ") {
-                                        yield Ok(Event::default().data(data.to_string()));
+                                let data_line = event_str.lines()
+                                    .find_map(|l| l.strip_prefix("data: "));
+                                let data = match data_line {
+                                    Some(d) => d,
+                                    None => continue,
+                                };
+
+                                let json: serde_json::Value = match serde_json::from_str(data) {
+                                    Ok(v) => v,
+                                    Err(_) => continue,
+                                };
+
+                                let event_type = json["type"].as_str().unwrap_or("");
+                                let props = &json["properties"];
+
+                                match event_type {
+                                    // Track message roles (user vs assistant)
+                                    "message.updated" => {
+                                        let info = &props["info"];
+                                        if let (Some(id), Some(role)) = (info["id"].as_str(), info["role"].as_str()) {
+                                            message_roles.insert(id.to_string(), role.to_string());
+                                        }
                                     }
+
+                                    // Streaming text deltas → token events
+                                    "message.part.delta" => {
+                                        let msg_id = props["messageID"].as_str().unwrap_or("");
+                                        let is_assistant = message_roles.get(msg_id)
+                                            .map(|r| r == "assistant").unwrap_or(false);
+                                        if !is_assistant { continue; }
+
+                                        // Look up part type by partID
+                                        let part_id = props["partID"].as_str().unwrap_or("");
+                                        let known_type = part_types.get(part_id).map(|s| s.as_str());
+
+                                        // Only forward text deltas, skip reasoning
+                                        if known_type == Some("text") {
+                                            if let Some(delta) = props["delta"].as_str() {
+                                                accumulated_text.push_str(delta);
+                                                let payload = serde_json::json!({"token": delta});
+                                                yield Ok(Event::default()
+                                                    .event("token")
+                                                    .data(payload.to_string()));
+                                            }
+                                        }
+                                    }
+
+                                    // Part registered or finalized — track type
+                                    "message.part.updated" => {
+                                        let part = &props["part"];
+                                        // Register part ID → type
+                                        if let (Some(id), Some(ptype)) = (part["id"].as_str(), part["type"].as_str()) {
+                                            part_types.insert(id.to_string(), ptype.to_string());
+                                        }
+
+                                        // Only process assistant message parts
+                                        let msg_id = part["messageID"].as_str().unwrap_or("");
+                                        let is_assistant = message_roles.get(msg_id)
+                                            .map(|r| r == "assistant").unwrap_or(false);
+                                        if !is_assistant { continue; }
+
+                                        match part["type"].as_str() {
+                                            Some("text") => {
+                                                // Final text — update accumulated
+                                                if let Some(text) = part["text"].as_str() {
+                                                    if !text.is_empty() {
+                                                        accumulated_text = text.to_string();
+                                                    }
+                                                }
+                                            }
+                                            Some("tool-invocation") | Some("tool_invocation") => {
+                                                let name = part["toolName"].as_str()
+                                                    .or_else(|| part["tool_name"].as_str())
+                                                    .unwrap_or("unknown");
+                                                let args = &part["args"];
+                                                let result = &part["result"];
+                                                let status = if part["state"].as_str() == Some("error") {
+                                                    "error"
+                                                } else if !result.is_null() {
+                                                    "done"
+                                                } else {
+                                                    "running"
+                                                };
+                                                let payload = serde_json::json!({
+                                                    "name": name,
+                                                    "args": args,
+                                                    "status": status,
+                                                    "result": result,
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("tool_call")
+                                                    .data(payload.to_string()));
+                                            }
+                                            Some("step-finish") => {
+                                                // Only emit complete if we have accumulated text
+                                                if !accumulated_text.is_empty() {
+                                                    let payload = serde_json::json!({
+                                                        "message": accumulated_text,
+                                                    });
+                                                    yield Ok(Event::default()
+                                                        .event("complete")
+                                                        .data(payload.to_string()));
+                                                    accumulated_text.clear();
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
+                                    // Session status transitions
+                                    "session.status" => {
+                                        let status_type = props["status"]["type"].as_str().unwrap_or("");
+                                        if status_type == "busy" {
+                                            was_busy = true;
+                                        } else if status_type == "idle" && was_busy {
+                                            was_busy = false;
+                                            // Flush any remaining text as complete
+                                            if !accumulated_text.is_empty() {
+                                                let payload = serde_json::json!({
+                                                    "message": accumulated_text,
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("complete")
+                                                    .data(payload.to_string()));
+                                                accumulated_text.clear();
+                                            }
+                                            // Signal that generation is fully done
+                                            yield Ok(Event::default()
+                                                .event("done")
+                                                .data("{}".to_string()));
+                                        }
+                                    }
+
+                                    _ => {}
                                 }
                             }
                         }
@@ -165,7 +326,7 @@ pub async fn chat_stream_handler(
                             error!("SSE stream error: {}", e);
                             yield Ok(Event::default()
                                 .event("error")
-                                .data(format!("{{\"error\":\"{}\"}}", e)));
+                                .data(serde_json::json!({"error": e.to_string()}).to_string()));
                             break;
                         }
                     }
@@ -175,7 +336,7 @@ pub async fn chat_stream_handler(
                 error!("Failed to connect to OpenCode SSE: {}", e);
                 yield Ok(Event::default()
                     .event("error")
-                    .data(format!("{{\"error\":\"Failed to connect: {}\"}}", e)));
+                    .data(serde_json::json!({"error": format!("Failed to connect: {}", e)}).to_string()));
             }
         }
     };
@@ -193,15 +354,22 @@ pub struct ChatSendRequest {
     pub message: String,
 }
 
-/// Async send — returns 204, results come via SSE stream
+/// Async send — spawns the blocking OpenCode call in background, returns 204 immediately.
+/// Results arrive via the SSE stream.
 pub async fn chat_send_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatSendRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.opencode_client
-        .send_message_async(&req.session_id, &req.message)
-        .await
-        .map_err(|e| AppError::OpenCode(format!("Failed to send message: {}", e)))?;
+    let client = state.opencode_client.clone();
+    let session_id = req.session_id.clone();
+    let message = req.message.clone();
+
+    // Spawn the blocking send in the background — SSE stream delivers events
+    tokio::spawn(async move {
+        if let Err(e) = client.send_message(&session_id, &message).await {
+            warn!("Background send_message failed for session {}: {}", session_id, e);
+        }
+    });
 
     Ok(StatusCode::NO_CONTENT)
 }

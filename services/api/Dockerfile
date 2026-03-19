@@ -62,6 +62,9 @@ WORKDIR /app
 # Copy the binary
 COPY --from=builder /build/target/release/rustbrain-api /usr/local/bin/
 
+# Copy static files for playground
+COPY --from=builder /build/services/api/static /app/static
+
 # Create non-root user
 RUN useradd -r -s /bin/false rustbrain && \
     chown -R rustbrain:rustbrain /app

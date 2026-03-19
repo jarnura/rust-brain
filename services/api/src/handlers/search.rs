@@ -55,7 +55,7 @@ pub struct AggregateSearchRequest {
     #[serde(default)]
     pub score_threshold: Option<f32>,
     /// Include caller/callee graph context for each result
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub include_graph: bool,
     /// Include full source body from Postgres
     #[serde(default)]

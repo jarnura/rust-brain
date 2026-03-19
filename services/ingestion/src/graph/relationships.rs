@@ -74,8 +74,12 @@ impl std::fmt::Display for RelationshipType {
 pub struct RelationshipData {
     /// Source node ID
     pub from_id: String,
-    /// Target node ID  
+    /// Target node ID
     pub to_id: String,
+    /// Source node label (e.g. "Function", "Module") for indexed MATCH
+    pub from_label: String,
+    /// Target node label for indexed MATCH
+    pub to_label: String,
     /// Relationship type
     pub rel_type: RelationshipType,
     /// Additional properties on the relationship
@@ -163,11 +167,11 @@ impl RelationshipBuilder {
     /// Create a relationship using MERGE for idempotency
     pub async fn merge_relationship(&self, rel: &RelationshipData) -> Result<()> {
         let query_str = format!(
-            "MATCH (from {{id: $from_id}}) \
-             MATCH (to {{id: $to_id}}) \
+            "MATCH (from:{} {{id: $from_id}}) \
+             MATCH (to:{} {{id: $to_id}}) \
              MERGE (from)-[r:{}]->(to) \
              SET r += $props",
-            rel.rel_type.name()
+            rel.from_label, rel.to_label, rel.rel_type.name()
         );
 
         let props: HashMap<String, BoltType> = rel.properties
@@ -195,10 +199,14 @@ impl RelationshipBuilder {
     pub fn create_contains(
         from_id: impl Into<String>,
         to_id: impl Into<String>,
+        from_label: impl Into<String>,
+        to_label: impl Into<String>,
     ) -> RelationshipData {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: from_label.into(),
+            to_label: to_label.into(),
             rel_type: RelationshipType::CONTAINS,
             properties: HashMap::new(),
         }
@@ -225,6 +233,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Function".to_string(),
+            to_label: "Function".to_string(),
             rel_type: RelationshipType::CALLS,
             properties,
         }
@@ -245,6 +255,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Function".to_string(),
+            to_label: "Type".to_string(),
             rel_type: RelationshipType::RETURNS,
             properties,
         }
@@ -269,6 +281,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Function".to_string(),
+            to_label: "Type".to_string(),
             rel_type: RelationshipType::ACCEPTS,
             properties,
         }
@@ -283,6 +297,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Impl".to_string(),
+            to_label: "Trait".to_string(),
             rel_type: RelationshipType::IMPLEMENTS,
             properties: HashMap::new(),
         }
@@ -297,6 +313,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Impl".to_string(),
+            to_label: "Struct".to_string(),
             rel_type: RelationshipType::FOR,
             properties: HashMap::new(),
         }
@@ -321,6 +339,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Struct".to_string(),
+            to_label: "Type".to_string(),
             rel_type: RelationshipType::HAS_FIELD,
             properties,
         }
@@ -343,6 +363,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Enum".to_string(),
+            to_label: "Type".to_string(),
             rel_type: RelationshipType::HAS_VARIANT,
             properties,
         }
@@ -367,6 +389,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Type".to_string(),
+            to_label: "Type".to_string(),
             rel_type: RelationshipType::MONOMORPHIZED_AS,
             properties,
         }
@@ -381,6 +405,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Trait".to_string(),
+            to_label: "Trait".to_string(),
             rel_type: RelationshipType::EXTENDS,
             properties: HashMap::new(),
         }
@@ -395,6 +421,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Function".to_string(),
+            to_label: "Macro".to_string(),
             rel_type: RelationshipType::EXPANDS_TO,
             properties: HashMap::new(),
         }
@@ -417,6 +445,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Module".to_string(),
+            to_label: "Module".to_string(),
             rel_type: RelationshipType::IMPORTS,
             properties,
         }
@@ -439,6 +469,8 @@ impl RelationshipBuilder {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
+            from_label: "Function".to_string(),
+            to_label: "Type".to_string(),
             rel_type: RelationshipType::USES_TYPE,
             properties,
         }
@@ -457,25 +489,25 @@ pub async fn batch_insert_relationships(
         return Ok(());
     }
 
-    // Group relationships by type for efficient batching
-    let mut rels_by_type: HashMap<RelationshipType, Vec<&RelationshipData>> = HashMap::new();
+    // Group by (rel_type, from_label, to_label) so MATCH uses node labels for index hits
+    let mut grouped: HashMap<(RelationshipType, String, String), Vec<&RelationshipData>> = HashMap::new();
     for rel in relationships {
-        rels_by_type
-            .entry(rel.rel_type)
+        grouped
+            .entry((rel.rel_type, rel.from_label.clone(), rel.to_label.clone()))
             .or_default()
             .push(rel);
     }
 
-    for (rel_type, type_rels) in rels_by_type {
+    for ((rel_type, from_label, to_label), group_rels) in grouped {
         // Process in batches
-        for chunk in type_rels.chunks(batch_size) {
+        for chunk in group_rels.chunks(batch_size) {
             let query_str = format!(
                 "UNWIND $rels AS rel_data \
-                 MATCH (from {{id: rel_data.from_id}}) \
-                 MATCH (to {{id: rel_data.to_id}}) \
+                 MATCH (from:{} {{id: rel_data.from_id}}) \
+                 MATCH (to:{} {{id: rel_data.to_id}}) \
                  MERGE (from)-[r:{}]->(to) \
                  SET r += rel_data.props",
-                rel_type.name()
+                from_label, to_label, rel_type.name()
             );
 
             let rel_params: Vec<HashMap<String, BoltType>> = chunk

@@ -64,29 +64,26 @@ class CallGraphPanel {
 
     _buildDOM() {
         this._container.innerHTML = `
-            <div class="callgraph-controls" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border,#333);">
-                <input id="cg-fqn" type="text" placeholder="Fully qualified name\u2026"
-                       style="flex:1;padding:6px 10px;background:var(--bg-input,#1e1e2e);color:var(--fg,#cdd6f4);border:1px solid var(--border,#45475a);border-radius:4px;font-family:inherit;font-size:13px;" />
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--fg-muted,#a6adc8);">
-                    Depth
-                    <input id="cg-depth" type="range" min="1" max="10" value="2" style="width:80px;" />
-                    <span id="cg-depth-val" style="min-width:16px;text-align:center;">2</span>
-                </label>
-                <button id="cg-load" style="padding:6px 14px;background:var(--accent,#89b4fa);color:#1e1e2e;border:none;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px;">Load</button>
-            </div>
-            <div class="callgraph-canvas" style="position:relative;flex:1;overflow:hidden;">
-                <svg id="cg-svg" width="100%" height="100%" style="display:block;"></svg>
-                <div id="cg-tooltip" style="position:absolute;display:none;padding:6px 10px;background:var(--bg-surface,#313244);color:var(--fg,#cdd6f4);border:1px solid var(--border,#45475a);border-radius:4px;font-size:12px;pointer-events:none;white-space:nowrap;z-index:10;"></div>
-                <div class="callgraph-legend" style="position:absolute;bottom:12px;left:12px;display:flex;gap:12px;font-size:11px;color:var(--fg-muted,#a6adc8);background:var(--bg-surface,#313244cc);padding:4px 10px;border-radius:4px;">
-                    <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="${COLORS.current}"/></svg> Current</span>
-                    <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="${COLORS.caller}"/></svg> Caller</span>
-                    <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="${COLORS.callee}"/></svg> Callee</span>
+            <div class="callgraph-wrapper">
+                <div class="callgraph-controls">
+                    <input id="cg-fqn" type="text" class="callgraph-fqn-input" placeholder="Fully qualified name\u2026" />
+                    <label class="callgraph-depth-label">
+                        Depth
+                        <input id="cg-depth" type="range" min="1" max="10" value="2" />
+                        <span id="cg-depth-val">2</span>
+                    </label>
+                    <button id="cg-load" class="btn btn-primary">Load</button>
+                </div>
+                <div class="callgraph-canvas">
+                    <svg id="cg-svg" width="100%" height="100%"></svg>
+                    <div id="cg-tooltip" class="callgraph-tooltip"></div>
+                    <div class="callgraph-legend">
+                        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="${COLORS.current}"/></svg> Current</span>
+                        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="${COLORS.caller}"/></svg> Caller</span>
+                        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="${COLORS.callee}"/></svg> Callee</span>
+                    </div>
                 </div>
             </div>`;
-
-        this._container.style.display = 'flex';
-        this._container.style.flexDirection = 'column';
-        this._container.style.height = '100%';
 
         this._fqnInput = this._container.querySelector('#cg-fqn');
         this._depthSlider = this._container.querySelector('#cg-depth');
@@ -126,8 +123,17 @@ class CallGraphPanel {
         this._loadBtn.textContent = '\u2026';
 
         try {
-            const data = await apiClient.getCallers(fqn, depth);
-            const graph = transformApiData(fqn, data);
+            // Fetch both callers (with depth) and function detail (for callees)
+            const [callersData, fnData] = await Promise.all([
+                apiClient.getCallers(fqn, depth).catch(() => ({ callers: [] })),
+                apiClient.getFunction(fqn).catch(() => ({ callers: [], callees: [] })),
+            ]);
+            // Merge: callers from depth query, callees from function detail
+            const merged = {
+                callers: callersData.callers || [],
+                callees: fnData.callees || [],
+            };
+            const graph = transformApiData(fqn, merged);
             this._graphData = graph;
             state.setCallGraph(graph);
             await this._render();
@@ -333,11 +339,21 @@ class CallGraphPanel {
     }
 }
 
+let pane = null;
 let instance = null;
 
 export function init(paneEl) {
+    // Always update pane reference - allows re-initialization with different panes
+    if (pane !== paneEl) {
+        pane = paneEl;
+        // Clean up old instance if exists
+        if (instance) {
+            instance.destroy();
+            instance = null;
+        }
+    }
     if (!instance) {
-        instance = new CallGraphPanel(paneEl);
+        instance = new CallGraphPanel(pane);
     }
     return instance;
 }

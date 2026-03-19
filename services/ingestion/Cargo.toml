@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Macro expansion and source ingestion service for rust-brain"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dependencies]
 # Shared types
 rustbrain-common = { path = "../../crates/rustbrain-common" }
@@ -29,6 +32,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5"
 toml = "0.8"
+num_cpus = "1.16"
+rayon = "1.10"
 
 # Pin home to avoid Rust 1.88 requirement
 home = "=0.5.9"

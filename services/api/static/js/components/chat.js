@@ -121,6 +121,7 @@ class ChatPanel {
             this._bus.on('chat:token',     (d) => this._onToken(d)),
             this._bus.on('chat:tool_call', (d) => this._onToolCall(d)),
             this._bus.on('chat:complete',  (d) => this._onComplete(d)),
+            this._bus.on('chat:done',      ()  => this._onDone()),
             this._bus.on('chat:error',     (d) => this._onError(d)),
             this._bus.on('sse:connected',  ()  => this._setConnected(true)),
             this._bus.on('sse:reconnecting', () => this._setConnected(false)),
@@ -157,8 +158,10 @@ class ChatPanel {
 
         this._sessionId = id;
         this._els.sessionTitle.textContent = session.title || `Session ${id.slice(0, 8)}`;
-        this._sse.disconnect();
+
+        // Connect SSE stream for this session
         this._sse.connect(id);
+        this._setConnected(true);
         this._bus.emit('chat:session_changed', { sessionId: id });
     }
 
@@ -184,7 +187,9 @@ class ChatPanel {
         this._bus.emit('chat:message_sent', { sessionId: this._sessionId, message: raw });
 
         try {
+            // Fire-and-forget: send message async, results arrive via SSE stream
             await this._api.sendChatAsync(this._sessionId, raw);
+            // Streaming is now driven by SSE events (token → complete)
         } catch (err) {
             this._onError({ message: err.message });
         }
@@ -227,7 +232,8 @@ class ChatPanel {
     }
 
     _onComplete({ message, response }) {
-        // Finalize with accumulated tokens; only use event content as fallback
+        // Update bubble with accumulated tokens or event content — but don't finalize yet.
+        // Multi-step responses (tool call → text) emit multiple completes.
         const content = this._currentTokens || message || response || '';
 
         if (this._currentAssistantEl && content) {
@@ -236,13 +242,18 @@ class ChatPanel {
             this._highlightCode(bubble);
         }
 
-        // Finalize all running tool indicators
+        // Finalize running tool indicators for this step
         this._currentAssistantEl?.querySelectorAll('.tool-call--running')
             .forEach(el => {
                 el.classList.remove('tool-call--running');
                 el.classList.add('tool-call--done');
             });
 
+        this._scrollToBottom();
+    }
+
+    _onDone() {
+        // Session went idle — generation is fully complete
         this._finalizeStreaming();
     }
 

@@ -1,4 +1,5 @@
 {
+  "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "rustbrain": {
       "type": "remote",
@@ -6,12 +7,33 @@
     }
   },
   "provider": {
-    "name": "openai-compatible",
-    "baseURL": "http://litellm:4000",
-    "apiKey": "${LITELLM_MASTER_KEY}"
+    "juspay-grid": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM Proxy",
+      "options": {
+        "baseURL": "https://grid.ai.juspay.net",
+        "apiKey": "sk-xCWCWvNq6kno_3KSEIU8lQ"
+      },
+      "models": {
+        "glm-latest": {
+          "name": "GLM Latest",
+          "limit": {
+            "context": 128000,
+            "output": 16000
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
   },
-  "model": "anthropic/claude-sonnet-4-20250514",
-  "instructions": "You are a Rust code intelligence assistant. You have MCP tools: search_code, get_function, get_callers, get_trait_impls, find_type_usages, get_module_tree, query_graph. Use them proactively.",
+  "instructions": [
+    "You are a Rust code intelligence assistant.",
+    "You have MCP tools: search_code, get_function, get_callers, get_trait_impls, find_type_usages, get_module_tree, query_graph.",
+    "Use them proactively."
+  ],
   "tools": {
     "write": false,
     "bash": false

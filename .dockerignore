@@ -2,39 +2,53 @@
 .git
 .gitignore
 
-# Documentation
-docs/
-LICENSE
-README.md
-PROJECT_STATE.md
-
-# Scripts (not needed for build)
-scripts/
-
-# Tests
-tests/
-
-# Configs (not needed for build, some may have permission issues)
-configs/
-
-# Target directory (not needed for build)
+# Build artifacts (we only need source)
 target/
-target-repo/
-
-# Environment files
-.env
-.env.example
-
-# Docker files
-docker-compose.yml
-Dockerfile
+**/target/
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# OS files
-.DS_Store
-Thumbs.db
+# Docker
+Dockerfile*
+docker-compose*
+.docker/
+
+# Node modules (if any frontend)
+node_modules/
+
+# Large data directories
+**/data/
+**/*.db
+**/*.sqlite
+
+# Logs
+*.log
+logs/
+
+# Test fixtures that are large
+**/fixtures/large-*
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# CI
+.github/
+.gitlab-ci.yml
+
+# Environment files
+.env
+.env.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Neo4j scripts (owned by docker user, not needed for ingestion build)
+scripts/init-neo4j.cypher

@@ -61,6 +61,10 @@ class SseClient {
             bus.emit('chat:tool_call', this._parse(e.data));
         });
 
+        source.addEventListener('done', () => {
+            bus.emit('chat:done', {});
+        });
+
         source.addEventListener('error', (e) => {
             const payload = e.data ? this._parse(e.data) : { message: 'Stream error' };
             bus.emit('chat:error', payload);

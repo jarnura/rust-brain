@@ -29,6 +29,8 @@ pub struct DependencyStatus {
     pub status: String,
     pub latency_ms: Option<u64>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub points_count: Option<u64>,
 }
 
 pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
@@ -42,6 +44,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "healthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: None,
+                points_count: None,
             });
         }
         Err(e) => {
@@ -49,6 +52,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: None,
                 error: Some(e.to_string()),
+                points_count: None,
             });
         }
     }
@@ -61,10 +65,14 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
         .await
     {
         Ok(resp) if resp.status().is_success() => {
+            let latency = start.elapsed().as_millis() as u64;
+            let points_count = resp.json::<serde_json::Value>().await.ok()
+                .and_then(|v| v["result"]["points_count"].as_u64());
             dependencies.insert("qdrant".to_string(), DependencyStatus {
                 status: "healthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
+                latency_ms: Some(latency),
                 error: None,
+                points_count,
             });
         }
         Ok(resp) => {
@@ -72,6 +80,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: Some(format!("Status: {}", resp.status())),
+                points_count: None,
             });
         }
         Err(e) => {
@@ -79,6 +88,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: None,
                 error: Some(e.to_string()),
+                points_count: None,
             });
         }
     }
@@ -95,6 +105,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "healthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: None,
+                points_count: None,
             });
         }
         Ok(resp) => {
@@ -102,6 +113,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: Some(format!("Status: {}", resp.status())),
+                points_count: None,
             });
         }
         Err(e) => {
@@ -109,6 +121,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: None,
                 error: Some(e.to_string()),
+                points_count: None,
             });
         }
     }
@@ -121,6 +134,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "healthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: None,
+                points_count: None,
             });
         }
         Err(e) => {
@@ -128,6 +142,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: None,
                 error: Some(e.to_string()),
+                points_count: None,
             });
         }
     }
@@ -140,6 +155,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "healthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: None,
+                points_count: None,
             });
         }
         Ok(false) | Err(_) => {
@@ -147,6 +163,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
                 status: "unhealthy".to_string(),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
                 error: Some("OpenCode health check failed".to_string()),
+                points_count: None,
             });
         }
     }
@@ -192,6 +209,7 @@ mod tests {
             status: "healthy".to_string(),
             latency_ms: Some(5),
             error: None,
+            points_count: None,
         });
 
         let resp = HealthResponse {

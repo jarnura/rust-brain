@@ -14,8 +14,7 @@ class APIError extends Error {
 
 class ApiClient {
     constructor(baseUrl) {
-        const host = window.location.hostname;
-        this.baseUrl = baseUrl || `http://${host}:8088`;
+        this.baseUrl = baseUrl || window.location.origin;
         this.defaultTimeout = 30_000;
         this.chatTimeout = 120_000;
     }
@@ -47,6 +46,7 @@ class ApiClient {
                 );
             }
 
+            if (response.status === 204) return {};
             return await response.json();
         } catch (err) {
             clearTimeout(tid);
@@ -101,6 +101,8 @@ class ApiClient {
         return this._post('/tools/aggregate_search', {
             query,
             limit: opts.limit ?? 10,
+            include_source: opts.includeSource ?? false,
+            include_graph: false,
         });
     }
 
@@ -173,7 +175,7 @@ class ApiClient {
      */
     sendChatAsync(sessionId, message, opts = {}) {
         return this._post(
-            '/tools/chat/async',
+            '/tools/chat/send',
             { session_id: sessionId, message, ...opts },
             this.chatTimeout,
         );
@@ -182,21 +184,21 @@ class ApiClient {
     // ------------------------------------------------------------------ sessions
 
     createSession(opts = {}) {
-        return this._post('/tools/sessions', opts);
+        return this._post('/tools/chat/sessions', opts);
     }
 
     listSessions() {
-        return this._get('/tools/sessions');
+        return this._get('/tools/chat/sessions');
     }
 
     /** @param {string} id */
     getSession(id) {
-        return this._get(`/tools/sessions/${encodeURIComponent(id)}`);
+        return this._get(`/tools/chat/sessions/${encodeURIComponent(id)}`);
     }
 
     /** @param {string} id */
     deleteSession(id) {
-        return this._fetch(`/tools/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        return this._fetch(`/tools/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
     }
 
     /**
@@ -204,12 +206,12 @@ class ApiClient {
      * @param {object} opts
      */
     forkSession(id, opts = {}) {
-        return this._post(`/tools/sessions/${encodeURIComponent(id)}/fork`, opts);
+        return this._post(`/tools/chat/sessions/${encodeURIComponent(id)}/fork`, opts);
     }
 
     /** @param {string} id */
     abortSession(id) {
-        return this._post(`/tools/sessions/${encodeURIComponent(id)}/abort`, {});
+        return this._post(`/tools/chat/sessions/${encodeURIComponent(id)}/abort`, {});
     }
 }
 

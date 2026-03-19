@@ -14,7 +14,7 @@ services:
     image: postgres:16-alpine
     container_name: rustbrain-postgres
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
@@ -32,13 +32,13 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 6G
 
   pgweb:
     image: sosedoff/pgweb:latest
     container_name: rustbrain-pgweb
     ports:
-      - "127.0.0.1:${PGWEB_PORT:-8081}:8081"
+      - "${PGWEB_PORT:-8085}:8081"
     environment:
       PGWEB_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
     depends_on:
@@ -51,8 +51,8 @@ services:
     image: neo4j:5-community
     container_name: rustbrain-neo4j
     ports:
-      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
-      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -72,14 +72,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 12G
 
   qdrant:
     image: qdrant/qdrant:v1.12.1
     container_name: rustbrain-qdrant
     ports:
-      - "127.0.0.1:${QDRANT_REST_PORT:-6333}:6333"
-      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+      - "${QDRANT_REST_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -98,7 +98,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 12G
 
   # ---------------------------------------------------------------------------
   # AI / ML LAYER
@@ -125,7 +125,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 16G
     # Uncomment for GPU support:
     # deploy:
     #   resources:
@@ -171,7 +171,7 @@ services:
       - '--storage.tsdb.retention.time=30d'
       - '--web.enable-lifecycle'
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9090/-/healthy || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9090/-/healthy || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -198,6 +198,10 @@ services:
       - prometheus
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   # ---------------------------------------------------------------------------
   # API LAYER
@@ -213,8 +217,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: ${NEO4J_READONLY_USER:-rustbrain_readonly}
-      NEO4J_PASSWORD: ${NEO4J_READONLY_PASSWORD}
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       QDRANT_HOST: http://qdrant:6333
       QDRANT_COLLECTION: code_embeddings
       OLLAMA_HOST: http://ollama:11434
@@ -261,7 +265,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
+    restart: "no"
     networks: [rustbrain-net]
     deploy:
       resources:
@@ -274,31 +278,8 @@ services:
   # AI GATEWAY LAYER
   # ---------------------------------------------------------------------------
 
-  litellm:
-    build:
-      context: ./configs/litellm
-      dockerfile: Dockerfile
-    container_name: rustbrain-litellm
-    ports:
-      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4000/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-    depends_on:
-      - ollama
-    restart: unless-stopped
-    networks: [rustbrain-net]
-    deploy:
-      resources:
-        limits:
-          memory: 512M
+  # LiteLLM is hosted externally at https://grid.ai.juspay.net
+  # OpenCode connects to it via LITELLM_BASE_URL and LITELLM_API_KEY
 
   mcp-sse:
     build:
@@ -306,7 +287,7 @@ services:
       dockerfile: Dockerfile
     container_name: rustbrain-mcp-sse
     ports:
-      - "127.0.0.1:${MCP_SSE_PORT:-3001}:3001"
+      - "${MCP_SSE_PORT:-3001}:3001"
     environment:
       API_BASE_URL: http://api:8080
       RUST_LOG: ${RUST_LOG:-info,rustbrain_mcp=debug}
@@ -334,24 +315,25 @@ services:
       dockerfile: Dockerfile
     container_name: rustbrain-opencode
     ports:
-      - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
+      - "${OPENCODE_PORT:-4096}:4096"
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL}
+      LITELLM_API_KEY: ${LITELLM_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL:-glm-latest}
     volumes:
       - opencode_data:/home/opencode/.local/share/opencode
       - ./configs/opencode/config.json:/home/opencode/.config/opencode/config.json:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4096/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:4096/ || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
     depends_on:
       mcp-sse:
-        condition: service_healthy
-      litellm:
         condition: service_healthy
     restart: unless-stopped
     networks: [rustbrain-net]
@@ -366,19 +348,42 @@ services:
 
   ingestion:
     build:
-      context: ./services/ingestion
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/ingestion/Dockerfile
     container_name: rustbrain-ingestion
     volumes:
-      - ${INGEST_TARGET_PATH:-./target-repo}:/workspace/target-repo:ro
+      - ${INGEST_TARGET_PATH:-./target-repo}:/workspace/target-repo
+      - ${HOME}/.cargo/registry:/root/.cargo/registry:ro  # Share cargo cache
+      - ${HOME}/.cargo/git:/root/.cargo/git:ro            # Share git cache
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      QDRANT_HOST: http://qdrant:6333
+      OLLAMA_HOST: http://ollama:11434
       WORKSPACE_PATH: /workspace/target-repo
       RUST_LOG: ${RUST_LOG:-info,rustbrain_ingestion=debug}
+      # Memory budget for ingestion pipeline
+      INGESTION_MEMORY_BUDGET: "16GB"
     depends_on:
       postgres:
         condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 4G
+    # Auto-remove container after run to prevent accumulation
+    # Use: docker compose run --rm ingestion
     profiles:
       - ingestion
 

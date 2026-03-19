@@ -1,8 +1,8 @@
 //! OpenCode API client for session and message management.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 // =============================================================================
 // Types
@@ -11,8 +11,27 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    pub slug: Option<String>,
+    #[serde(default)]
     pub title: String,
-    pub created_at: DateTime<Utc>,
+    pub project_id: Option<String>,
+    pub directory: Option<String>,
+    pub version: Option<String>,
+    pub summary: Option<SessionSummary>,
+    pub time: SessionTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
+    pub files: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionTime {
+    pub created: i64,
+    pub updated: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,22 +41,73 @@ pub struct Message {
     pub parts: Vec<MessagePart>,
 }
 
+/// Response from OpenCode's send_message endpoint.
+/// Shape: `{"info": {...}, "parts": [...]}`
+#[derive(Debug, Clone, Deserialize)]
+pub struct SendMessageResponse {
+    pub info: MessageInfo,
+    pub parts: Vec<MessagePart>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageInfo {
+    pub id: String,
+    pub role: Option<String>,
+    #[serde(rename = "sessionID")]
+    pub session_id: Option<String>,
+}
+
+impl SendMessageResponse {
+    pub fn into_message(self) -> Message {
+        Message {
+            id: self.info.id,
+            role: self.info.role.unwrap_or_else(|| "assistant".to_string()),
+            parts: self.parts,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum MessagePart {
     Text {
         text: String,
     },
+    Reasoning {
+        text: String,
+    },
+    #[serde(rename = "tool-invocation")]
     ToolInvocation {
-        tool_name: String,
-        args: serde_json::Value,
+        #[serde(rename = "toolName", default)]
+        tool_name: Option<String>,
+        #[serde(default)]
+        args: Option<serde_json::Value>,
+        #[serde(default)]
         result: Option<serde_json::Value>,
     },
+    #[serde(rename = "step-start")]
+    StepStart {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    #[serde(rename = "step-finish")]
+    StepFinish {
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Serialize)]
 struct SendMessageRequest {
-    content: String,
+    parts: Vec<SendMessagePart>,
+}
+
+#[derive(Debug, Serialize)]
+struct SendMessagePart {
+    r#type: String,
+    text: String,
 }
 
 // =============================================================================
@@ -54,8 +124,12 @@ pub struct OpenCodeClient {
 
 impl OpenCodeClient {
     pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("Failed to build HTTP client");
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url,
             username,
             password,
@@ -137,7 +211,10 @@ impl OpenCodeClient {
     pub async fn send_message(&self, session_id: &str, content: &str) -> Result<Message> {
         let path = format!("/session/{}/message", session_id);
         let body = SendMessageRequest {
-            content: content.to_string(),
+            parts: vec![SendMessagePart {
+                r#type: "text".to_string(),
+                text: content.to_string(),
+            }],
         };
         let resp = self
             .request(reqwest::Method::POST, &path)
@@ -145,16 +222,21 @@ impl OpenCodeClient {
             .send()
             .await
             .context("send_message request failed")?;
-        resp.error_for_status()?
-            .json::<Message>()
+        let send_resp = resp
+            .error_for_status()?
+            .json::<SendMessageResponse>()
             .await
-            .context("send_message parse failed")
+            .context("send_message parse failed")?;
+        Ok(send_resp.into_message())
     }
 
     pub async fn send_message_async(&self, session_id: &str, content: &str) -> Result<String> {
         let path = format!("/session/{}/message/async", session_id);
         let body = SendMessageRequest {
-            content: content.to_string(),
+            parts: vec![SendMessagePart {
+                r#type: "text".to_string(),
+                text: content.to_string(),
+            }],
         };
         let resp = self
             .request(reqwest::Method::POST, &path)

@@ -486,13 +486,23 @@ mod tests {
     use crate::pipeline::STAGE_NAMES;
     use std::path::PathBuf;
 
+    /// Helper to create a PipelineConfig for testing (no DATABASE_URL required)
+    fn test_config() -> PipelineConfig {
+        PipelineConfig {
+            crate_path: PathBuf::from("."),
+            database_url: "postgresql://test:test@localhost:5432/test".to_string(),
+            neo4j_url: None,
+            embedding_url: None,
+            stages: None,
+            dry_run: false,
+            continue_on_error: true,
+            max_concurrency: 4,
+        }
+    }
+
     #[test]
     fn test_pipeline_runner_creation() {
-        let config = PipelineConfig {
-            crate_path: PathBuf::from("."),
-            ..Default::default()
-        };
-        
+        let config = test_config();
         let runner = PipelineRunner::new(config);
         assert!(runner.is_ok());
     }
@@ -500,9 +510,8 @@ mod tests {
     #[test]
     fn test_should_run_stage() {
         let config = PipelineConfig {
-            crate_path: PathBuf::from("."),
             stages: Some(vec!["expand".to_string(), "parse".to_string()]),
-            ..Default::default()
+            ..test_config()
         };
         
         let runner = PipelineRunner::new(config).unwrap();
@@ -514,7 +523,7 @@ mod tests {
     
     #[test]
     fn test_all_stages_run_by_default() {
-        let config = PipelineConfig::default();
+        let config = test_config();
         let runner = PipelineRunner::new(config).unwrap();
         
         for stage_name in STAGE_NAMES {

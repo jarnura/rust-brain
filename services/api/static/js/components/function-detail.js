@@ -38,6 +38,44 @@ class FunctionDetailPanel {
     bus.on('state:functionDetail', ({ next: fqn }) => {
       if (fqn) this._load(fqn);
     });
+
+    // "Show in Call Graph" button → switch to callgraph tab and load the FQN
+    bus.on('detail:show_in_graph', ({ fqn }) => {
+      // Switch to the callgraph tab (triggers lazy-init if first time)
+      const tabBtn = document.querySelector('.sidebar__item[data-tab="callgraph"]')
+                  || document.querySelector('.tab-bar__tab[data-tab="callgraph"]');
+      if (tabBtn) tabBtn.click();
+      // Wait for component to initialize, then set FQN and load
+      const tryLoad = (attempts) => {
+        const input = document.getElementById('cg-fqn');
+        if (input) {
+          input.value = fqn;
+          document.getElementById('cg-load')?.click();
+        } else if (attempts > 0) {
+          setTimeout(() => tryLoad(attempts - 1), 200);
+        }
+      };
+      setTimeout(() => tryLoad(5), 300);
+    });
+
+    // "Ask AI" button → switch to chat tab and pre-fill a question
+    bus.on('detail:ask_ai', ({ fqn, fn: fnData }) => {
+      const tabBtn = document.querySelector('.sidebar__item[data-tab="chat"]')
+                  || document.querySelector('.tab-bar__tab[data-tab="chat"]');
+      if (tabBtn) tabBtn.click();
+      const tryFill = (attempts) => {
+        const input = document.querySelector('.chat-input');
+        if (input) {
+          const sig = fnData?.signature || '';
+          input.value = `Explain the function \`${fqn}\`${sig ? ': `' + sig.trim() + '`' : ''}`;
+          input.focus();
+          input.dispatchEvent(new Event('input'));
+        } else if (attempts > 0) {
+          setTimeout(() => tryFill(attempts - 1), 200);
+        }
+      };
+      setTimeout(() => tryFill(5), 300);
+    });
   }
 
   // ── Load ────────────────────────────────────────────────────────────────
@@ -50,11 +88,8 @@ class FunctionDetailPanel {
     this._shell.classList.remove('detail-hidden');
 
     try {
-      const [fnData, callersData] = await Promise.all([
-        apiClient.getFunction(fqn).catch(() => null),
-        apiClient.getCallers(fqn, 1).catch(() => null),
-      ]);
-      this._data = { fn: fnData || {}, callers: callersData };
+      const fnData = await apiClient.getFunction(fqn).catch(() => null);
+      this._data = { fn: fnData || {}, callers: fnData };
       this._render();
     } catch (err) {
       this._bodyEl.innerHTML = `<p class="detail-panel__error">Failed to load: ${this._esc(err.message)}</p>`;
@@ -134,7 +169,7 @@ class FunctionDetailPanel {
   }
 
   _docs(fn) {
-    const docs = fn.docs || fn.doc_comment || fn.documentation || '';
+    const docs = fn.docstring || fn.docs || fn.doc_comment || fn.documentation || '';
     if (!docs) return '<p class="fd__empty">No documentation available.</p>';
     if (window.marked) {
       return `<div class="fd__docs fd__markdown">${window.marked.parse(docs)}</div>`;
@@ -143,9 +178,9 @@ class FunctionDetailPanel {
   }
 
   _source(fn) {
-    const src = fn.source || fn.source_code || fn.body || '';
+    const src = fn.body_source || fn.source || fn.source_code || fn.body || '';
     if (!src) return '<p class="fd__empty">Source not available.</p>';
-    const start      = Number(fn.line ?? fn.line_number ?? 1);
+    const start      = Number(fn.start_line ?? fn.line ?? fn.line_number ?? 1);
     const lineCount  = src.split('\n').length;
     const gutterText = Array.from({ length: lineCount }, (_, i) => start + i).join('\n');
     return `

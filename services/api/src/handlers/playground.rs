@@ -9,6 +9,6 @@ pub async fn playground_html() -> impl IntoResponse {
     (
         StatusCode::OK,
         [("Content-Type", "text/html; charset=utf-8")],
-        include_str!("../../static/playground.html"),
+        include_str!("../../static/index.html"),
     )
 }

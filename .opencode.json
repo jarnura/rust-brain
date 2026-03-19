@@ -1,0 +1,75 @@
+{
+  "$schema": "https://opencode.ai/project.json",
+  "name": "rust-brain",
+  "version": "1.0.0",
+  "description": "Rust code intelligence platform with memory-bounded ingestion",
+  
+  "commands": {
+    "ingest": {
+      "description": "Run code ingestion (ALWAYS containerized)",
+      "command": "./scripts/ingest.sh",
+      "memoryLimit": "16GB",
+      "timeout": 3600,
+      "notes": [
+        "NEVER run rustbrain-ingestion directly on host",
+        "Always use this wrapper script which enforces container execution",
+        "Container has 16GB memory limit to prevent OOM"
+      ]
+    },
+    "ingest-dry-run": {
+      "description": "Test ingestion without database writes",
+      "command": "./scripts/ingest.sh ${workspace} --dry-run --verbose",
+      "memoryLimit": "8GB",
+      "timeout": 1800
+    },
+    "mcp-tools": {
+      "description": "Use MCP tools for code queries",
+      "endpoint": "http://localhost:3001/sse",
+      "tools": [
+        "search_code",
+        "get_function",
+        "get_callers",
+        "get_trait_impls",
+        "find_type_usages",
+        "get_module_tree",
+        "query_graph"
+      ]
+    }
+  },
+
+  "safety": {
+    "enforceContainerExecution": true,
+    "blockedCommands": [
+      "rustbrain-ingestion",
+      "cargo run --bin rustbrain-ingestion",
+      "./target/release/rustbrain-ingestion"
+    ],
+    "reason": "Direct execution caused 61GB OOM crash on 2026-03-19"
+  },
+
+  "memory": {
+    "ingestion": {
+      "budget": "16GB",
+      "stageQuotas": {
+        "discover": "512MB",
+        "expand": "2GB",
+        "parse": "3GB",
+        "typecheck": "1GB",
+        "graph": "2GB",
+        "embed": "1.5GB"
+      },
+      "overhead": "6GB"
+    }
+  },
+
+  "docker": {
+    "composeFile": "./docker-compose.yml",
+    "services": {
+      "ingestion": {
+        "memoryLimit": "16GB",
+        "memoryReservation": "4GB",
+        "autoRemove": true
+      }
+    }
+  }
+}

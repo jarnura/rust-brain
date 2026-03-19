@@ -23,33 +23,34 @@ impl TreeSitterParser {
         parser
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .context("Failed to set tree-sitter Rust language")?;
-        
-        Ok(Self { 
-            parser: Mutex::new(parser) 
+
+        Ok(Self {
+            parser: Mutex::new(parser),
         })
     }
-    
+
     /// Extract item skeletons from source code
     pub fn extract_skeletons(&self, source: &str) -> Result<Vec<SkeletonItem>> {
         let source_bytes = source.as_bytes();
-        let tree = self.parser
+        let tree = self
+            .parser
             .lock()
             .unwrap()
             .parse(source, None)
             .context("Failed to parse source with tree-sitter")?;
-        
+
         let root = tree.root_node();
         let mut skeletons = Vec::new();
         let mut cursor = root.walk();
-        
+
         self.collect_items(&mut cursor, source_bytes, &mut skeletons);
-        
+
         // Sort by start position
         skeletons.sort_by_key(|s| s.start_byte);
-        
+
         Ok(skeletons)
     }
-    
+
     /// Recursively collect items from the AST
     fn collect_items<'a>(
         &self,
@@ -60,11 +61,11 @@ impl TreeSitterParser {
         loop {
             let node = cursor.node();
             let kind = node.kind();
-            
+
             // Check if this is a top-level item
             if let Some(skeleton) = self.try_extract_skeleton(node, source) {
                 skeletons.push(skeleton);
-                
+
                 // For items that might contain nested items (impl blocks, modules, traits)
                 // we need to recurse
                 if matches!(kind, "impl_item" | "trait_item" | "mod_item") {
@@ -77,20 +78,20 @@ impl TreeSitterParser {
                 self.collect_items(cursor, source, skeletons);
                 cursor.goto_parent();
             }
-            
+
             if !cursor.goto_next_sibling() {
                 break;
             }
         }
     }
-    
+
     /// Try to extract a skeleton from a node
     fn try_extract_skeleton<'a>(&self, node: Node<'a>, source: &'a [u8]) -> Option<SkeletonItem> {
         let kind = node.kind();
         let item_type = self.kind_to_item_type(kind)?;
-        
+
         let name = self.extract_name(node, source, &item_type);
-        
+
         Some(SkeletonItem {
             item_type,
             name,
@@ -100,7 +101,7 @@ impl TreeSitterParser {
             end_line: node.end_position().row + 1,
         })
     }
-    
+
     /// Convert tree-sitter kind to ItemType
     fn kind_to_item_type(&self, kind: &str) -> Option<ItemType> {
         match kind {
@@ -119,9 +120,14 @@ impl TreeSitterParser {
             _ => None,
         }
     }
-    
+
     /// Extract name from an item node
-    fn extract_name<'a>(&self, node: Node<'a>, source: &'a [u8], item_type: &ItemType) -> Option<String> {
+    fn extract_name<'a>(
+        &self,
+        node: Node<'a>,
+        source: &'a [u8],
+        item_type: &ItemType,
+    ) -> Option<String> {
         match item_type {
             ItemType::Function => {
                 // Look for function name (identifier node)
@@ -139,11 +145,10 @@ impl TreeSitterParser {
                 // For impl blocks, extract the type being implemented
                 self.extract_impl_name(node, source)
             }
-            ItemType::Const | ItemType::Static => {
-                self.find_child_by_kind(node, "identifier")
-                    .and_then(|n| n.utf8_text(source).ok())
-                    .map(|s| s.to_string())
-            }
+            ItemType::Const | ItemType::Static => self
+                .find_child_by_kind(node, "identifier")
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string()),
             ItemType::Macro => {
                 // Macro name can be identifier or scoped_identifier
                 self.find_child_by_kind(node, "identifier")
@@ -151,11 +156,10 @@ impl TreeSitterParser {
                     .and_then(|n| n.utf8_text(source).ok())
                     .map(|s| s.to_string())
             }
-            ItemType::Module => {
-                self.find_child_by_kind(node, "identifier")
-                    .and_then(|n| n.utf8_text(source).ok())
-                    .map(|s| s.to_string())
-            }
+            ItemType::Module => self
+                .find_child_by_kind(node, "identifier")
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string()),
             ItemType::Use => {
                 // Use declarations don't have a simple name
                 None
@@ -163,27 +167,27 @@ impl TreeSitterParser {
             _ => None,
         }
     }
-    
+
     /// Extract impl block name (trait name or self type)
     fn extract_impl_name<'a>(&self, node: Node<'a>, source: &'a [u8]) -> Option<String> {
         // Look for trait name (if impl Trait for Type)
         if let Some(trait_type) = self.find_child_by_field(node, "trait") {
             return trait_type.utf8_text(source).ok().map(|s| s.to_string());
         }
-        
+
         // Look for self type
         if let Some(self_type) = self.find_child_by_field(node, "type") {
             return self_type.utf8_text(source).ok().map(|s| s.to_string());
         }
-        
+
         None
     }
-    
+
     /// Find a child node by kind
     fn find_child_by_kind<'a>(&self, node: Node<'a>, kind: &str) -> Option<Node<'a>> {
         let mut cursor = node.walk();
         cursor.goto_first_child();
-        
+
         loop {
             if cursor.node().kind() == kind {
                 return Some(cursor.node());
@@ -192,15 +196,15 @@ impl TreeSitterParser {
                 break;
             }
         }
-        
+
         None
     }
-    
+
     /// Find a child node by field name
     fn find_child_by_field<'a>(&self, node: Node<'a>, field: &str) -> Option<Node<'a>> {
         node.child_by_field_name(field)
     }
-    
+
     /// Extract visibility from item source
     pub fn extract_visibility(&self, source: &str) -> Option<Visibility> {
         let source_bytes = source.as_bytes();
@@ -222,11 +226,11 @@ impl TreeSitterParser {
 
         None
     }
-    
+
     /// Find visibility modifier in a node
     fn find_visibility<'a>(&self, node: Node<'a>, source: &'a [u8]) -> Option<Visibility> {
         let mut cursor = node.walk();
-        
+
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
@@ -239,10 +243,10 @@ impl TreeSitterParser {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Parse visibility text into Visibility enum
     fn parse_visibility_text(&self, text: &str) -> Visibility {
         if text == "pub" {
@@ -253,15 +257,13 @@ impl TreeSitterParser {
             Visibility::PubSuper
         } else if text.starts_with("pub(in ") {
             // Extract the path from pub(in path)
-            let path = text
-                .trim_start_matches("pub(in ")
-                .trim_end_matches(')');
+            let path = text.trim_start_matches("pub(in ").trim_end_matches(')');
             Visibility::PubIn(path.to_string())
         } else {
             Visibility::Private
         }
     }
-    
+
     /// Extract attributes from item source
     pub fn extract_attributes(&self, source: &str) -> Vec<String> {
         let source_bytes = source.as_bytes();
@@ -269,16 +271,16 @@ impl TreeSitterParser {
             Some(t) => t,
             None => return Vec::new(),
         };
-        
+
         let root = tree.root_node();
         self.find_attributes(root, source_bytes)
     }
-    
+
     /// Find attributes in a node
     fn find_attributes<'a>(&self, node: Node<'a>, source: &'a [u8]) -> Vec<String> {
         let mut attributes = Vec::new();
         let mut cursor = node.walk();
-        
+
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
@@ -299,20 +301,20 @@ impl TreeSitterParser {
                 }
             }
         }
-        
+
         attributes
     }
-    
+
     /// Extract doc comments from source around a line
     pub fn extract_doc_comments(&self, source: &str, item_start_line: usize) -> String {
         let lines: Vec<&str> = source.lines().collect();
         let mut doc_lines = Vec::new();
-        
+
         // Look backwards from item start for doc comments
         if item_start_line > 1 {
             for i in (0..item_start_line.saturating_sub(1)).rev() {
                 let line = lines.get(i).map(|s| s.trim()).unwrap_or("");
-                
+
                 if line.starts_with("///") || line.starts_with("//!") {
                     let doc_content = line
                         .trim_start_matches("///")
@@ -328,10 +330,10 @@ impl TreeSitterParser {
                 }
             }
         }
-        
+
         doc_lines.join("\n")
     }
-    
+
     /// Extract doc content from #[doc = "..."] attribute
     fn extract_doc_from_attr(&self, attr: &str) -> String {
         // Simple extraction: find content between quotes
@@ -344,17 +346,17 @@ impl TreeSitterParser {
         }
         String::new()
     }
-    
+
     /// Get the byte range for an item at a specific line
     pub fn get_item_at_line(&self, source: &str, line: usize) -> Option<(usize, usize)> {
         let skeletons = self.extract_skeletons(source).ok()?;
-        
+
         for skeleton in skeletons {
             if skeleton.start_line <= line && skeleton.end_line >= line {
                 return Some((skeleton.start_byte, skeleton.end_byte));
             }
         }
-        
+
         None
     }
 }
@@ -368,7 +370,7 @@ impl Default for TreeSitterParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_simple_function() {
         let parser = TreeSitterParser::new().unwrap();
@@ -377,14 +379,14 @@ pub fn hello() -> &'static str {
     "Hello, world!"
 }
 "#;
-        
+
         let skeletons = parser.extract_skeletons(source).unwrap();
-        
+
         assert_eq!(skeletons.len(), 1);
         assert!(matches!(skeletons[0].item_type, ItemType::Function));
         assert_eq!(skeletons[0].name, Some("hello".to_string()));
     }
-    
+
     #[test]
     fn test_parse_multiple_items() {
         let parser = TreeSitterParser::new().unwrap();
@@ -402,35 +404,32 @@ pub fn get_status(user: &User) -> Status {
     Status::Active
 }
 "#;
-        
+
         let skeletons = parser.extract_skeletons(source).unwrap();
-        
+
         assert_eq!(skeletons.len(), 3);
         assert!(matches!(skeletons[0].item_type, ItemType::Struct));
         assert!(matches!(skeletons[1].item_type, ItemType::Enum));
         assert!(matches!(skeletons[2].item_type, ItemType::Function));
     }
-    
+
     #[test]
     fn test_extract_visibility() {
         let parser = TreeSitterParser::new().unwrap();
-        
+
         assert!(matches!(
             parser.extract_visibility("pub fn test() {}"),
             Some(Visibility::Public)
         ));
-        
+
         assert!(matches!(
             parser.extract_visibility("pub(crate) fn test() {}"),
             Some(Visibility::PubCrate)
         ));
-        
-        assert!(matches!(
-            parser.extract_visibility("fn test() {}"),
-            None
-        ));
+
+        assert!(matches!(parser.extract_visibility("fn test() {}"), None));
     }
-    
+
     #[test]
     fn test_extract_attributes() {
         let parser = TreeSitterParser::new().unwrap();
@@ -442,13 +441,13 @@ pub struct Point {
     y: i32,
 }
 "#;
-        
+
         let attrs = parser.extract_attributes(source);
         assert_eq!(attrs.len(), 2);
         assert!(attrs[0].contains("derive"));
         assert!(attrs[1].contains("cfg"));
     }
-    
+
     #[test]
     fn test_extract_doc_comments() {
         let parser = TreeSitterParser::new().unwrap();
@@ -471,8 +470,12 @@ extern crate serde;
 "#;
         let skeletons = parser.extract_skeletons(source).unwrap();
         assert!(!skeletons.is_empty());
-        let extern_item = skeletons.iter()
+        let extern_item = skeletons
+            .iter()
             .find(|s| matches!(s.item_type, ItemType::ExternBlock));
-        assert!(extern_item.is_some(), "Should detect extern crate as ExternBlock");
+        assert!(
+            extern_item.is_some(),
+            "Should detect extern crate as ExternBlock"
+        );
     }
 }

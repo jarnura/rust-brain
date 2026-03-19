@@ -115,18 +115,24 @@ pub async fn get_callers_from_neo4j(
     fqn: &str,
     depth: usize,
 ) -> Result<Vec<CallerNode>, AppError> {
-    let depth = depth.min(10).max(1);
+    let depth = depth.min(5).max(1);
 
-    let cypher = r#"
-        MATCH path = (caller)-[:CALLS*]->(callee:Function {fqn: $fqn})
-        WHERE length(path) <= $depth
-        RETURN caller.fqn as fqn, caller.name as name, caller.file_path as file_path,
-               caller.start_line as line, length(path) as depth
-        ORDER BY depth, fqn
-    "#;
+    // Use bounded variable-length pattern instead of unbounded [:CALLS*]
+    // Build the cypher with the depth baked in (Cypher doesn't support param-based bounds)
+    let cypher = format!(
+        r#"
+        MATCH (caller:Function)-[:CALLS*1..{}]->(callee:Function {{fqn: $fqn}})
+        WHERE caller.fqn <> $fqn
+        RETURN DISTINCT caller.fqn as fqn, caller.name as name, caller.file_path as file_path,
+               caller.start_line as line
+        ORDER BY fqn
+        LIMIT 50
+        "#,
+        depth
+    );
 
-    let params = serde_json::json!({"fqn": fqn, "depth": depth as i64});
-    let results = execute_neo4j_query(state, cypher, params).await?;
+    let params = serde_json::json!({"fqn": fqn});
+    let results = execute_neo4j_query(state, &cypher, params).await?;
 
     let callers = results
         .into_iter()
@@ -135,8 +141,8 @@ pub async fn get_callers_from_neo4j(
                 fqn: r.get("fqn")?.as_str()?.to_string(),
                 name: r.get("name")?.as_str()?.to_string(),
                 file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                line: r.get("line")?.as_i64()? as u32,
-                depth: r.get("depth")?.as_i64()? as usize,
+                line: r.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
+                depth: 1,
             })
         })
         .collect();

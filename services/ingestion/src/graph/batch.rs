@@ -270,31 +270,39 @@ impl BatchInsert {
     }
 
     /// Insert a batch of relationships using UNWIND
+    ///
+    /// Groups by (rel_type, from_label, to_label) so every MATCH uses a node
+    /// label, enabling Neo4j to use per-label unique-constraint indexes instead
+    /// of full node scans.
     async fn insert_relationships_batch(&self, relationships: &[RelationshipData]) -> Result<()> {
         if relationships.is_empty() {
             return Ok(());
         }
 
-        // Group relationships by type for efficient batching
-        let mut rels_by_type: HashMap<String, Vec<&RelationshipData>> = HashMap::new();
+        // Group by (rel_type, from_label, to_label) so the Cypher MATCH can include labels
+        let mut grouped: HashMap<(String, String, String), Vec<&RelationshipData>> = HashMap::new();
         for rel in relationships {
-            rels_by_type
-                .entry(rel.rel_type.name().to_string())
+            grouped
+                .entry((
+                    rel.rel_type.name().to_string(),
+                    rel.from_label.clone(),
+                    rel.to_label.clone(),
+                ))
                 .or_default()
                 .push(rel);
         }
 
-        for (rel_type, type_rels) in rels_by_type {
+        for ((rel_type, from_label, to_label), group_rels) in grouped {
             let query_str = format!(
                 "UNWIND $rels AS rel_data \
-                 MATCH (from {{id: rel_data.from_id}}) \
-                 MATCH (to {{id: rel_data.to_id}}) \
+                 MATCH (from:{} {{id: rel_data.from_id}}) \
+                 MATCH (to:{} {{id: rel_data.to_id}}) \
                  MERGE (from)-[r:{}]->(to) \
                  SET r += rel_data.props",
-                rel_type
+                from_label, to_label, rel_type
             );
 
-            let rel_params: Vec<HashMap<String, BoltType>> = type_rels
+            let rel_params: Vec<HashMap<String, BoltType>> = group_rels
                 .iter()
                 .map(|rel| {
                     let props: HashMap<String, BoltType> = rel.properties
@@ -573,25 +581,30 @@ impl BatchProcessor {
 
     /// Insert a chunk of relationships
     async fn insert_relationships_chunk(&self, relationships: &[RelationshipData]) -> Result<usize> {
-        let mut rels_by_type: HashMap<String, Vec<&RelationshipData>> = HashMap::new();
+        // Group by (rel_type, from_label, to_label) for label-aware MATCH
+        let mut grouped: HashMap<(String, String, String), Vec<&RelationshipData>> = HashMap::new();
         for rel in relationships {
-            rels_by_type
-                .entry(rel.rel_type.name().to_string())
+            grouped
+                .entry((
+                    rel.rel_type.name().to_string(),
+                    rel.from_label.clone(),
+                    rel.to_label.clone(),
+                ))
                 .or_default()
                 .push(rel);
         }
 
-        for (rel_type, type_rels) in rels_by_type {
+        for ((rel_type, from_label, to_label), group_rels) in grouped {
             let query_str = format!(
                 "UNWIND $rels AS rel_data \
-                 MATCH (from {{id: rel_data.from_id}}) \
-                 MATCH (to {{id: rel_data.to_id}}) \
+                 MATCH (from:{} {{id: rel_data.from_id}}) \
+                 MATCH (to:{} {{id: rel_data.to_id}}) \
                  MERGE (from)-[r:{}]->(to) \
                  SET r += rel_data.props",
-                rel_type
+                from_label, to_label, rel_type
             );
 
-            let rel_params: Vec<HashMap<String, BoltType>> = type_rels
+            let rel_params: Vec<HashMap<String, BoltType>> = group_rels
                 .iter()
                 .map(|rel| {
                     let props: HashMap<String, BoltType> = rel.properties

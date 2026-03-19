@@ -1,0 +1,15 @@
+SYMLINK_OK
+lrwxrwxrwx 1 jarnura jarnura 28 Mar 17 22:58 .opencode/AGENTS.md -> ../agents/opencode/AGENTS.md
+# AGENTS.md - OpenCode Configuration
+
+This is the central configuration for OpenCode agents in the `rust-brain` project.
+
+## 🧠 RustBrain MCP Tools - PRIORITY 1
+.opencode:
+agents
+AGENTS.md
+skills
+
+.opencode/agents:
+
+.opencode/skills:
