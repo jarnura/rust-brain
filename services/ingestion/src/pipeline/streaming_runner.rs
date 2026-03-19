@@ -22,7 +22,7 @@ use crate::pipeline::{
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -113,15 +113,28 @@ impl StreamingPipelineRunner {
         let mut stages = Vec::new();
         let mut has_failures = false;
         let mut has_partial = false;
-        let counts = StageCounts::default();
+        let mut counts = StageCounts::default();
         let mut errors = Vec::new();
 
-        for result in [discover_result, expand_result, parse_result, graph_result, embed_result] {
+        let stage_names = ["discover", "expand", "parse", "graph", "embed"];
+        let results = [discover_result, expand_result, parse_result, graph_result, embed_result];
+
+        for (stage_name, result) in stage_names.into_iter().zip(results) {
             match result {
                 Ok(sr) => {
                     match sr.status {
                         StageStatus::Failed => has_failures = true,
                         StageStatus::Partial => has_partial = true,
+                        _ => {}
+                    }
+                    match stage_name {
+                        "expand" => counts.files_expanded = sr.items_processed,
+                        "parse" => {
+                            counts.files_parsed = sr.items_processed;
+                            counts.items_parsed = sr.items_processed;
+                        }
+                        "graph" => counts.graph_nodes = sr.items_processed,
+                        "embed" => counts.embeddings_created = sr.items_processed,
                         _ => {}
                     }
                     stages.push(sr);
@@ -318,8 +331,22 @@ async fn expand_stage(
             }
         }
 
-        // Attempt cargo expand (simplified — reuses logic from ExpandStage)
-        let expanded_source = try_cargo_expand(&discovered.crate_path, &discovered.crate_name);
+        // Attempt cargo expand with 180s timeout (matches sequential runner)
+        let expand_path = discovered.crate_path.clone();
+        let expand_name = discovered.crate_name.clone();
+        let expanded_source = match tokio::time::timeout(
+            Duration::from_secs(180),
+            tokio::task::spawn_blocking(move || try_cargo_expand(&expand_path, &expand_name)),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => Err(anyhow!("cargo expand task panicked: {}", e)),
+            Err(_) => Err(anyhow!(
+                "cargo expand timed out after 180s for {}",
+                discovered.crate_name
+            )),
+        };
         match &expanded_source {
             Ok(_) => expanded_count += 1,
             Err(e) => {
