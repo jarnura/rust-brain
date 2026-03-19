@@ -22,6 +22,7 @@ pub mod pipeline;
 pub mod graph;
 pub mod embedding;
 pub mod derive_detector;
+pub mod monitoring;
 
 use anyhow::{Context, Result};
 use clap::Parser;

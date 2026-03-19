@@ -3,6 +3,8 @@
 //! Executes pipeline stages in order, handling errors gracefully
 //! and recording progress to the database.
 
+use crate::monitoring::{Monitor, MonitorConfig};
+use crate::monitoring::audit::AuditEmitter;
 use crate::pipeline::{
     PipelineConfig, PipelineContext, PipelineResult, PipelineStatus,
     PipelineStage, StageCounts,
@@ -33,6 +35,9 @@ pub struct PipelineRunner {
 
     /// Resilience coordinator (memory watchdog, circuit breakers, spill, checkpoints)
     resilience: Option<Arc<ResilienceCoordinator>>,
+
+    /// Central monitoring coordinator (metrics, progress bars, stuck detection, audit)
+    monitor: Option<Arc<Monitor>>,
 }
 
 impl PipelineRunner {
@@ -55,6 +60,7 @@ impl PipelineRunner {
             pool: None,
             stages,
             resilience: None,
+            monitor: None,
         })
     }
 
@@ -75,10 +81,11 @@ impl PipelineRunner {
             pool: None,
             stages,
             resilience: None,
+            monitor: None,
         })
     }
     
-    /// Connect to the database for run tracking and initialize resilience.
+    /// Connect to the database for run tracking and initialize resilience + monitoring.
     pub async fn connect(&mut self) -> Result<()> {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -93,6 +100,14 @@ impl PipelineRunner {
         )?;
         coordinator.ensure_checkpoint_table().await?;
         self.resilience = Some(Arc::new(coordinator));
+
+        // Initialize monitor with database-backed audit emitter
+        if self.monitor.is_none() {
+            let (audit, _audit_handle) = AuditEmitter::spawn(pool.clone(), None);
+            let monitor = Monitor::new(MonitorConfig::default(), audit)
+                .context("Failed to create monitor")?;
+            self.monitor = Some(Arc::new(monitor));
+        }
 
         self.pool = Some(pool);
         Ok(())
@@ -112,6 +127,18 @@ impl PipelineRunner {
             self.resilience = Some(Arc::new(coordinator));
         }
         let resilience = self.resilience.as_ref().unwrap().clone();
+
+        // Initialize monitor if not already done (dry-run / no-db path)
+        if self.monitor.is_none() {
+            let show_bars = !self.ctx.config.dry_run;
+            let monitor = Monitor::new(
+                MonitorConfig { show_progress_bars: show_bars },
+                AuditEmitter::noop(),
+            )?;
+            self.monitor = Some(Arc::new(monitor));
+        }
+        let monitor = self.monitor.as_ref().unwrap().clone();
+        let _alert_rx = monitor.start();
 
         // Check for a resumable checkpoint
         let resume_from_stage = if let Some(pool) = &self.pool {
@@ -190,8 +217,14 @@ impl PipelineRunner {
 
             info!("Running stage: {} (tier: {})", stage_name, tier);
 
+            // Notify monitor of stage start
+            monitor.begin_stage(stage_name, 0);
+            let stage_start = Instant::now();
+
             // Run the stage
             let result = stage.run(&self.ctx).await;
+
+            let stage_duration_secs = stage_start.elapsed().as_secs_f64();
 
             match &result {
                 Ok(stage_result) => {
@@ -205,12 +238,28 @@ impl PipelineRunner {
                     );
 
                     match stage_result.status {
-                        StageStatus::Success => {}
+                        StageStatus::Success => {
+                            monitor.finish_stage(
+                                stage_name,
+                                stage_duration_secs,
+                                stage_result.items_processed as u64,
+                            );
+                        }
                         StageStatus::Partial => {
                             has_partial = true;
+                            monitor.finish_stage(
+                                stage_name,
+                                stage_duration_secs,
+                                stage_result.items_processed as u64,
+                            );
                         }
                         StageStatus::Failed => {
                             has_failures = true;
+                            monitor.fail_stage(
+                                stage_name,
+                                stage_duration_secs,
+                                stage_result.error.as_deref().unwrap_or("unknown"),
+                            );
                             if !self.ctx.config.continue_on_error {
                                 error!("Stage {} failed, stopping pipeline", stage_name);
                                 results.push(stage_result.clone());
@@ -239,6 +288,7 @@ impl PipelineRunner {
                 }
                 Err(e) => {
                     error!("Stage {} errored: {}", stage_name, e);
+                    monitor.fail_stage(stage_name, stage_duration_secs, &e.to_string());
 
                     let stage_result = StageResult::failed(stage_name, e.to_string());
                     results.push(stage_result.clone());
@@ -288,6 +338,9 @@ impl PipelineRunner {
                 warn!("Failed to clear checkpoints: {}", e);
             }
         }
+
+        // Shut down monitoring background tasks
+        monitor.shutdown();
 
         // Final resilience status
         resilience.log_status();
@@ -436,6 +489,16 @@ impl PipelineRunner {
         self.resilience.as_ref()
     }
 
+    /// Get the monitor (if initialized).
+    pub fn monitor(&self) -> Option<&Arc<Monitor>> {
+        self.monitor.as_ref()
+    }
+
+    /// Attach an externally-created monitor to this runner.
+    pub fn set_monitor(&mut self, monitor: Arc<Monitor>) {
+        self.monitor = Some(monitor);
+    }
+
     /// Create a runner that resumes from a previous checkpoint.
     ///
     /// Looks up the latest checkpoint for the given run_id and creates
@@ -456,6 +519,7 @@ impl PipelineRunner {
             pool: None,
             stages,
             resilience: None,
+            monitor: None,
         })
     }
 }
