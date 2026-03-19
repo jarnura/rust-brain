@@ -2292,7 +2292,7 @@ impl GraphStage {
                         // Skip self/super/crate prefixes (these are relative paths)
                         if identifier.starts_with("self::") || identifier.starts_with("super::") || identifier.starts_with("crate::") {
                             // Try to resolve the full path
-                            if let Some(callee) = Self::resolve_call_target(identifier, function_fqns, caller_module.as_deref()) {
+                            if let Some(callee) = Self::resolve_call_target(identifier, function_fqns, function_names_to_fqns, caller_module.as_deref()) {
                                 if callee != caller_fqn { // Don't create self-calls
                                     calls.push((callee, line_num + 1));
                                 }
@@ -2304,7 +2304,7 @@ impl GraphStage {
                                 if identifier != caller_fqn {
                                     calls.push((identifier.to_string(), line_num + 1));
                                 }
-                            } else if let Some(callee) = Self::resolve_call_target(identifier, function_fqns, caller_module.as_deref()) {
+                            } else if let Some(callee) = Self::resolve_call_target(identifier, function_fqns, function_names_to_fqns, caller_module.as_deref()) {
                                 if callee != caller_fqn {
                                     calls.push((callee, line_num + 1));
                                 }
@@ -2412,13 +2412,14 @@ impl GraphStage {
     fn resolve_call_target(
         identifier: &str,
         function_fqns: &std::collections::HashSet<String>,
+        function_names_to_fqns: &std::collections::HashMap<String, Vec<String>>,
         caller_module: Option<&str>,
     ) -> Option<String> {
         // If it's already a full FQN, check if it exists
         if function_fqns.contains(identifier) {
             return Some(identifier.to_string());
         }
-        
+
         // Try prepending the caller's module
         if let Some(module) = caller_module {
             let full_fqn = format!("{}::{}", module, identifier);
@@ -2426,21 +2427,24 @@ impl GraphStage {
                 return Some(full_fqn);
             }
         }
-        
-        // Try to find by the last part of the path
-        // For Type::method, check if there's a function with that name
+
+        // Try to find by the last part of the path using O(1) HashMap lookup
+        // instead of scanning all function_fqns (which was O(N) per call)
         if let Some(last_sep) = identifier.rfind("::") {
             let method_name = &identifier[last_sep + 2..];
-            
-            // Look for any function ending with ::method_name
-            for fqn in function_fqns {
-                if fqn.ends_with(&format!("::{}", method_name)) {
-                    // Check if the type/path prefix matches
-                    return Some(fqn.clone());
+            if !method_name.is_empty() {
+                if let Some(fqns) = function_names_to_fqns.get(method_name) {
+                    let type_prefix = &identifier[..last_sep];
+                    // Prefer FQN that contains the type/path prefix
+                    if let Some(fqn) = fqns.iter().find(|f| f.contains(type_prefix)) {
+                        return Some(fqn.clone());
+                    }
+                    // Fall back to first match by method name
+                    return fqns.first().cloned();
                 }
             }
         }
-        
+
         None
     }
     
@@ -3366,7 +3370,7 @@ mod tests {
 
     #[test]
     fn test_cargo_expand_timeout_constant() {
-        assert_eq!(CARGO_EXPAND_TIMEOUT, Duration::from_secs(300));
+        assert_eq!(CARGO_EXPAND_TIMEOUT, Duration::from_secs(180));
     }
 
     #[test]
