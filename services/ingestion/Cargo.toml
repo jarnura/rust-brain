@@ -60,4 +60,13 @@ reqwest = { version = "0.12", features = ["json"] }
 
 # Stream utilities
 tokio-stream = "0.1"
+tokio-util = "0.7"
 futures = "0.3"
+
+# Metrics & progress
+prometheus = "0.13"
+indicatif = "0.17"
+
+# Health check HTTP server
+axum = "0.7"
+tower = "0.5"
