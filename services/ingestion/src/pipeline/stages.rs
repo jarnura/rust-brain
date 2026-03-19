@@ -2016,6 +2016,8 @@ impl PipelineStage for GraphStage {
                     }
 
                     // Method calls with local type tracking
+                    let static_callee_fqns: std::collections::HashSet<&str> =
+                        calls.iter().map(|(fqn, _)| fqn.as_str()).collect();
                     let self_type = if item.item_type == "impl" {
                         Some(item.name.as_str())
                     } else {
@@ -2028,7 +2030,7 @@ impl PipelineStage for GraphStage {
                     );
                     for (callee_fqn, line) in &method_calls {
                         // Avoid duplicate entries
-                        if !calls.iter().any(|(fqn, _)| fqn == callee_fqn) {
+                        if !static_callee_fqns.contains(callee_fqn.as_str()) {
                             relationships.push(RelationshipBuilder::create_calls(
                                 item.fqn.clone(),
                                 callee_fqn.clone(),
