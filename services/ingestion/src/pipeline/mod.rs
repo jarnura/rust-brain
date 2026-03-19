@@ -10,9 +10,20 @@
 
 pub mod stages;
 pub mod runner;
+pub mod memory_accountant;
+pub mod streaming_runner;
+pub mod circuit_breaker;
+pub mod resilience;
 
 pub use stages::{PipelineStage, StageResult, StageError, StageStatus};
 pub use runner::PipelineRunner;
+pub use memory_accountant::{MemoryAccountant, MemoryGuard, channel_capacity};
+pub use streaming_runner::StreamingPipelineRunner;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState};
+pub use resilience::{
+    MemoryPressure, MemoryWatchdog, SpillStore, DegradationTier,
+    CheckpointManager, Checkpoint, ResilienceCoordinator,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -119,8 +130,8 @@ pub struct PipelineState {
     /// Source files discovered
     pub source_files: Vec<SourceFileInfo>,
 
-    /// Expanded source code by file path
-    pub expanded_sources: HashMap<PathBuf, String>,
+    /// Expanded source code by file path (Arc for cheap cloning across stages)
+    pub expanded_sources: Arc<HashMap<PathBuf, String>>,
 
     /// Parsed items by file
     pub parsed_items: HashMap<PathBuf, Vec<ParsedItemInfo>>,
@@ -150,7 +161,8 @@ pub struct SourceFileInfo {
     pub path: PathBuf,
     pub crate_name: String,
     pub module_path: String,
-    pub original_source: String,
+    /// Arc<String> to avoid cloning large source strings - just increment refcount
+    pub original_source: Arc<String>,
     pub git_hash: Option<String>,
     /// SHA-256 content hash for change detection
     pub content_hash: String,

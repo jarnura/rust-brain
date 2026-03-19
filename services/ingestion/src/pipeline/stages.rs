@@ -8,18 +8,34 @@ use crate::pipeline::{PipelineContext, ParsedItemInfo, SourceFileInfo};
 use crate::typecheck::TypeResolutionService;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Attempt to release freed memory back to the OS
+fn trim_memory() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
 use walkdir::WalkDir;
 
-/// Default timeout for cargo expand (5 minutes)
-const CARGO_EXPAND_TIMEOUT: Duration = Duration::from_secs(300);
+/// Default timeout for cargo expand (3 minutes per crate)
+const CARGO_EXPAND_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Cache directory for expanded code
+const EXPAND_CACHE_DIR: &str = "/tmp/rustbrain-expand-cache";
+
+/// Maximum parallel threads for parsing (prevents memory spikes)
+const MAX_PARSE_THREADS: usize = 4;
 
 /// Compute a SHA-256 content hash of a string, returning a hex-encoded string.
 fn compute_content_hash(content: &str) -> String {
@@ -271,46 +287,128 @@ impl ExpandStage {
             .collect()
     }
     
-    fn expand_library(&self, crate_path: &Path) -> Result<String> {
-        debug!("Expanding library for {:?}", crate_path);
+    fn expand_library(&self, crate_path: &Path, workspace_path: &Path, crate_name: &str) -> Result<String> {
+        debug!("Expanding library for {:?} (crate: {})", crate_path, crate_name);
+
+        let cache_key = format!("{}-{}.expand", crate_name, self.compute_crate_hash(crate_path));
+        let cache_file = PathBuf::from(EXPAND_CACHE_DIR).join(&cache_key);
+        
+        if cache_file.exists() {
+            if let Ok(cached) = std::fs::read_to_string(&cache_file) {
+                debug!("Using cached expand for {} from {:?}", crate_name, cache_file);
+                return Ok(cached);
+            }
+        }
+
+        let result = match self.run_cargo_expand(workspace_path, crate_name, &["--features", "v1"]) {
+            Ok(output) => {
+                debug!("Succeeded with v1 features for {}", crate_name);
+                Ok(output)
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("does not contain this feature") {
+                    debug!("v1 feature not found for {}, using default", crate_name);
+                    self.run_cargo_expand(workspace_path, crate_name, &[])
+                } else {
+                    Err(e)
+                }
+            }
+        };
+
+        if let Ok(ref output) = result {
+            let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+            let _ = std::fs::write(&cache_file, output);
+        }
+
+        result
+    }
+
+    fn run_cargo_expand(&self, workspace_path: &Path, crate_name: &str, extra_args: &[&str]) -> Result<String> {
+        use std::io::Read;
+        use std::thread;
+
+        let jobs = num_cpus::get().min(16);
+        let jobs_str = jobs.to_string();
+        let mut args = vec!["expand", "--lib", "-p", crate_name, "--jobs", &jobs_str, "--ugly"];
+        args.extend(extra_args);
 
         let mut child = Command::new("cargo")
-            .args(["expand", "--lib"])
-            .current_dir(crate_path)
+            .args(&args)
+            .env("RUSTFLAGS", "-C codegen-units=16")
+            .env("CARGO_BUILD_JOBS", &jobs_str)
+            .current_dir(workspace_path)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .context("Failed to spawn cargo expand --lib")?;
+            .context(format!("Failed to spawn cargo expand for {}", crate_name))?;
 
-        // Wait with timeout to prevent hanging on large crates
+        let stdout = child.stdout.take().context("Failed to capture stdout")?;
+        let stderr = child.stderr.take().context("Failed to capture stderr")?;
+
+        let stdout_buf = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+
+        let stdout_buf_clone = stdout_buf.clone();
+        let stderr_buf_clone = stderr_buf.clone();
+
+        let stdout_thread = thread::spawn(move || {
+            let mut reader = stdout;
+            let mut buf = [0u8; 65536];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 { break; }
+                if let Ok(mut guard) = stdout_buf_clone.lock() {
+                    guard.extend_from_slice(&buf[..n]);
+                }
+            }
+        });
+
+        let stderr_thread = thread::spawn(move || {
+            let mut reader = stderr;
+            let mut buf = [0u8; 65536];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 { break; }
+                if let Ok(mut guard) = stderr_buf_clone.lock() {
+                    guard.extend_from_slice(&buf[..n]);
+                }
+            }
+        });
+
         let timeout = CARGO_EXPAND_TIMEOUT;
         let start = Instant::now();
 
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let output = child.wait_with_output()
-                        .context("Failed to read cargo expand output")?;
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+
+                    let stdout_data = stdout_buf.lock().unwrap().clone();
+                    let stderr_data = stderr_buf.lock().unwrap().clone();
+
                     if status.success() {
-                        return String::from_utf8(output.stdout)
+                        return String::from_utf8(stdout_data)
                             .context("Expanded output is not valid UTF-8");
                     } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        anyhow::bail!("cargo expand --lib failed: {}", stderr);
+                        let stderr = String::from_utf8_lossy(&stderr_data);
+                        anyhow::bail!("cargo expand failed: {}", stderr);
                     }
                 }
                 Ok(None) => {
                     if start.elapsed() > timeout {
                         let _ = child.kill();
+                        let _ = stdout_thread.join();
+                        let _ = stderr_thread.join();
                         anyhow::bail!(
-                            "cargo expand --lib timed out after {:?} for {:?}",
+                            "cargo expand timed out after {:?} for {}",
                             timeout,
-                            crate_path
+                            crate_name
                         );
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(e) => {
+                    let _ = child.kill();
                     anyhow::bail!("Error waiting for cargo expand: {}", e);
                 }
             }
@@ -376,6 +474,21 @@ impl ExpandStage {
             Ok(vec![workspace_path.to_path_buf()])
         }
     }
+    
+    fn get_crate_name_from_toml(&self, crate_path: &Path) -> Option<String> {
+        let cargo_toml = crate_path.join("Cargo.toml");
+        let content = std::fs::read_to_string(&cargo_toml).ok()?;
+        
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("name = ") {
+                let name = trimmed.strip_prefix("name = ")
+                    .map(|s| s.trim().trim_matches('"').to_string());
+                return name;
+            }
+        }
+        None
+    }
 }
 
 #[async_trait::async_trait]
@@ -395,87 +508,112 @@ impl PipelineStage for ExpandStage {
             return Ok(StageResult::skipped("expand"));
         }
         
-        // Discover crates
         let crates = match self.discover_crates(crate_path).await {
             Ok(c) => c,
             Err(e) => {
                 return Ok(StageResult::failed("expand", format!("Failed to discover crates: {}", e)));
             }
         };
-        
+
         let mut state = ctx.state.write().await;
         let mut expanded_count = 0;
         let mut failed_count = 0;
-        
+        let mut skipped_binary = 0;
+
+        let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+
+        // FIX: Accumulate into a local HashMap instead of calling
+        // Arc::make_mut on each insert, which clones the entire HashMap
+        // every time the refcount > 1.
+        let mut expanded_map: HashMap<PathBuf, String> = HashMap::new();
+
         for crate_path in &crates {
-            // Get git hash
             let git_hash = self.get_git_hash(crate_path);
-            
-            // Get crate name from Cargo.toml
-            let crate_name = crate_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            
-            // Find source files
+
+            let crate_name = self.get_crate_name_from_toml(crate_path)
+                .unwrap_or_else(|| crate_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()));
+
             let source_files = self.find_source_files(crate_path);
-            
-            // Check expand cache by content hash
+            if source_files.is_empty() {
+                debug!("Skipping {:?} - no source files", crate_path);
+                continue;
+            }
+
             let content_hash = self.compute_crate_hash(crate_path);
             let expanded = if let Some(cached) = state.expand_cache.get(&content_hash) {
-                debug!("Using cached expand result for {:?} (hash: {})", crate_path, content_hash);
+                debug!("Using in-memory cached expand for {}", crate_name);
                 expanded_count += 1;
                 Some(cached.clone())
             } else {
-                match self.expand_library(crate_path) {
+                match self.expand_library(crate_path, crate_path, &crate_name) {
                     Ok(exp) => {
                         expanded_count += 1;
-                        // Cache the result for future runs
                         state.expand_cache.insert(content_hash, exp.clone());
                         Some(exp)
                     }
                     Err(e) => {
-                        warn!("Failed to expand {:?}: {}", crate_path, e);
-                        state.errors.push(StageError::new("expand", e.to_string()));
-                        failed_count += 1;
-                        None
+                        let err_str = e.to_string();
+                        if err_str.contains("no library targets found") {
+                            debug!("Skipping {} - binary only crate", crate_name);
+                            skipped_binary += 1;
+                            None
+                        } else {
+                            warn!("Failed to expand {}: {}", crate_name, e);
+                            state.errors.push(StageError::new("expand", e.to_string()));
+                            failed_count += 1;
+                            None
+                        }
                     }
                 }
             };
-            
-            // Store source files and expanded code
-            for file_path in source_files {
-                if let Ok(source) = std::fs::read_to_string(&file_path) {
-                    let module_path = compute_module_path(crate_path, &file_path, &crate_name);
-                    let content_hash = compute_content_hash(&source);
+
+            for file_path in &source_files {
+                // Pre-flight file size check: skip files > 10 MB
+                if let Ok(metadata) = std::fs::metadata(file_path) {
+                    if crate::pipeline::memory_accountant::MemoryAccountant::should_skip_file(metadata.len()) {
+                        info!("Skipping oversized file {:?} ({} bytes)", file_path, metadata.len());
+                        continue;
+                    }
+                }
+
+                if let Ok(source) = std::fs::read_to_string(file_path) {
+                    let module_path = compute_module_path(crate_path, file_path, &crate_name);
+                    let file_hash = compute_content_hash(&source);
 
                     state.source_files.push(SourceFileInfo {
                         path: file_path.clone(),
                         crate_name: crate_name.clone(),
                         module_path,
-                        original_source: source,
+                        original_source: Arc::new(source),
                         git_hash: git_hash.clone(),
-                        content_hash,
+                        content_hash: file_hash,
                     });
 
                     if let Some(ref expanded_source) = expanded {
-                        state.expanded_sources.insert(file_path, expanded_source.clone());
+                        expanded_map.insert(file_path.clone(), expanded_source.clone());
                     }
                 }
             }
         }
-        
+
+        // Assign the complete map as a single Arc (no per-insert cloning)
+        state.expanded_sources = Arc::new(expanded_map);
         state.counts.files_expanded = expanded_count;
         
         let duration = start.elapsed();
+        info!("Expand stage: {} expanded, {} failed, {} skipped (binary-only), {:?}", 
+              expanded_count, failed_count, skipped_binary, duration);
         
         if failed_count > 0 && expanded_count == 0 {
             Ok(StageResult::failed("expand", "All expansion attempts failed"))
         } else if failed_count > 0 {
             Ok(StageResult::partial("expand", expanded_count, failed_count, duration, 
-                format!("{} crates expanded, {} failed", expanded_count, failed_count)))
+                format!("{} crates expanded, {} failed, {} skipped", expanded_count, failed_count, skipped_binary)))
         } else {
-            Ok(StageResult::success("expand", expanded_count, 0, duration))
+            Ok(StageResult::success("expand", expanded_count + skipped_binary, 0, duration))
         }
     }
 }
@@ -484,17 +622,23 @@ impl PipelineStage for ExpandStage {
 // PARSE STAGE
 // =============================================================================
 
-/// Stage 2: Dual parsing (tree-sitter + syn) with derive macro detection
+/// Maximum expanded source size to parse (skip larger files to prevent OOM)
+/// Expanded code with 5000+ impl blocks can consume 50+ GB of memory
+const MAX_EXPANDED_SOURCE_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+
+/// Maximum impl blocks to parse in expanded code (skip if more)
+const MAX_IMPL_BLOCKS: usize = 500;
+
 pub struct ParseStage {
-    parser: DualParser,
-    derive_detector: crate::derive_detector::DeriveDetector,
+    parser: Arc<DualParser>,
+    derive_detector: Arc<crate::derive_detector::DeriveDetector>,
 }
 
 impl ParseStage {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            parser: DualParser::new()?,
-            derive_detector: crate::derive_detector::DeriveDetector::new(),
+            parser: Arc::new(DualParser::new()?),
+            derive_detector: Arc::new(crate::derive_detector::DeriveDetector::new()),
         })
     }
 }
@@ -508,119 +652,225 @@ impl PipelineStage for ParseStage {
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
         
-        info!("Starting parse stage");
+        info!("Starting parse stage (batch insert to database)");
         
-        let state = ctx.state.read().await;
-        let source_files = state.source_files.clone();
-        let expanded_sources = state.expanded_sources.clone();
-        drop(state);
+        let db_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(30)
+            .connect(&ctx.config.database_url)
+            .await
+            .map_err(|e| anyhow!("Database connection failed: {}", e))?;
+        
+        let source_files = {
+            let state = ctx.state.read().await;
+            let source_files = state.source_files.clone();
+            let expanded_sources = state.expanded_sources.clone();
+            drop(state);
+            
+            let mut state = ctx.state.write().await;
+            state.expanded_sources = Arc::new(HashMap::new());
+            state.source_files.clear();
+            drop(state);
+            
+            trim_memory();
+            
+            (source_files, expanded_sources)
+        };
+        let (source_files, expanded_sources) = source_files;
         
         if source_files.is_empty() {
             return Ok(StageResult::skipped("parse"));
         }
         
-        let mut state = ctx.state.write().await;
+        let total_files = source_files.len();
+        info!("Parsing {} files with {} threads, batch size 10", total_files, MAX_PARSE_THREADS);
+        
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(MAX_PARSE_THREADS)
+            .build()
+            .map_err(|e| anyhow!("Failed to create thread pool: {}", e))?;
+        
+        let batch_size = 10;
         let mut parsed_count = 0;
         let mut items_count = 0;
         let mut failed_count = 0;
         let mut derive_generated_count = 0;
         
-        for file_info in &source_files {
-            // Use expanded source if available, otherwise original
-            let (source_to_parse, has_expanded) = expanded_sources
-                .get(&file_info.path)
-                .map(|s| (s.as_str(), true))
-                .unwrap_or((&file_info.original_source, false));
+        for (batch_idx, batch) in source_files.chunks(batch_size).enumerate() {
+            let batch_start = batch_idx * batch_size;
+            info!("Parsing batch {} (files {}-{})", batch_idx + 1, batch_start + 1, batch_start + batch.len());
             
-            match self.parser.parse(source_to_parse, &file_info.module_path) {
-                Ok(result) => {
-                    // Detect derive-generated impl blocks if we have expanded source
-                    let generated_by_map = if has_expanded {
-                        match self.derive_detector.detect(
-                            &file_info.original_source,
-                            source_to_parse,
-                            &file_info.module_path,
-                        ) {
-                            Ok(detection) => detection.generated_by,
-                            Err(e) => {
-                                warn!("Derive detection failed for {:?}: {}", file_info.path, e);
-                                HashMap::new()
-                            }
-                        }
+            for file_info in batch {
+                let (source_to_parse, has_expanded) = expanded_sources
+                    .get(&file_info.path)
+                    .map(|s| (s.as_str(), true))
+                    .unwrap_or((&file_info.original_source, false));
+                
+                // Count impl blocks in expanded source - files with 5000+ impl blocks consume 50+ GB
+                let impl_count = if has_expanded {
+                    source_to_parse.matches("impl ").count()
+                } else {
+                    0
+                };
+                
+                // Skip expanded files with too many impl blocks - they cause OOM during derive detection
+                let skip_expanded = has_expanded && (
+                    source_to_parse.len() > MAX_EXPANDED_SOURCE_SIZE || 
+                    impl_count > MAX_IMPL_BLOCKS
+                );
+                
+                if skip_expanded {
+                    let reason = if source_to_parse.len() > MAX_EXPANDED_SOURCE_SIZE {
+                        format!("{} bytes > {} limit", source_to_parse.len(), MAX_EXPANDED_SOURCE_SIZE)
                     } else {
-                        HashMap::new()
+                        format!("{} impl blocks > {} limit", impl_count, MAX_IMPL_BLOCKS)
                     };
-                    
-                    // Convert ParsedItem to ParsedItemInfo with generated_by annotation
-                    let items: Vec<ParsedItemInfo> = result.items
-                        .iter()
-                        .map(|item| {
-                            // Check if this impl was generated by a derive macro
-                            let generated_by = if item.item_type == ItemType::Impl {
-                                // Try to find the derive source
-                                self.find_derive_source(item, &generated_by_map)
-                                    .or_else(|| item.generated_by.clone())
-                            } else {
-                                item.generated_by.clone()
-                            };
+                    info!("Skipping large expanded file {:?} ({}) - parsing original instead", 
+                          file_info.path, reason);
+                    let result = self.parser.parse(&file_info.original_source, &file_info.module_path);
+                    match result {
+                        Ok(parse_result) => {
+                            let items: Vec<ParsedItemInfo> = parse_result.items
+                                .iter()
+                                .map(|item| {
+                                    ParsedItemInfo {
+                                        fqn: item.fqn.clone(),
+                                        item_type: item.item_type.to_string(),
+                                        name: item.name.clone(),
+                                        visibility: item.visibility.as_str().to_string(),
+                                        signature: item.signature.clone(),
+                                        generic_params: item.generic_params.clone(),
+                                        where_clauses: item.where_clauses.clone(),
+                                        attributes: item.attributes.clone(),
+                                        doc_comment: item.doc_comment.clone(),
+                                        start_line: item.start_line,
+                                        end_line: item.end_line,
+                                        body_source: item.body_source.clone(),
+                                        generated_by: None,
+                                    }
+                                })
+                                .collect();
                             
-                            if generated_by.is_some() {
-                                derive_generated_count += 1;
+                            let items_len = items.len();
+                            items_count += items_len;
+                            parsed_count += 1;
+                            
+                            if !items.is_empty() {
+                                let items_ref: Vec<&ParsedItemInfo> = items.iter().collect();
+                                let insert_count = Self::batch_insert_items(&db_pool, &items_ref).await;
+                                debug!("Inserted {} items for {:?}", insert_count, file_info.path);
                             }
                             
-                            ParsedItemInfo {
-                                fqn: item.fqn.clone(),
-                                item_type: item.item_type.to_string(),
-                                name: item.name.clone(),
-                                visibility: item.visibility.as_str().to_string(),
-                                signature: item.signature.clone(),
-                                generic_params: item.generic_params.clone(),
-                                where_clauses: item.where_clauses.clone(),
-                                attributes: item.attributes.clone(),
-                                doc_comment: item.doc_comment.clone(),
-                                start_line: item.start_line,
-                                end_line: item.end_line,
-                                body_source: item.body_source.clone(),
-                                generated_by,
+                            drop(items);
+                            drop(parse_result);
+                            trim_memory();
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse original source for {:?}: {}", file_info.path, e);
+                            failed_count += 1;
+                        }
+                    }
+                    continue;
+                }
+                
+                let result = self.parser.parse(source_to_parse, &file_info.module_path);
+                
+                match result {
+                    Ok(parse_result) => {
+                        let generated_by_map = if has_expanded {
+                            self.derive_detector.detect(
+                                &file_info.original_source,
+                                source_to_parse,
+                                &file_info.module_path,
+                            ).map(|d| d.generated_by).unwrap_or_default()
+                        } else {
+                            HashMap::new()
+                        };
+                        
+                        let items: Vec<ParsedItemInfo> = parse_result.items
+                            .iter()
+                            .map(|item| {
+                                let generated_by = if item.item_type == ItemType::Impl {
+                                    self.find_derive_source(item, &generated_by_map)
+                                        .or_else(|| item.generated_by.clone())
+                                } else {
+                                    item.generated_by.clone()
+                                };
+                                
+                                ParsedItemInfo {
+                                    fqn: item.fqn.clone(),
+                                    item_type: item.item_type.to_string(),
+                                    name: item.name.clone(),
+                                    visibility: item.visibility.as_str().to_string(),
+                                    signature: item.signature.clone(),
+                                    generic_params: item.generic_params.clone(),
+                                    where_clauses: item.where_clauses.clone(),
+                                    attributes: item.attributes.clone(),
+                                    doc_comment: item.doc_comment.clone(),
+                                    start_line: item.start_line,
+                                    end_line: item.end_line,
+                                    body_source: item.body_source.clone(),
+                                    generated_by,
+                                }
+                            })
+                            .collect();
+                        
+                        let items_len = items.len();
+                        derive_generated_count += items.iter().filter(|i| i.generated_by.is_some()).count();
+                        items_count += items_len;
+                        parsed_count += 1;
+                        
+                        if !items.is_empty() {
+                            let items_ref: Vec<&ParsedItemInfo> = items.iter().collect();
+                            let insert_count = Self::batch_insert_items(&db_pool, &items_ref).await;
+                            debug!("Inserted {} items for {:?}", insert_count, file_info.path);
+                        }
+                        
+                        if !parse_result.errors.is_empty() {
+                            let mut state = ctx.state.write().await;
+                            for err in &parse_result.errors {
+                                state.errors.push(StageError::new("parse", err.message.clone())
+                                    .with_context(format!("{}:{}", file_info.path.display(), err.line.unwrap_or(0))));
                             }
-                        })
-                        .collect();
-                    
-                    items_count += items.len();
-                    state.parsed_items.insert(file_info.path.clone(), items);
-                    parsed_count += 1;
-                    
-                    // Record parse errors
-                    for err in result.errors {
-                        state.errors.push(StageError::new("parse", err.message)
-                            .with_context(format!("{}:{}", file_info.path.display(), err.line.unwrap_or(0))));
+                            drop(state);
+                        }
+                        
+                        drop(items);
+                        drop(parse_result);
+                        drop(generated_by_map);
+                        trim_memory();
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse {:?}: {}", file_info.path, e);
+                        let mut state = ctx.state.write().await;
+                        state.errors.push(StageError::new("parse", e.to_string())
+                            .with_context(file_info.path.display().to_string()));
+                        drop(state);
+                        failed_count += 1;
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to parse {:?}: {}", file_info.path, e);
-                    state.errors.push(StageError::new("parse", e.to_string())
-                        .with_context(file_info.path.display().to_string()));
-                    failed_count += 1;
-                }
             }
+            
+            trim_memory();
+            info!("Batch {} complete: {}/{} files, {} items total", batch_idx + 1, parsed_count, total_files, items_count);
         }
         
+        let mut state = ctx.state.write().await;
         state.counts.files_parsed = parsed_count;
         state.counts.items_parsed = items_count;
+        drop(state);
         
         let duration = start.elapsed();
         
         info!(
-            "Parse stage completed: {} files, {} items ({} derive-generated)",
-            parsed_count, items_count, derive_generated_count
+            "Parse stage completed: {} files, {} items ({} derive-generated) in {:?}",
+            parsed_count, items_count, derive_generated_count, duration
         );
         
         if failed_count > 0 && parsed_count == 0 {
             Ok(StageResult::failed("parse", "All parsing attempts failed"))
         } else if failed_count > 0 {
             Ok(StageResult::partial("parse", parsed_count, failed_count, duration,
-                format!("{} files parsed, {} failed, {} items ({} derive-generated)", 
-                    parsed_count, failed_count, items_count, derive_generated_count)))
+                format!("{} files parsed, {} failed, {} items", parsed_count, failed_count, items_count)))
         } else {
             Ok(StageResult::success("parse", items_count, 0, duration))
         }
@@ -628,17 +878,14 @@ impl PipelineStage for ParseStage {
 }
 
 impl ParseStage {
-    /// Find the derive source for an impl block
     fn find_derive_source(
         &self,
         item: &ParsedItem,
         generated_by_map: &HashMap<String, String>,
     ) -> Option<String> {
-        // Extract trait name from attributes (format: impl_for=TraitName)
         for attr in &item.attributes {
             if attr.starts_with("impl_for=") {
                 let trait_name = &attr[9..];
-                // Extract self type from name (format: "TraitName_TypeName")
                 if let Some(underscore_pos) = item.name.find('_') {
                     let self_type = &item.name[underscore_pos + 1..];
                     let key = format!("{} for {}", trait_name, self_type);
@@ -647,6 +894,117 @@ impl ParseStage {
             }
         }
         None
+    }
+    
+    async fn batch_insert_items(pool: &sqlx::PgPool, items: &[&ParsedItemInfo]) -> usize {
+        if items.is_empty() {
+            return 0;
+        }
+        
+        // Deduplicate by FQN to prevent "ON CONFLICT DO UPDATE command cannot affect row a second time"
+        // When the same FQN appears multiple times in a batch, PostgreSQL rejects the entire batch
+        let mut seen_fqns: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let deduped_items: Vec<&&ParsedItemInfo> = items
+            .iter()
+            .filter(|item| seen_fqns.insert(item.fqn.as_str()))
+            .collect();
+        
+        let dup_count = items.len() - deduped_items.len();
+        if dup_count > 0 {
+            debug!("Deduplicated {} items with duplicate FQNs in batch of {}", dup_count, items.len());
+        }
+        
+        let ids: Vec<String> = deduped_items.iter().map(|_| Uuid::new_v4().to_string()).collect();
+        let item_types: Vec<&str> = deduped_items.iter().map(|i| i.item_type.as_str()).collect();
+        let fqns: Vec<&str> = deduped_items.iter().map(|i| i.fqn.as_str()).collect();
+        let names: Vec<&str> = deduped_items.iter().map(|i| i.name.as_str()).collect();
+        let visibilities: Vec<&str> = deduped_items.iter().map(|i| i.visibility.as_str()).collect();
+        let signatures: Vec<&str> = deduped_items.iter().map(|i| i.signature.as_str()).collect();
+        let doc_comments: Vec<&str> = deduped_items.iter().map(|i| i.doc_comment.as_str()).collect();
+        let start_lines: Vec<i32> = deduped_items.iter().map(|i| i.start_line as i32).collect();
+        let end_lines: Vec<i32> = deduped_items.iter().map(|i| i.end_line as i32).collect();
+        let body_sources: Vec<&str> = deduped_items.iter().map(|i| i.body_source.as_str()).collect();
+        let generic_params: Vec<serde_json::Value> = deduped_items.iter()
+            .map(|i| serde_json::to_value(&i.generic_params).unwrap_or(serde_json::json!([])))
+            .collect();
+        let where_clauses: Vec<serde_json::Value> = deduped_items.iter()
+            .map(|i| serde_json::to_value(&i.where_clauses).unwrap_or(serde_json::json!([])))
+            .collect();
+        let attributes: Vec<serde_json::Value> = deduped_items.iter()
+            .map(|i| serde_json::to_value(&i.attributes).unwrap_or(serde_json::json!([])))
+            .collect();
+        let generated_bys: Vec<Option<&str>> = deduped_items.iter()
+            .map(|i| i.generated_by.as_deref())
+            .collect();
+        
+        let generic_params_json: Vec<String> = generic_params.iter()
+            .map(|v| v.to_string()).collect();
+        let where_clauses_json: Vec<String> = where_clauses.iter()
+            .map(|v| v.to_string()).collect();
+        let attributes_json: Vec<String> = attributes.iter()
+            .map(|v| v.to_string()).collect();
+        
+        let result = sqlx::query(
+            r#"
+            INSERT INTO extracted_items 
+                (id, source_file_id, item_type, fqn, name, visibility, signature, 
+                 doc_comment, start_line, end_line, body_source, 
+                 generic_params, where_clauses, attributes, generated_by)
+            SELECT 
+                unnest($1::uuid[]) as id,
+                NULL::uuid as source_file_id,
+                unnest($2::text[]) as item_type,
+                unnest($3::text[]) as fqn,
+                unnest($4::text[]) as name,
+                unnest($5::text[]) as visibility,
+                unnest($6::text[]) as signature,
+                unnest($7::text[]) as doc_comment,
+                unnest($8::int[]) as start_line,
+                unnest($9::int[]) as end_line,
+                unnest($10::text[]) as body_source,
+                unnest($11::jsonb[]) as generic_params,
+                unnest($12::jsonb[]) as where_clauses,
+                unnest($13::jsonb[]) as attributes,
+                unnest($14::text[]) as generated_by
+            ON CONFLICT (fqn) DO UPDATE SET
+                signature = EXCLUDED.signature,
+                doc_comment = EXCLUDED.doc_comment,
+                start_line = EXCLUDED.start_line,
+                end_line = EXCLUDED.end_line,
+                body_source = EXCLUDED.body_source,
+                generic_params = EXCLUDED.generic_params,
+                where_clauses = EXCLUDED.where_clauses,
+                attributes = EXCLUDED.attributes,
+                visibility = EXCLUDED.visibility,
+                source_file_id = EXCLUDED.source_file_id,
+                generated_by = EXCLUDED.generated_by,
+                updated_at = NOW()
+            "#
+        )
+        .bind(&ids)
+        .bind(&item_types)
+        .bind(&fqns)
+        .bind(&names)
+        .bind(&visibilities)
+        .bind(&signatures)
+        .bind(&doc_comments)
+        .bind(&start_lines)
+        .bind(&end_lines)
+        .bind(&body_sources)
+        .bind(&generic_params_json)
+        .bind(&where_clauses_json)
+        .bind(&attributes_json)
+        .bind(&generated_bys)
+        .execute(pool)
+        .await;
+        
+        match result {
+            Ok(r) => r.rows_affected() as usize,
+            Err(e) => {
+                warn!("Batch insert failed: {}", e);
+                0
+            }
+        }
     }
 }
 
@@ -869,7 +1227,7 @@ impl ExtractStage {
         .bind(&file_info.crate_name)
         .bind(&file_info.module_path)
         .bind(file_info.path.to_string_lossy().to_string())
-        .bind(&file_info.original_source)
+        .bind(file_info.original_source.as_str())
         .bind(expanded_source)
         .bind(&file_info.git_hash)
         .bind(&file_info.content_hash)
@@ -947,7 +1305,7 @@ impl PipelineStage for ExtractStage {
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
         
-        info!("Starting extract stage");
+        info!("Starting extract stage (linking source files)");
         
         if ctx.config.dry_run {
             info!("Dry run - skipping extraction");
@@ -955,14 +1313,10 @@ impl PipelineStage for ExtractStage {
         }
         
         let state = ctx.state.read().await;
-        let parsed_items = state.parsed_items.clone();
         let source_files = state.source_files.clone();
         let expanded_sources = state.expanded_sources.clone();
+        let extracted_items = state.extracted_items.clone();
         drop(state);
-        
-        if parsed_items.is_empty() {
-            return Ok(StageResult::skipped("extract"));
-        }
         
         // Connect to database
         let mut stage = ExtractStage::new();
@@ -971,16 +1325,14 @@ impl PipelineStage for ExtractStage {
         }
         
         let mut state = ctx.state.write().await;
-        let mut extracted_count = 0;
+        let mut extracted_count = extracted_items.len();
         let mut failed_count = 0;
         
         // Step 1: Store source files in database and build path -> ID mapping
-        // Use incremental detection: skip files whose content hash hasn't changed
         let mut source_file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
         let mut skipped_unchanged = 0;
 
         for file_info in &source_files {
-            // Check if file is unchanged since last indexing
             match stage.check_file_unchanged(file_info).await {
                 Ok(Some(existing_id)) => {
                     debug!("Skipping unchanged file {:?} (hash: {})", file_info.path, file_info.content_hash);
@@ -988,9 +1340,8 @@ impl PipelineStage for ExtractStage {
                     skipped_unchanged += 1;
                     continue;
                 }
-                Ok(None) => {} // File is new or changed, proceed with storage
+                Ok(None) => {}
                 Err(e) => {
-                    // If hash check fails (e.g., column doesn't exist yet), proceed with storage
                     debug!("Content hash check failed for {:?}, will re-index: {}", file_info.path, e);
                 }
             }
@@ -1013,37 +1364,40 @@ impl PipelineStage for ExtractStage {
             info!("Skipped {} unchanged files (incremental mode)", skipped_unchanged);
         }
         
-        // Step 2: Extract parsed items with source_file_id
-        for (path, items) in &parsed_items {
-            let source_file_id = source_file_ids.get(path).copied();
-            
-            for item in items {
-                match stage.extract_item(item, source_file_id).await {
-                    Ok(id) => {
-                        state.extracted_items.insert(item.fqn.clone(), id);
-                        // Track cross-store reference
-                        let crate_name = path.iter()
-                            .find_map(|_p| source_files.iter().find(|sf| sf.path == *path).map(|sf| sf.crate_name.clone()))
-                            .unwrap_or_default();
-                        let ref_entry = state.store_references
-                            .entry(item.fqn.clone())
-                            .or_insert_with(|| rustbrain_common::StoreReference::new(item.fqn.clone(), crate_name));
-                        ref_entry.postgres_id = Some(id.to_string());
-                        extracted_count += 1;
-                    }
-                    Err(e) => {
-                        warn!("Failed to extract item {}: {}", item.fqn, e);
-                        state.errors.push(StageError::new("extract", e.to_string())
-                            .with_context(item.fqn.clone()));
-                        failed_count += 1;
-                    }
-                }
+        // Step 2: Update source_file_id for items already in database (from parse stage)
+        // Items were inserted with NULL source_file_id during parse, now link them
+        let pool = stage.pool.as_ref()
+            .ok_or_else(|| anyhow!("Database not connected"))?;
+        
+        let update_result = sqlx::query(
+            r#"
+            UPDATE extracted_items ei
+            SET source_file_id = sf.id
+            FROM source_files sf
+            WHERE ei.source_file_id IS NULL
+              AND sf.file_path = SPLIT_PART(ei.fqn, '::', 1)
+            "#
+        )
+        .execute(pool)
+        .await;
+        
+        match update_result {
+            Ok(result) => {
+                info!("Updated source_file_id for {} items", result.rows_affected());
+            }
+            Err(e) => {
+                warn!("Failed to update source_file_id links: {}", e);
             }
         }
         
         state.counts.items_extracted = extracted_count;
         
         let duration = start.elapsed();
+        
+        info!(
+            "Extract stage completed: {} source files, {} items in {:?}",
+            source_file_ids.len(), extracted_count, duration
+        );
         
         if failed_count > 0 && extracted_count == 0 {
             Ok(StageResult::failed("extract", "All extraction attempts failed"))
@@ -1407,6 +1761,19 @@ impl PipelineStage for GraphStage {
             }
         }
         
+        // Build O(1) lookup indexes for traits (avoids O(n²) in find_trait_fqn)
+        let mut trait_name_to_fqns: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut local_trait_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_path, items) in &parsed_items {
+            for item in items {
+                if item.item_type == "trait" {
+                    trait_name_to_fqns.insert(item.name.clone(), item.fqn.clone());
+                    local_trait_fqns.insert(item.fqn.clone());
+                }
+            }
+        }
+        info!("Built trait lookup index: {} traits indexed", trait_name_to_fqns.len());
+        
         info!("Inserting {} nodes into Neo4j", all_nodes.len());
         
         // Batch insert nodes
@@ -1472,15 +1839,11 @@ impl PipelineStage for GraphStage {
         // First pass: collect all external traits that need nodes created
         for impl_item in &impl_items {
             if let Some(trait_name) = Self::extract_trait_from_impl(&impl_item.attributes) {
-                let trait_fqn = Self::find_trait_fqn(&parsed_items, &trait_name, &impl_item.fqn)
+                let trait_fqn = Self::find_trait_fqn_optimized(&trait_name, &trait_name_to_fqns, &impl_item.fqn)
                     .unwrap_or_else(|| trait_name.clone());
 
-                // Check if this trait exists in parsed items (local trait)
-                let is_local_trait = parsed_items.values()
-                    .flat_map(|items| items.iter())
-                    .any(|item| item.item_type == "trait" && item.fqn == trait_fqn);
+                let is_local_trait = local_trait_fqns.contains(&trait_fqn);
 
-                // If not local, we need to create a Trait node for it
                 if !is_local_trait && !seen_external_traits.contains(&trait_fqn) {
                     seen_external_traits.insert(trait_fqn.clone());
                     external_trait_nodes.push(NodeData {
@@ -1512,12 +1875,8 @@ impl PipelineStage for GraphStage {
 
         // Second pass: create IMPLEMENTS relationships
         for impl_item in &impl_items {
-            // Extract trait name from attributes (format: impl_for=TraitName)
             if let Some(trait_name) = Self::extract_trait_from_impl(&impl_item.attributes) {
-                // Create IMPLEMENTS relationship: Impl → Trait
-                // The trait FQN might be in the same crate or external
-                // Try to find it in parsed items first, otherwise use the trait name directly
-                let trait_fqn = Self::find_trait_fqn(&parsed_items, &trait_name, &impl_item.fqn)
+                let trait_fqn = Self::find_trait_fqn_optimized(&trait_name, &trait_name_to_fqns, &impl_item.fqn)
                     .unwrap_or_else(|| trait_name.clone());
 
                 relationships.push(RelationshipBuilder::create_implements(
@@ -1603,9 +1962,8 @@ impl PipelineStage for GraphStage {
                     for generic_param in &item.generic_params {
                         if generic_param.kind == "type" {
                             for bound in &generic_param.bounds {
-                                // These might be supertrait bounds
                                 if !bound.starts_with(|c: char| c.is_lowercase()) {
-                                    let super_trait_fqn = Self::find_trait_fqn(&parsed_items, bound, &item.fqn)
+                                    let super_trait_fqn = Self::find_trait_fqn_optimized(bound, &trait_name_to_fqns, &item.fqn)
                                         .unwrap_or_else(|| bound.clone());
                                     
                                     relationships.push(RelationshipBuilder::create_extends(
@@ -1820,26 +2178,16 @@ impl PipelineStage for GraphStage {
 }
 
 impl GraphStage {
-    /// Find the FQN of a trait by name, searching in the same module first
-    fn find_trait_fqn(
-        parsed_items: &HashMap<PathBuf, Vec<ParsedItemInfo>>,
+    /// Find the FQN of a trait by name using pre-built O(1) lookup index
+    fn find_trait_fqn_optimized(
         trait_name: &str,
+        trait_name_to_fqns: &std::collections::HashMap<String, String>,
         impl_fqn: &str,
     ) -> Option<String> {
-        // Get the module path from the impl FQN
-        let module_path = Self::get_parent_fqn(impl_fqn)?;
-        
-        // Search for the trait in the same module first
-        for (_path, items) in parsed_items {
-            for item in items {
-                if item.item_type == "trait" && item.name == trait_name {
-                    return Some(item.fqn.clone());
-                }
-            }
+        if let Some(fqn) = trait_name_to_fqns.get(trait_name) {
+            return Some(fqn.clone());
         }
-        
-        // If not found, try to construct the FQN from the module path
-        // This handles cases where the trait is in the same module
+        let module_path = Self::get_parent_fqn(impl_fqn)?;
         Some(format!("{}::{}", module_path, trait_name))
     }
     
@@ -3053,7 +3401,7 @@ mod tests {
             path: PathBuf::from("src/main.rs"),
             crate_name: "test".to_string(),
             module_path: "test".to_string(),
-            original_source: "fn main() {}".to_string(),
+            original_source: Arc::new("fn main() {}".to_string()),
             git_hash: None,
             content_hash: compute_content_hash("fn main() {}"),
         };
