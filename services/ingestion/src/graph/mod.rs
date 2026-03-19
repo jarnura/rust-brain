@@ -178,10 +178,32 @@ impl GraphBuilder {
             "CREATE CONSTRAINT const_id_unique IF NOT EXISTS FOR (c:Const) REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT static_id_unique IF NOT EXISTS FOR (s:Static) REQUIRE s.id IS UNIQUE",
             "CREATE CONSTRAINT macro_id_unique IF NOT EXISTS FOR (m:Macro) REQUIRE m.id IS UNIQUE",
-            // Index on name for faster lookups
-            "CREATE INDEX node_name_index IF NOT EXISTS FOR (n:Crate|Module|Function|Struct|Enum|Trait|Impl|Type|TypeAlias|Const|Static|Macro) ON (n.name)",
-            // Index on fqn for faster lookups
-            "CREATE INDEX node_fqn_index IF NOT EXISTS FOR (n:Crate|Module|Function|Struct|Enum|Trait|Impl|Type|TypeAlias|Const|Static|Macro) ON (n.fqn)",
+            // Indexes on name for faster lookups (one per label — Neo4j 5.x doesn't support multi-label indexes)
+            "CREATE INDEX crate_name_index IF NOT EXISTS FOR (n:Crate) ON (n.name)",
+            "CREATE INDEX module_name_index IF NOT EXISTS FOR (n:Module) ON (n.name)",
+            "CREATE INDEX function_name_index IF NOT EXISTS FOR (n:Function) ON (n.name)",
+            "CREATE INDEX struct_name_index IF NOT EXISTS FOR (n:Struct) ON (n.name)",
+            "CREATE INDEX enum_name_index IF NOT EXISTS FOR (n:Enum) ON (n.name)",
+            "CREATE INDEX trait_name_index IF NOT EXISTS FOR (n:Trait) ON (n.name)",
+            "CREATE INDEX impl_name_index IF NOT EXISTS FOR (n:Impl) ON (n.name)",
+            "CREATE INDEX type_name_index IF NOT EXISTS FOR (n:Type) ON (n.name)",
+            "CREATE INDEX type_alias_name_index IF NOT EXISTS FOR (n:TypeAlias) ON (n.name)",
+            "CREATE INDEX const_name_index IF NOT EXISTS FOR (n:Const) ON (n.name)",
+            "CREATE INDEX static_name_index IF NOT EXISTS FOR (n:Static) ON (n.name)",
+            "CREATE INDEX macro_name_index IF NOT EXISTS FOR (n:Macro) ON (n.name)",
+            // Indexes on fqn for faster lookups
+            "CREATE INDEX crate_fqn_index IF NOT EXISTS FOR (n:Crate) ON (n.fqn)",
+            "CREATE INDEX module_fqn_index IF NOT EXISTS FOR (n:Module) ON (n.fqn)",
+            "CREATE INDEX function_fqn_index IF NOT EXISTS FOR (n:Function) ON (n.fqn)",
+            "CREATE INDEX struct_fqn_index IF NOT EXISTS FOR (n:Struct) ON (n.fqn)",
+            "CREATE INDEX enum_fqn_index IF NOT EXISTS FOR (n:Enum) ON (n.fqn)",
+            "CREATE INDEX trait_fqn_index IF NOT EXISTS FOR (n:Trait) ON (n.fqn)",
+            "CREATE INDEX impl_fqn_index IF NOT EXISTS FOR (n:Impl) ON (n.fqn)",
+            "CREATE INDEX type_fqn_index IF NOT EXISTS FOR (n:Type) ON (n.fqn)",
+            "CREATE INDEX type_alias_fqn_index IF NOT EXISTS FOR (n:TypeAlias) ON (n.fqn)",
+            "CREATE INDEX const_fqn_index IF NOT EXISTS FOR (n:Const) ON (n.fqn)",
+            "CREATE INDEX static_fqn_index IF NOT EXISTS FOR (n:Static) ON (n.fqn)",
+            "CREATE INDEX macro_fqn_index IF NOT EXISTS FOR (n:Macro) ON (n.fqn)",
         ];
 
         for query_str in &index_queries {
