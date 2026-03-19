@@ -8,7 +8,7 @@ use crate::pipeline::{PipelineContext, ParsedItemInfo, SourceFileInfo};
 use crate::typecheck::TypeResolutionService;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use rayon::prelude::*;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
@@ -698,11 +698,11 @@ impl PipelineStage for ParseStage {
         let total_files = source_files.len();
         info!("Parsing {} files with {} threads, batch size 10", total_files, MAX_PARSE_THREADS);
         
-        let pool = rayon::ThreadPoolBuilder::new()
+        let _pool = rayon::ThreadPoolBuilder::new()
             .num_threads(MAX_PARSE_THREADS)
             .build()
             .map_err(|e| anyhow!("Failed to create thread pool: {}", e))?;
-        
+
         let batch_size = 10;
         let mut parsed_count = 0;
         let mut items_count = 0;
@@ -1251,6 +1251,7 @@ impl ExtractStage {
         Ok(id)
     }
     
+    #[allow(dead_code)]
     async fn extract_item(&self, item: &ParsedItemInfo, source_file_id: Option<Uuid>) -> Result<Uuid> {
         let pool = self.pool.as_ref()
             .ok_or_else(|| anyhow!("Database not connected"))?;
@@ -1339,8 +1340,8 @@ impl PipelineStage for ExtractStage {
         }
         
         let mut state = ctx.state.write().await;
-        let mut extracted_count = extracted_items.len();
-        let mut failed_count = 0;
+        let extracted_count = extracted_items.len();
+        let failed_count = 0;
         
         // Step 1: Store source files in database and build path -> ID mapping
         let mut source_file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
