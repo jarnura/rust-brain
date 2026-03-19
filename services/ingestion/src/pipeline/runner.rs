@@ -11,23 +11,28 @@ use crate::pipeline::stages::{
     ExpandStage, ExtractStage, GraphStage, ParseStage, StageError, StageResult, StageStatus,
     TypecheckStage, EmbedStage,
 };
+use crate::pipeline::resilience::{ResilienceCoordinator, DegradationTier, CheckpointManager};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sqlx::PgPool;
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Pipeline runner that orchestrates stage execution
 pub struct PipelineRunner {
     /// Pipeline context
     ctx: PipelineContext,
-    
+
     /// Database pool for recording runs
     pool: Option<PgPool>,
-    
+
     /// Stage implementations
     stages: Vec<Box<dyn PipelineStage>>,
+
+    /// Resilience coordinator (memory watchdog, circuit breakers, spill, checkpoints)
+    resilience: Option<Arc<ResilienceCoordinator>>,
 }
 
 impl PipelineRunner {
@@ -49,9 +54,10 @@ impl PipelineRunner {
             ctx,
             pool: None,
             stages,
+            resilience: None,
         })
     }
-    
+
     /// Create a runner with an existing context
     pub fn with_context(ctx: PipelineContext) -> Result<Self> {
         let _config = ctx.config.clone();
@@ -63,58 +69,130 @@ impl PipelineRunner {
             Box::new(GraphStage::new()),
             Box::new(EmbedStage::new()),
         ];
-        
+
         Ok(Self {
             ctx,
             pool: None,
             stages,
+            resilience: None,
         })
     }
     
-    /// Connect to the database for run tracking
+    /// Connect to the database for run tracking and initialize resilience.
     pub async fn connect(&mut self) -> Result<()> {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
             .connect(&self.ctx.config.database_url)
             .await
             .context("Failed to connect to database")?;
-        
+
+        // Initialize resilience coordinator with checkpoint support
+        let coordinator = ResilienceCoordinator::new(
+            Some(pool.clone()),
+            self.ctx.id.0,
+        )?;
+        coordinator.ensure_checkpoint_table().await?;
+        self.resilience = Some(Arc::new(coordinator));
+
         self.pool = Some(pool);
         Ok(())
     }
     
-    /// Run the pipeline
+    /// Run the pipeline with resilience: degradation tiers, circuit breakers,
+    /// memory watchdog, and checkpoint/resume.
     pub async fn run(&mut self) -> Result<PipelineResult> {
         let start = Instant::now();
         let pipeline_id = self.ctx.id.0;
-        
+
         info!("Starting pipeline run: {}", pipeline_id);
-        
+
+        // Initialize resilience if not already done (e.g., dry-run mode without connect())
+        if self.resilience.is_none() {
+            let coordinator = ResilienceCoordinator::new(None, pipeline_id)?;
+            self.resilience = Some(Arc::new(coordinator));
+        }
+        let resilience = self.resilience.as_ref().unwrap().clone();
+
+        // Check for a resumable checkpoint
+        let resume_from_stage = if let Some(pool) = &self.pool {
+            match CheckpointManager::load_latest(pool, pipeline_id).await? {
+                Some(cp) => {
+                    info!(
+                        "Resuming from checkpoint: stage={}, files_processed={}",
+                        cp.last_stage, cp.files_processed
+                    );
+                    Some(cp.last_stage.clone())
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
         // Create ingestion run record
         if !self.ctx.config.dry_run {
             self.create_ingestion_run(pipeline_id).await?;
         }
-        
+
         let mut results = Vec::new();
         let mut has_failures = false;
         let mut has_partial = false;
-        
+        let mut completed_stages: Vec<String> = Vec::new();
+        let mut skip_until_resume = resume_from_stage.is_some();
+
         // Execute stages in order
         for stage in &self.stages {
             let stage_name = stage.name();
-            
-            // Check if stage should run
-            if !self.should_run_stage(stage_name) {
-                info!("Skipping stage: {}", stage_name);
+
+            // If resuming, skip stages already completed
+            if skip_until_resume {
+                if let Some(ref resume_stage) = resume_from_stage {
+                    if stage_name == resume_stage {
+                        skip_until_resume = false;
+                        // This stage was the last completed — skip it too
+                        info!("Skipping already-completed stage (resume): {}", stage_name);
+                        results.push(StageResult::skipped(stage_name));
+                        continue;
+                    }
+                }
+                info!("Skipping already-completed stage (resume): {}", stage_name);
                 results.push(StageResult::skipped(stage_name));
                 continue;
             }
-            
-            info!("Running stage: {}", stage_name);
-            
+
+            // Check if stage should run per config
+            if !self.should_run_stage(stage_name) {
+                info!("Skipping stage (config): {}", stage_name);
+                results.push(StageResult::skipped(stage_name));
+                continue;
+            }
+
+            // Check degradation tier — may skip stages dynamically
+            let tier = resilience.current_tier();
+            if !tier.should_run_stage(stage_name) {
+                warn!(
+                    "Skipping stage {} due to degradation tier: {}",
+                    stage_name, tier
+                );
+                results.push(StageResult::skipped(stage_name));
+                continue;
+            }
+
+            // Log resilience status before each stage
+            resilience.log_status();
+
+            // Check for emergency — flush and return partial results
+            if tier == DegradationTier::Emergency {
+                warn!("Emergency degradation — flushing partial results");
+                has_partial = true;
+                break;
+            }
+
+            info!("Running stage: {} (tier: {})", stage_name, tier);
+
             // Run the stage
             let result = stage.run(&self.ctx).await;
-            
+
             match &result {
                 Ok(stage_result) => {
                     info!(
@@ -125,7 +203,7 @@ impl PipelineRunner {
                         stage_result.items_failed,
                         stage_result.duration_ms
                     );
-                    
+
                     match stage_result.status {
                         StageStatus::Success => {}
                         StageStatus::Partial => {
@@ -133,7 +211,6 @@ impl PipelineRunner {
                         }
                         StageStatus::Failed => {
                             has_failures = true;
-                            // Check if we should continue
                             if !self.ctx.config.continue_on_error {
                                 error!("Stage {} failed, stopping pipeline", stage_name);
                                 results.push(stage_result.clone());
@@ -142,41 +219,50 @@ impl PipelineRunner {
                         }
                         StageStatus::Skipped => {}
                     }
-                    
+
                     results.push(stage_result.clone());
-                    
+                    completed_stages.push(stage_name.to_string());
+
                     // Record stage completion
                     if !self.ctx.config.dry_run {
                         self.record_stage_completion(pipeline_id, stage_name, stage_result)
                             .await?;
                     }
+
+                    // Write checkpoint at stage boundary
+                    if let Err(e) = resilience
+                        .checkpoint(stage_name, completed_stages.len(), &completed_stages)
+                        .await
+                    {
+                        warn!("Failed to write checkpoint after stage {}: {}", stage_name, e);
+                    }
                 }
                 Err(e) => {
                     error!("Stage {} errored: {}", stage_name, e);
-                    
+
                     let stage_result = StageResult::failed(stage_name, e.to_string());
                     results.push(stage_result.clone());
                     has_failures = true;
-                    
+
                     // Record error
                     if !self.ctx.config.dry_run {
                         self.record_stage_completion(pipeline_id, stage_name, &stage_result)
                             .await?;
                     }
-                    
+
                     if !self.ctx.config.continue_on_error {
                         break;
                     }
                 }
             }
         }
-        
+
         // Get final counts
         let state = self.ctx.state.read().await;
         let counts = state.counts.clone();
         let errors = state.errors.clone();
         drop(state);
-        
+
         // Determine final status
         let status = if has_failures && !self.ctx.config.continue_on_error {
             PipelineStatus::Failed
@@ -187,20 +273,30 @@ impl PipelineRunner {
         } else {
             PipelineStatus::Completed
         };
-        
+
         let duration = start.elapsed();
-        
+
         // Update ingestion run record
         if !self.ctx.config.dry_run {
             self.complete_ingestion_run(pipeline_id, &status, &counts, &errors)
                 .await?;
         }
-        
+
+        // Clear checkpoints on full success
+        if status == PipelineStatus::Completed {
+            if let Err(e) = resilience.clear_checkpoints().await {
+                warn!("Failed to clear checkpoints: {}", e);
+            }
+        }
+
+        // Final resilience status
+        resilience.log_status();
+
         info!(
             "Pipeline run {} completed: {} (duration: {:?})",
             pipeline_id, status, duration
         );
-        
+
         Ok(PipelineResult {
             id: pipeline_id,
             status,
@@ -329,10 +425,38 @@ impl PipelineRunner {
     pub fn context(&self) -> &PipelineContext {
         &self.ctx
     }
-    
+
     /// Get mutable access to the context
     pub fn context_mut(&mut self) -> &mut PipelineContext {
         &mut self.ctx
+    }
+
+    /// Get the resilience coordinator (if initialized).
+    pub fn resilience(&self) -> Option<&Arc<ResilienceCoordinator>> {
+        self.resilience.as_ref()
+    }
+
+    /// Create a runner that resumes from a previous checkpoint.
+    ///
+    /// Looks up the latest checkpoint for the given run_id and creates
+    /// a runner with that ID so `run()` will skip already-completed stages.
+    pub async fn resume(config: PipelineConfig, run_id: Uuid) -> Result<Self> {
+        let ctx = PipelineContext::with_id(run_id, config);
+        let stages: Vec<Box<dyn PipelineStage>> = vec![
+            Box::new(ExpandStage::new()?),
+            Box::new(ParseStage::new()?),
+            Box::new(TypecheckStage::new()),
+            Box::new(ExtractStage::new()),
+            Box::new(GraphStage::new()),
+            Box::new(EmbedStage::new()),
+        ];
+
+        Ok(Self {
+            ctx,
+            pool: None,
+            stages,
+            resilience: None,
+        })
     }
 }
 
