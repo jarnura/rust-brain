@@ -847,9 +847,9 @@ impl ExpandStage {
         use std::io::Read;
         use std::thread;
 
-        // Limit parallel jobs to 4 to prevent memory exhaustion during expand
-        // Large hyperswitch crates can consume 8-10GB per parallel job
-        let jobs = 4;
+        // Limit parallel jobs to 2 to prevent memory exhaustion during expand
+        // Large hyperswitch crates can consume 15-20GB per parallel job
+        let jobs = 2;
         let jobs_str = jobs.to_string();
         let mut args: Vec<&str> = vec!["expand", "--lib", "-p", crate_name, "--jobs", &jobs_str, "--ugly"];
         args.extend(extra_args);
