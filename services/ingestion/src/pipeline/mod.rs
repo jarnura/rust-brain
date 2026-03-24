@@ -130,8 +130,9 @@ pub struct PipelineState {
     /// Source files discovered
     pub source_files: Vec<SourceFileInfo>,
 
-    /// Expanded source code by file path (Arc for cheap cloning across stages)
-    pub expanded_sources: Arc<HashMap<PathBuf, String>>,
+    /// Cache file paths for expanded source code by source file path.
+    /// Content is read on-demand from cache files to prevent OOM.
+    pub expanded_sources: Arc<HashMap<PathBuf, PathBuf>>,
 
     /// Parsed items by file
     pub parsed_items: HashMap<PathBuf, Vec<ParsedItemInfo>>,

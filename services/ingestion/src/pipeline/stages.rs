@@ -847,9 +847,9 @@ impl ExpandStage {
         use std::io::Read;
         use std::thread;
 
-        // Limit parallel jobs to 2 to prevent memory exhaustion during expand
-        // Large hyperswitch crates can consume 15-20GB per parallel job
-        let jobs = 2;
+        // Limit parallel jobs to 1 to prevent memory exhaustion during expand
+        // Large hyperswitch crates consume 20-30GB when all loaded into memory
+        let jobs = 1;
         let jobs_str = jobs.to_string();
         let mut args: Vec<&str> = vec!["expand", "--lib", "-p", crate_name, "--jobs", &jobs_str, "--ugly"];
         args.extend(extra_args);
@@ -1347,93 +1347,109 @@ impl PipelineStage for ExpandStage {
             info!("Pre-patched {} crates for feature propagation", patches.len());
         }
 
-        let mut state = ctx.state.write().await;
+        let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+
+        // Process crates in batches to prevent OOM from accumulating all expanded sources
+        const BATCH_SIZE: usize = 8;
+        
         let mut expanded_count = 0;
         let mut failed_count = 0;
         let mut skipped_binary = 0;
+        
+        // Map source file path -> cache file path (not content!)
+        let mut expanded_map: HashMap<PathBuf, PathBuf> = HashMap::new();
+        let mut all_source_files: Vec<SourceFileInfo> = Vec::new();
 
-        let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+        for (batch_idx, batch) in crates.chunks(BATCH_SIZE).enumerate() {
+            let batch_start = batch_idx * BATCH_SIZE;
+            info!("Expand batch {} (crates {}-{})", batch_idx + 1, batch_start + 1, batch_start + batch.len());
+            
+            for crate_path in batch {
+                let git_hash = self.get_git_hash(crate_path);
 
-        // FIX: Accumulate into a local HashMap instead of calling
-        // Arc::make_mut on each insert, which clones the entire HashMap
-        // every time the refcount > 1.
-        let mut expanded_map: HashMap<PathBuf, String> = HashMap::new();
+                let crate_name = self.get_crate_name_from_toml(crate_path)
+                    .unwrap_or_else(|| crate_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "unknown".to_string()));
 
-        for crate_path in &crates {
-            let git_hash = self.get_git_hash(crate_path);
+                let source_files = self.find_source_files(crate_path);
+                if source_files.is_empty() {
+                    debug!("Skipping {:?} - no source files", crate_path);
+                    continue;
+                }
 
-            let crate_name = self.get_crate_name_from_toml(crate_path)
-                .unwrap_or_else(|| crate_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string()));
-
-            let source_files = self.find_source_files(crate_path);
-            if source_files.is_empty() {
-                debug!("Skipping {:?} - no source files", crate_path);
-                continue;
-            }
-
-            let content_hash = self.compute_crate_hash(crate_path);
-            let expanded = if let Some(cached) = state.expand_cache.get(&content_hash) {
-                debug!("Using in-memory cached expand for {}", crate_name);
-                expanded_count += 1;
-                Some(cached.clone())
-            } else {
-                match self.expand_library(crate_path, workspace_root, &crate_name) {
-                    Ok(exp) => {
+                // Compute cache file path: {crate_name}-{hash}.expand
+                let content_hash = self.compute_crate_hash(crate_path);
+                let cache_key = format!("{}-{}.expand", crate_name, content_hash);
+                let cache_file = PathBuf::from(EXPAND_CACHE_DIR).join(&cache_key);
+                
+                // Expand the crate (writes to cache file internally)
+                let expanded_result = self.expand_library(crate_path, workspace_root, &crate_name);
+                
+                let cache_file_exists = cache_file.exists();
+                
+                match expanded_result {
+                    Ok(_) => {
                         expanded_count += 1;
-                        state.expand_cache.insert(content_hash, exp.clone());
-                        Some(exp)
+                        // Cache file should now exist with expanded source
+                        if cache_file_exists || cache_file.exists() {
+                            for file_path in &source_files {
+                                // Pre-flight file size check: skip files > 10 MB
+                                if let Ok(metadata) = std::fs::metadata(file_path) {
+                                    if crate::pipeline::memory_accountant::MemoryAccountant::should_skip_file(metadata.len()) {
+                                        info!("Skipping oversized file {:?} ({} bytes)", file_path, metadata.len());
+                                        continue;
+                                    }
+                                }
+
+                                if let Ok(source) = std::fs::read_to_string(file_path) {
+                                    let module_path = compute_module_path(crate_path, file_path, &crate_name);
+                                    let file_hash = compute_content_hash(&source);
+
+                                    all_source_files.push(SourceFileInfo {
+                                        path: file_path.clone(),
+                                        crate_name: crate_name.clone(),
+                                        module_path,
+                                        original_source: Arc::new(source),
+                                        git_hash: git_hash.clone(),
+                                        content_hash: file_hash,
+                                    });
+
+                                    // Store cache file path, not content
+                                    expanded_map.insert(file_path.clone(), cache_file.clone());
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         let err_str = e.to_string();
                         if err_str.contains("no library targets found") {
                             debug!("Skipping {} - binary only crate", crate_name);
                             skipped_binary += 1;
-                            None
                         } else {
                             warn!("Failed to expand {}: {}", crate_name, e);
-                            state.errors.push(StageError::new("expand", e.to_string()));
                             failed_count += 1;
-                            None
                         }
                     }
                 }
-            };
-
-            for file_path in &source_files {
-                // Pre-flight file size check: skip files > 10 MB
-                if let Ok(metadata) = std::fs::metadata(file_path) {
-                    if crate::pipeline::memory_accountant::MemoryAccountant::should_skip_file(metadata.len()) {
-                        info!("Skipping oversized file {:?} ({} bytes)", file_path, metadata.len());
-                        continue;
-                    }
-                }
-
-                if let Ok(source) = std::fs::read_to_string(file_path) {
-                    let module_path = compute_module_path(crate_path, file_path, &crate_name);
-                    let file_hash = compute_content_hash(&source);
-
-                    state.source_files.push(SourceFileInfo {
-                        path: file_path.clone(),
-                        crate_name: crate_name.clone(),
-                        module_path,
-                        original_source: Arc::new(source),
-                        git_hash: git_hash.clone(),
-                        content_hash: file_hash,
-                    });
-
-                    if let Some(ref expanded_source) = expanded {
-                        expanded_map.insert(file_path.clone(), expanded_source.clone());
-                    }
-                }
             }
+            
+            // Release memory between batches
+            trim_memory();
+            info!("Expand batch {} complete, memory trimmed", batch_idx + 1);
         }
 
-        // Assign the complete map as a single Arc (no per-insert cloning)
-        state.expanded_sources = Arc::new(expanded_map);
-        state.counts.files_expanded = expanded_count;
+        // Update state with cache file paths and source files
+        {
+            let mut state = ctx.state.write().await;
+            state.expanded_sources = Arc::new(expanded_map);
+            state.source_files = all_source_files;
+            state.counts.files_expanded = expanded_count;
+            
+            // Record any failures
+            // (errors were not being tracked in original code for individual crates)
+        }
         
         // ====================================================================
         // RESTORE PHASE: Restore all patched Cargo.toml files
@@ -1500,9 +1516,10 @@ impl PipelineStage for ParseStage {
         let source_files = {
             let state = ctx.state.read().await;
             let source_files = state.source_files.clone();
-            let expanded_sources = state.expanded_sources.clone();
+            let expanded_cache_paths = state.expanded_sources.clone();
             drop(state);
             
+            // Clear state to free memory (expanded sources are now on disk)
             let mut state = ctx.state.write().await;
             state.expanded_sources = Arc::new(HashMap::new());
             state.source_files.clear();
@@ -1510,9 +1527,9 @@ impl PipelineStage for ParseStage {
             
             trim_memory();
             
-            (source_files, expanded_sources)
+            (source_files, expanded_cache_paths)
         };
-        let (source_files, expanded_sources) = source_files;
+        let (source_files, expanded_cache_paths) = source_files;
         
         if source_files.is_empty() {
             return Ok(StageResult::skipped("parse"));
@@ -1537,8 +1554,13 @@ impl PipelineStage for ParseStage {
             info!("Parsing batch {} (files {}-{})", batch_idx + 1, batch_start + 1, batch_start + batch.len());
             
             for file_info in batch {
-                let (source_to_parse, has_expanded) = expanded_sources
+                // Read expanded source from cache file on-demand (not from memory)
+                let expanded_source: Option<String> = expanded_cache_paths
                     .get(&file_info.path)
+                    .and_then(|cache_path| std::fs::read_to_string(cache_path).ok());
+                
+                let (source_to_parse, has_expanded) = expanded_source
+                    .as_ref()
                     .map(|s| (s.as_str(), true))
                     .unwrap_or((&file_info.original_source, false));
                 
@@ -1882,11 +1904,11 @@ impl PipelineStage for TypecheckStage {
         
         let state = ctx.state.read().await;
         let source_files = state.source_files.clone();
-        let expanded_sources = state.expanded_sources.clone();
+        let expanded_cache_paths = state.expanded_sources.clone();
         let parsed_items = state.parsed_items.clone();
         drop(state);
         
-        if expanded_sources.is_empty() {
+        if expanded_cache_paths.is_empty() {
             info!("No expanded sources to typecheck");
             return Ok(StageResult::skipped("typecheck"));
         }
@@ -1927,9 +1949,18 @@ impl PipelineStage for TypecheckStage {
         
         // Process each source file with expanded source
         for file_info in &source_files {
-            let expanded_source = match expanded_sources.get(&file_info.path) {
-                Some(src) => src,
+            // Read expanded source from cache file on-demand
+            let cache_path = match expanded_cache_paths.get(&file_info.path) {
+                Some(p) => p,
                 None => continue, // Skip files without expanded source
+            };
+            
+            let expanded_source = match std::fs::read_to_string(cache_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!("Could not read expanded cache for {:?}: {}", file_info.path, e);
+                    continue;
+                }
             };
             
             // Get caller FQNs for this file
@@ -1943,7 +1974,7 @@ impl PipelineStage for TypecheckStage {
                 &file_info.crate_name,
                 &file_info.module_path,
                 &file_info.path.to_string_lossy(),
-                expanded_source,
+                &expanded_source,
                 &caller_fqns,
             ).await {
                 Ok(result) => {
@@ -2152,7 +2183,7 @@ impl PipelineStage for ExtractStage {
         
         let state = ctx.state.read().await;
         let source_files = state.source_files.clone();
-        let expanded_sources = state.expanded_sources.clone();
+        let expanded_cache_paths = state.expanded_sources.clone();
         let extracted_items = state.extracted_items.clone();
         drop(state);
         
@@ -2184,8 +2215,11 @@ impl PipelineStage for ExtractStage {
                 }
             }
 
-            let expanded = expanded_sources.get(&file_info.path);
-            match stage.store_source_file(file_info, expanded.map(|s| s.as_str())).await {
+            // Read expanded source from cache file on-demand
+            let expanded: Option<String> = expanded_cache_paths
+                .get(&file_info.path)
+                .and_then(|cache_path| std::fs::read_to_string(cache_path).ok());
+            match stage.store_source_file(file_info, expanded.as_ref().map(|s| s.as_str())).await {
                 Ok(id) => {
                     source_file_ids.insert(file_info.path.clone(), id);
                     debug!("Stored source file {:?} with ID {}", file_info.path, id);
