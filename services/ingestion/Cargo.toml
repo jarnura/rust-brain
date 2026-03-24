@@ -32,6 +32,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2.5"
 toml = "0.8"
+toml_edit = "0.22"
 num_cpus = "1.16"
 rayon = "1.10"
 

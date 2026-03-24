@@ -48,6 +48,233 @@ const CARGO_EXPAND_TIMEOUT: Duration = Duration::from_secs(180);
 /// Cache directory for expanded code
 const EXPAND_CACHE_DIR: &str = "/tmp/rustbrain-expand-cache";
 
+// =============================================================================
+// FEATURE PROPAGATION HELPERS
+// =============================================================================
+
+/// Parse Cargo.toml to get dependencies as a map of dep_name -> existing_features
+fn parse_cargo_dependencies(crate_path: &Path) -> Result<HashMap<String, String>> {
+    let cargo_toml_path = crate_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml_path)
+        .with_context(|| format!("Failed to read {:?}", cargo_toml_path))?;
+    
+    let mut dependencies = HashMap::new();
+    
+    let doc: toml_edit::DocumentMut = content.parse()
+        .with_context(|| format!("Failed to parse {:?}", cargo_toml_path))?;
+    
+    if let Some(deps) = doc.get("dependencies") {
+        if let toml_edit::Item::Table(table) = deps {
+            for (name, value) in table.iter() {
+                let dep_name = name.to_string();
+                if let toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) = value {
+                    if let Some(toml_edit::Value::String(features)) = t.get("features") {
+                        dependencies.insert(dep_name, features.value().to_string());
+                    } else {
+                        dependencies.insert(dep_name, String::new());
+                    }
+                } else if let toml_edit::Item::Value(toml_edit::Value::String(_)) = value {
+                    dependencies.insert(dep_name, String::new());
+                }
+            }
+        }
+    }
+    
+    Ok(dependencies)
+}
+
+/// Parse Cargo.toml feature definitions to find implicit feature dependencies.
+/// Returns a map of (feature_name -> Vec<(dep_name, dep_feature)>)
+fn parse_feature_definitions(crate_path: &Path) -> Result<HashMap<String, Vec<(String, String)>>> {
+    let cargo_toml_path = crate_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml_path)
+        .with_context(|| format!("Failed to read {:?}", cargo_toml_path))?;
+    
+    let mut implicit_deps: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    
+    let doc: toml_edit::DocumentMut = content.parse()
+        .with_context(|| format!("Failed to parse {:?}", cargo_toml_path))?;
+    
+    if let Some(features_table) = doc.get("features") {
+        if let toml_edit::Item::Table(table) = features_table {
+            for (feature_name, value) in table.iter() {
+                let mut deps_for_feature = Vec::new();
+                
+                if let toml_edit::Item::Value(toml_edit::Value::Array(arr)) = value {
+                    for item in arr.iter() {
+                        if let toml_edit::Value::String(s) = item {
+                            let val = s.value();
+                            if let Some(slash_pos) = val.find('/') {
+                                let dep_name = val[..slash_pos].to_string();
+                                let dep_feature = val[slash_pos + 1..].to_string();
+                                deps_for_feature.push((dep_name, dep_feature));
+                            }
+                        }
+                    }
+                }
+                
+                if !deps_for_feature.is_empty() {
+                    implicit_deps.insert(feature_name.to_string(), deps_for_feature);
+                }
+            }
+        }
+    }
+    
+    Ok(implicit_deps)
+}
+
+/// Find a crate in the workspace by name
+fn find_crate_in_workspace(workspace_path: &Path, crate_name: &str) -> Result<PathBuf> {
+    debug!("find_crate_in_workspace: looking for {} in {:?}", crate_name, workspace_path);
+    
+    let name_variants = vec![
+        crate_name.to_string(),
+        crate_name.replace('_', "-"),
+        crate_name.replace('-', "_"),
+    ];
+    
+    for variant in &name_variants {
+        let possible_paths = vec![
+            workspace_path.join("crates").join(variant),
+            workspace_path.join(variant),
+        ];
+        
+        for path in &possible_paths {
+            let cargo_toml = path.join("Cargo.toml");
+            debug!("Checking {:?}", cargo_toml);
+            if cargo_toml.exists() {
+                debug!("Found crate {} at {:?}", crate_name, path);
+                return Ok(path.clone());
+            }
+        }
+    }
+    
+    // Search the workspace
+    for entry in WalkDir::new(workspace_path)
+        .min_depth(1)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_dir())
+    {
+        let cargo_toml = entry.path().join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                for variant in &name_variants {
+                    if content.contains(&format!("name = \"{}\"", variant)) ||
+                       content.contains(&format!("name=\"{}\"", variant)) {
+                        return Ok(entry.path().to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    
+    let fallback_path = workspace_path.join("crates").join(crate_name);
+    Ok(fallback_path)
+}
+
+/// Find all crates in the workspace that depend on a given crate and have a specific feature
+fn find_crates_depending_on_with_feature(
+    workspace_path: &Path,
+    target_dep: &str,
+    required_feature: &str,
+) -> Result<Vec<(String, PathBuf)>> {
+    let mut result = Vec::new();
+    
+    for entry in WalkDir::new(workspace_path.join("crates"))
+        .min_depth(1)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_dir())
+    {
+        let cargo_toml = entry.path().join("Cargo.toml");
+        if !cargo_toml.exists() {
+            continue;
+        }
+        
+        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+            let depends_on_target = content.contains(&format!("{} =", target_dep)) ||
+                content.contains(&format!("{}=", target_dep)) ||
+                content.contains(&format!("path = \"../{}\"", target_dep.replace('-', "_"))) ||
+                content.contains(&format!("path = \"../{}\"", target_dep.replace('_', "-")));
+            
+            if depends_on_target {
+                let doc: toml_edit::DocumentMut = match content.parse() {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                
+                if let Some(features_table) = doc.get("features") {
+                    if let toml_edit::Item::Table(table) = features_table {
+                        // Check if this crate has the required feature
+                        if table.contains_key(required_feature) {
+                            let crate_name = entry.path()
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            result.push((crate_name, entry.path().to_path_buf()));
+                        }
+                        
+                        // Check if any feature enables target_dep/required_feature
+                        for (_, value) in table.iter() {
+                            if let toml_edit::Item::Value(toml_edit::Value::Array(arr)) = value {
+                                for item in arr.iter() {
+                                    if let toml_edit::Value::String(s) = item {
+                                        if s.value() == &format!("{}/{}", target_dep, required_feature) {
+                                            let crate_name = entry.path()
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_default();
+                                            result.push((crate_name, entry.path().to_path_buf()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(result)
+}
+
+/// Get the list of features available in a dependency crate
+#[allow(dead_code)]
+fn get_dependency_features(workspace_path: &Path, dep_name: &str) -> Result<Vec<String>> {
+    let dep_path = find_crate_in_workspace(workspace_path, dep_name)?;
+    
+    if !dep_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let cargo_toml_path = dep_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml_path)
+        .with_context(|| format!("Failed to read {:?}", cargo_toml_path))?;
+    
+    let mut features = Vec::new();
+    
+    let doc: toml_edit::DocumentMut = content.parse()
+        .with_context(|| format!("Failed to parse {:?}", cargo_toml_path))?;
+    
+    if let Some(features_table) = doc.get("features") {
+        if let toml_edit::Item::Table(table) = features_table {
+            for (name, _) in table.iter() {
+                features.push(name.to_string());
+            }
+        }
+    }
+    
+    Ok(features)
+}
+
+// =============================================================================
+// END FEATURE PROPAGATION HELPERS
+// =============================================================================
+
 /// Maximum parallel threads for parsing (prevents memory spikes)
 const MAX_PARSE_THREADS: usize = 4;
 
@@ -314,28 +541,306 @@ impl ExpandStage {
             }
         }
 
-        let result = match self.run_cargo_expand(workspace_path, crate_name, &["--features", "v1"]) {
-            Ok(output) => {
-                debug!("Succeeded with v1 features for {}", crate_name);
-                Ok(output)
+        // Check what features this crate has
+        let has_v1 = self.crate_has_feature(crate_path, "v1");
+        let has_v2 = self.crate_has_feature(crate_path, "v2");
+        let has_olap = self.crate_has_feature(crate_path, "olap");
+        let has_frm = self.crate_has_feature(crate_path, "frm");
+        
+        // Build feature combinations to try
+        let features_to_try: Vec<Vec<String>> = if has_v1 {
+            let mut combinations = Vec::new();
+            
+            // First: v1 + olap + frm (if this crate has them)
+            let mut base = vec!["v1".to_string()];
+            if has_olap {
+                base.push("olap".to_string());
             }
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("does not contain this feature") {
-                    debug!("v1 feature not found for {}, using default", crate_name);
-                    self.run_cargo_expand(workspace_path, crate_name, &[])
-                } else {
-                    Err(e)
+            if has_frm {
+                base.push("frm".to_string());
+            }
+            combinations.push(base);
+            
+            // If this crate depends on storage_impl, also try with storage_impl/olap
+            // This is needed because storage_impl has cfg(all(feature = "v1", feature = "olap")) 
+            // for imports like try_join_all
+            let deps_on_storage = self.crate_depends_on(crate_path, "storage_impl");
+            if deps_on_storage && has_olap {
+                let mut with_storage_olap = vec!["v1".to_string(), "olap".to_string()];
+                combinations.push(with_storage_olap);
+            }
+            
+            // IMPORTANT: Always try adding hyperswitch_domain_models/olap,frm
+            // This handles transitive dependency feature propagation where:
+            // - Crate v1 enables hyperswitch_interfaces/v1
+            // - hyperswitch_interfaces/v1 enables hyperswitch_domain_models/v1
+            // - But hyperswitch_domain_models needs olap for Connector import
+            // - hyperswitch_interfaces depends on it with default-features = false
+            let mut with_domain_features = vec!["v1".to_string()];
+            if !has_olap {
+                with_domain_features.push("hyperswitch_domain_models/olap".to_string());
+            }
+            if !has_frm {
+                with_domain_features.push("hyperswitch_domain_models/frm".to_string());
+            }
+            combinations.push(with_domain_features);
+            
+            // Try just v1 as fallback
+            combinations.push(vec!["v1".to_string()]);
+            combinations
+        } else if has_v2 {
+            vec![vec!["v2".to_string()]]
+        } else {
+            vec![vec![]]
+        };
+        
+        let mut last_error = None;
+        for features in &features_to_try {
+            let args: Vec<String> = if features.is_empty() {
+                vec![]
+            } else {
+                vec!["--features".to_string(), features.join(",")]
+            };
+            
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            
+            match self.run_cargo_expand(workspace_path, crate_name, &args_ref) {
+                Ok(output) => {
+                    let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+                    let _ = std::fs::write(&cache_file, &output);
+                    debug!("Succeeded with features {:?} for {}", features, crate_name);
+                    return Ok(output);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if Self::is_feature_conflict_error(&err_str) && features.contains(&"v1".to_string()) && has_v2 {
+                        // v1 has conflicts, try v2
+                        debug!("v1 has feature conflicts for {}, trying v2", crate_name);
+                        if let Ok(output) = self.run_cargo_expand(workspace_path, crate_name, &["--features", "v2"]) {
+                            let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+                            let _ = std::fs::write(&cache_file, &output);
+                            return Ok(output);
+                        }
+                    }
+                    last_error = Some(e);
                 }
             }
-        };
-
-        if let Ok(ref output) = result {
-            let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
-            let _ = std::fs::write(&cache_file, output);
         }
-
-        result
+        
+        // All attempts failed, try default features only as last resort
+        debug!("All feature combinations failed for {}, trying default only", crate_name);
+        match self.run_cargo_expand(workspace_path, crate_name, &[]) {
+            Ok(output) => {
+                let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
+                let _ = std::fs::write(&cache_file, &output);
+                Ok(output)
+            }
+            Err(_) => Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error")))
+        }
+    }
+    
+    /// Check if a crate has a specific feature
+    fn crate_has_feature(&self, crate_path: &Path, feature: &str) -> bool {
+        let cargo_toml_path = crate_path.join("Cargo.toml");
+        if let Ok(content) = std::fs::read_to_string(&cargo_toml_path) {
+            let doc: toml_edit::DocumentMut = match content.parse() {
+                Ok(d) => d,
+                Err(_) => return false,
+            };
+            
+            if let Some(features_table) = doc.get("features") {
+                if let toml_edit::Item::Table(table) = features_table {
+                    return table.contains_key(feature);
+                }
+            }
+        }
+        false
+    }
+    
+    /// Check if a crate depends on another crate (directly or via features)
+    fn crate_depends_on(&self, crate_path: &Path, dep_name: &str) -> bool {
+        let cargo_toml_path = crate_path.join("Cargo.toml");
+        if let Ok(content) = std::fs::read_to_string(&cargo_toml_path) {
+            // Check for direct dependency
+            if content.contains(&format!("{} =", dep_name)) ||
+               content.contains(&format!("{}=", dep_name)) ||
+               content.contains(&format!("path = \"../{}\"", dep_name.replace('-', "_"))) ||
+               content.contains(&format!("path = \"../{}\"", dep_name.replace('_', "-"))) {
+                return true;
+            }
+            
+            // Check for transitive via feature definitions
+            let doc: toml_edit::DocumentMut = match content.parse() {
+                Ok(d) => d,
+                Err(_) => return false,
+            };
+            
+            if let Some(features_table) = doc.get("features") {
+                if let toml_edit::Item::Table(table) = features_table {
+                    for (_, value) in table.iter() {
+                        if let toml_edit::Item::Value(toml_edit::Value::Array(arr)) = value {
+                            for item in arr.iter() {
+                                if let toml_edit::Value::String(s) = item {
+                                    let val = s.value();
+                                    // Check if feature enables dep_name/feature
+                                    if val.starts_with(&format!("{}/", dep_name)) {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+    
+    /// Check if the error indicates feature conflicts (e.g., duplicate definitions)
+    fn is_feature_conflict_error(error: &str) -> bool {
+        // Patterns that indicate v1+v2 feature conflicts
+        error.contains("is defined multiple times") ||
+        error.contains("redefined here") ||
+        error.contains("duplicate") ||
+        error.contains("must be defined only once")
+    }
+    
+    /// Expand with feature propagation for crates with complex feature dependencies
+    fn expand_with_feature_propagation(
+        &self,
+        crate_path: &Path,
+        workspace_path: &Path,
+        crate_name: &str,
+        primary_feature: &str,
+    ) -> Result<String> {
+        // Parse this crate's Cargo.toml to find dependencies
+        let deps = parse_cargo_dependencies(crate_path)?;
+        
+        // Find transitive feature enables
+        // e.g., common_utils has v1 = ["common_enums/v2"]
+        // When we expand with v1, common_enums/v2 gets enabled
+        // We need to find crates that depend on common_enums and enable their v2 feature
+        let mut additional_features = Vec::new();
+        
+        for dep_name in deps.keys() {
+            if let Ok(dep_path) = find_crate_in_workspace(workspace_path, dep_name) {
+                if dep_path.exists() {
+                    // Parse the dependency's feature definitions
+                    if let Ok(feature_defs) = parse_feature_definitions(&dep_path) {
+                        // Check if the dependency's primary_feature enables other features
+                        if let Some(enabled_features) = feature_defs.get(primary_feature) {
+                            for (transitive_dep, transitive_feature) in enabled_features {
+                                // transitive_dep/transitive_feature is enabled by primary_feature
+                                // Find crates that depend on transitive_dep and have transitive_feature
+                                if let Ok(crates_with_feature) = find_crates_depending_on_with_feature(
+                                    workspace_path,
+                                    transitive_dep,
+                                    transitive_feature,
+                                ) {
+                                    for (feature_crate, _) in crates_with_feature {
+                                        // Check if the current crate depends on this crate
+                                        if deps.contains_key(&feature_crate) {
+                                            additional_features.push(format!("{}/{}", feature_crate, transitive_feature));
+                                            info!("Feature propagation: enabling {}/{} for {}", 
+                                                  feature_crate, transitive_feature, crate_name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if additional_features.is_empty() {
+            debug!("No feature propagation needed for {}", crate_name);
+            return self.run_cargo_expand(workspace_path, crate_name, &["--features", primary_feature]);
+        }
+        
+        // Build feature string: primary_feature + additional features
+        let mut features = vec![primary_feature.to_string()];
+        features.extend(additional_features);
+        let features_arg = features.join(",");
+        
+        info!("Running cargo expand for {} with propagated features: {}", crate_name, features_arg);
+        
+        self.run_cargo_expand(workspace_path, crate_name, &["--features", &features_arg])
+    }
+    
+    /// Patch Cargo.toml to add hyperswitch_domain_models with olap,frm features
+    fn patch_cargo_toml_add_domain_models(content: &str) -> String {
+        let mut doc: toml_edit::DocumentMut = content.parse().unwrap_or_else(|_| {
+            // If parse fails, return original
+            let mut d = toml_edit::DocumentMut::new();
+            d
+        });
+        
+        // Check if hyperswitch_domain_models is already a direct dependency
+        let has_domain_models = if let Some(deps) = doc.get("dependencies") {
+            if let toml_edit::Item::Table(table) = deps {
+                table.contains_key("hyperswitch_domain_models")
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        
+        if has_domain_models {
+            // Already exists, just ensure olap and frm features are enabled
+            if let Some(deps) = doc.get_mut("dependencies") {
+                if let toml_edit::Item::Table(table) = deps {
+                    if let Some(dep) = table.get_mut("hyperswitch_domain_models") {
+                        if let toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) = dep {
+                            if let Some(toml_edit::Value::Array(features)) = t.get_mut("features") {
+                                // Add olap and frm if not present
+                                let existing: std::collections::HashSet<String> = features
+                                    .iter()
+                                    .filter_map(|f| {
+                                        if let toml_edit::Value::String(s) = f {
+                                            Some(s.value().to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                
+                                if !existing.contains("olap") {
+                                    features.push("olap");
+                                }
+                                if !existing.contains("frm") {
+                                    features.push("frm");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Add hyperswitch_domain_models as a new dependency using string manipulation
+            let dep_str = r#"hyperswitch_domain_models = { version = "0.1.0", path = "../hyperswitch_domain_models", features = ["olap", "frm"], default-features = false }"#;
+            
+            // Find [dependencies] section
+            let content_str = doc.to_string();
+            let mut result = content_str.clone();
+            
+            if let Some(pos) = result.find("[dependencies]") {
+                // Find next section or end
+                let insert_pos = result[pos..].find("\n[").map(|p| pos + p).unwrap_or(result.len());
+                result.insert_str(insert_pos, &format!("\n{}", dep_str));
+            } else {
+                // No dependencies section, add one before the first section or at end
+                if let Some(first_section) = result.find('[') {
+                    result.insert_str(first_section, &format!("[dependencies]\n{}\n\n", dep_str));
+                } else {
+                    result.push_str(&format!("\n[dependencies]\n{}", dep_str));
+                }
+            }
+            return result;
+        }
+        
+        doc.to_string()
     }
 
     fn run_cargo_expand(&self, workspace_path: &Path, crate_name: &str, extra_args: &[&str]) -> Result<String> {
@@ -344,7 +849,7 @@ impl ExpandStage {
 
         let jobs = num_cpus::get().min(16);
         let jobs_str = jobs.to_string();
-        let mut args = vec!["expand", "--lib", "-p", crate_name, "--jobs", &jobs_str, "--ugly"];
+        let mut args: Vec<&str> = vec!["expand", "--lib", "-p", crate_name, "--jobs", &jobs_str, "--ugly"];
         args.extend(extra_args);
 
         let mut child = Command::new("cargo")
@@ -390,7 +895,7 @@ impl ExpandStage {
 
         let timeout = CARGO_EXPAND_TIMEOUT;
         let start = Instant::now();
-
+        
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -503,6 +1008,306 @@ impl ExpandStage {
         }
         None
     }
+    
+    /// Pre-patch crates that need hyperswitch_domain_models with olap/frm features,
+    /// or storage_impl with olap feature.
+    /// Returns a map of (crate_path -> original_content) for later restoration.
+    fn pre_patch_crates_for_features(&self, workspace_root: &Path, crates: &[PathBuf]) -> HashMap<PathBuf, String> {
+        let mut patches = HashMap::new();
+        
+        let crates_needing_patch = self.find_crates_needing_domain_models_patch(workspace_root, crates);
+        
+        for crate_path in &crates_needing_patch {
+            let cargo_toml_path = crate_path.join("Cargo.toml");
+            
+            if let Ok(original_content) = std::fs::read_to_string(&cargo_toml_path) {
+                let mut patched = original_content.clone();
+                let mut needs_write = false;
+                
+                // Patch 1: Add hyperswitch_domain_models with olap,frm if needed
+                let has_domain_with_olap = original_content.lines()
+                    .filter(|l| l.contains("hyperswitch_domain_models") && l.contains("features"))
+                    .any(|l| l.contains("\"olap\""));
+                
+                if !has_domain_with_olap {
+                    if original_content.contains("hyperswitch_domain_models") {
+                        patched = Self::add_features_to_domain_models_dependency(&patched);
+                    } else if original_content.contains("hyperswitch_interfaces") {
+                        // Add hyperswitch_domain_models dependency
+                        patched = Self::add_domain_models_dependency(&patched);
+                    }
+                    needs_write = true;
+                }
+                
+                // Patch 2: Add olap to storage_impl if needed
+                let has_storage_with_olap = original_content.lines()
+                    .filter(|l| l.contains("storage_impl") && l.contains("features"))
+                    .any(|l| l.contains("\"olap\""));
+                
+                let has_storage_without_olap = original_content.lines()
+                    .filter(|l| l.contains("storage_impl") && l.contains("default-features = false"))
+                    .any(|l| !l.contains("\"olap\""));
+                
+                if has_storage_without_olap && !has_storage_with_olap {
+                    patched = Self::add_olap_to_storage_impl_dependency(&patched);
+                    needs_write = true;
+                }
+                
+                if needs_write {
+                    if let Err(e) = std::fs::write(&cargo_toml_path, &patched) {
+                        warn!("Failed to patch {:?}: {}", cargo_toml_path, e);
+                    } else {
+                        debug!("Pre-patched {:?} for feature propagation", cargo_toml_path);
+                        patches.insert(cargo_toml_path.clone(), original_content);
+                    }
+                }
+            }
+        }
+        
+        // Clear cargo cache to force re-resolution
+        let target_dir = workspace_root.join("target");
+        if target_dir.exists() {
+            let _ = std::fs::remove_file(target_dir.join(".cargo-lock"));
+            let _ = std::fs::remove_dir_all(target_dir.join(".fingerprint"));
+            debug!("Cleared cargo cache after patching");
+        }
+        
+        patches
+    }
+    
+    /// Add olap,frm features to existing hyperswitch_domain_models dependency
+    fn add_features_to_domain_models_dependency(content: &str) -> String {
+        let mut result = content.to_string();
+        
+        // First, also add olap to storage_impl dependency if present
+        result = Self::add_olap_to_storage_impl_dependency(&result);
+        
+        // Find the hyperswitch_domain_models line and add olap,frm to features
+        // Pattern 1: hyperswitch_domain_models = { version = "0.1.0", path = "...", default-features = false }
+        // Add features = ["olap", "frm"]
+        let pattern1 = "hyperswitch_domain_models = { version = \"0.1.0\", path = \"../hyperswitch_domain_models\", default-features = false }";
+        let replacement1 = "hyperswitch_domain_models = { version = \"0.1.0\", path = \"../hyperswitch_domain_models\", features = [\"olap\", \"frm\"], default-features = false }";
+        
+        if result.contains(pattern1) {
+            result = result.replace(pattern1, replacement1);
+            return result;
+        }
+        
+        // Pattern 2: Already has features but missing olap - need to parse and add
+        // Use simple string replacement for common patterns
+        let lines: Vec<&str> = content.lines().collect();
+        let mut new_lines = Vec::new();
+        
+        for line in lines {
+            if line.contains("hyperswitch_domain_models") && line.contains("features") {
+                // This line has features, check if olap is there
+                if !line.contains("olap") {
+                    // Add olap to features
+                    if let Some(new_line) = Self::add_olap_to_features_line(line) {
+                        new_lines.push(new_line);
+                        continue;
+                    }
+                }
+            } else if line.contains("hyperswitch_domain_models") && !line.contains("features") {
+                // No features, add them
+                if let Some(new_line) = Self::add_features_to_dep_line(line) {
+                    new_lines.push(new_line);
+                    continue;
+                }
+            }
+            new_lines.push(line.to_string());
+        }
+        
+        new_lines.join("\n")
+    }
+    
+    /// Add olap feature to storage_impl dependency
+    fn add_olap_to_storage_impl_dependency(content: &str) -> String {
+        // Pattern 1: storage_impl = { version = "0.1.0", path = "../storage_impl", default-features = false }
+        // Add features = ["olap"]
+        let pattern1 = "storage_impl = { version = \"0.1.0\", path = \"../storage_impl\", default-features = false }";
+        let replacement1 = "storage_impl = { version = \"0.1.0\", path = \"../storage_impl\", features = [\"olap\"], default-features = false }";
+        
+        let mut result = content.to_string();
+        if result.contains(pattern1) {
+            result = result.replace(pattern1, replacement1);
+            return result;
+        }
+        
+        // Pattern 2: storage_impl = { version = "...", path = "...", features = [...], default-features = false }
+        // Need to add olap to existing features
+        for line in content.lines() {
+            if line.contains("storage_impl") && line.contains("features = [") {
+                if !line.contains("\"olap\"") {
+                    // Find the features array and add olap
+                    if let Some(features_start) = line.find("features = [") {
+                        if let Some(features_end) = line[features_start..].find(']') {
+                            let insert_pos = features_start + "features = [".len();
+                            let before = &line[..insert_pos];
+                            let after = &line[insert_pos..];
+                            let new_line = format!("{}\"olap\", {}", before, after);
+                            result = result.replace(line, &new_line);
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
+        
+        result
+    }
+    
+    fn add_olap_to_features_line(line: &str) -> Option<String> {
+        // Find features = [...] and add olap, frm
+        let features_start = line.find("features = [")?;
+        let bracket_start = features_start + "features = ".len();
+        let bracket_end = line[bracket_start..].find(']')? + bracket_start;
+        
+        let features_content = &line[bracket_start + 1..bracket_end];
+        
+        // Add olap and frm if not present
+        let mut new_features = features_content.to_string();
+        if !new_features.contains("olap") {
+            if new_features.is_empty() || new_features == "\"\"" {
+                new_features = "\"olap\", \"frm\"".to_string();
+            } else {
+                new_features = format!("{}, \"olap\", \"frm\"", new_features.trim_end_matches(',').trim_end_matches(' '));
+            }
+        }
+        
+        Some(format!("{}[{}]{}", &line[..bracket_start + 1], new_features, &line[bracket_end..]))
+    }
+    
+    fn add_features_to_dep_line(line: &str) -> Option<String> {
+        // Add features = ["olap", "frm"] before default-features or closing brace
+        if line.contains("default-features") {
+            Some(line.replace("default-features", "features = [\"olap\", \"frm\"], default-features"))
+        } else if line.contains('}') {
+            Some(line.replace('}', ", features = [\"olap\", \"frm\"] }"))
+        } else {
+            None
+        }
+    }
+    
+    /// Find crates that need hyperswitch_domain_models or storage_impl patching
+    fn find_crates_needing_domain_models_patch(&self, workspace_root: &Path, all_crates: &[PathBuf]) -> Vec<PathBuf> {
+        let mut needs_patch = Vec::new();
+        
+        for crate_path in all_crates {
+            let cargo_toml = crate_path.join("Cargo.toml");
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                let mut crate_needs_patch = false;
+                
+                // Check for storage_impl dependency without olap
+                if content.contains("storage_impl") && content.contains("default-features = false") {
+                    // Check if olap is in features
+                    let has_storage_olap = content.lines()
+                        .filter(|l| l.contains("storage_impl") && l.contains("features"))
+                        .any(|l| l.contains("\"olap\""));
+                    
+                    if !has_storage_olap {
+                        debug!("Crate {:?} needs storage_impl/olap patch", crate_path);
+                        crate_needs_patch = true;
+                    }
+                }
+                
+                // Check for hyperswitch_interfaces dependency without domain_models with olap
+                if content.contains("hyperswitch_interfaces") {
+                    let has_domain_with_olap = content.lines()
+                        .filter(|l| l.contains("hyperswitch_domain_models") && l.contains("features"))
+                        .any(|l| l.contains("\"olap\""));
+                    
+                    if !has_domain_with_olap {
+                        debug!("Crate {:?} needs hyperswitch_domain_models/olap patch", crate_path);
+                        crate_needs_patch = true;
+                    }
+                }
+                
+                // Check if this IS hyperswitch_interfaces
+                if content.contains("name = \"hyperswitch_interfaces\"") {
+                    let has_domain_with_olap = content.lines()
+                        .filter(|l| l.contains("hyperswitch_domain_models") && l.contains("features"))
+                        .any(|l| l.contains("\"olap\""));
+                    
+                    if !has_domain_with_olap {
+                        debug!("Crate {:?} (interfaces) needs hyperswitch_domain_models/olap patch", crate_path);
+                        crate_needs_patch = true;
+                    }
+                }
+                
+                if crate_needs_patch {
+                    needs_patch.push(crate_path.clone());
+                }
+            }
+        }
+        
+        debug!("Found {} crates needing patch", needs_patch.len());
+        needs_patch
+    }
+    
+    /// Add hyperswitch_domain_models dependency to Cargo.toml content
+    fn add_domain_models_dependency(content: &str) -> String {
+        // Use toml_edit for proper parsing
+        let mut doc: toml_edit::DocumentMut = match content.parse() {
+            Ok(d) => d,
+            Err(_) => {
+                // Fall back to string manipulation if parsing fails
+                return Self::add_domain_models_dependency_simple(content);
+            }
+        };
+        
+        // Create the dependency entry
+        let dep_str = r#"hyperswitch_domain_models = { version = "0.1.0", path = "../hyperswitch_domain_models", features = ["olap", "frm"], default-features = false }"#;
+        
+        // Parse and insert
+        if let Some(deps) = doc.get_mut("dependencies") {
+            if let toml_edit::Item::Table(table) = deps {
+                // Parse the dependency line
+                if let Ok(dep_doc) = dep_str.parse::<toml_edit::DocumentMut>() {
+                    if let Some((key, value)) = dep_doc.iter().next() {
+                        table.insert(key, value.clone());
+                    }
+                }
+            }
+        } else {
+            // Add [dependencies] section
+            let mut deps_table = toml_edit::Table::new();
+            if let Ok(dep_doc) = dep_str.parse::<toml_edit::DocumentMut>() {
+                if let Some((key, value)) = dep_doc.iter().next() {
+                    deps_table.insert(key, value.clone());
+                }
+            }
+            doc.insert("dependencies", toml_edit::Item::Table(deps_table));
+        }
+        
+        doc.to_string()
+    }
+    
+    /// Simple string-based fallback for adding dependency
+    fn add_domain_models_dependency_simple(content: &str) -> String {
+        let dep_str = "hyperswitch_domain_models = { version = \"0.1.0\", path = \"../hyperswitch_domain_models\", features = [\"olap\", \"frm\"], default-features = false }";
+        
+        if let Some(pos) = content.find("[dependencies]") {
+            let mut result = content.to_string();
+            // Find next section or end
+            let insert_pos = content[pos..].find("\n[").map(|p| pos + p).unwrap_or(content.len());
+            result.insert_str(insert_pos, &format!("\n{}", dep_str));
+            result
+        } else {
+            format!("{}\n\n[dependencies]\n{}", content, dep_str)
+        }
+    }
+    
+    /// Restore all patched Cargo.toml files
+    fn restore_patched_cargo_files(&self, patches: &HashMap<PathBuf, String>) {
+        for (path, original_content) in patches {
+            if let Err(e) = std::fs::write(path, original_content) {
+                warn!("Failed to restore {:?}: {}", path, e);
+            } else {
+                debug!("Restored original Cargo.toml at {:?}", path);
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -528,6 +1333,17 @@ impl PipelineStage for ExpandStage {
                 return Ok(StageResult::failed("expand", format!("Failed to discover crates: {}", e)));
             }
         };
+        
+        // Store the workspace root for use in expand_library
+        let workspace_root = crate_path.as_path();
+        
+        // ====================================================================
+        // PRE-PATCH PHASE: Identify and patch crates needing feature propagation
+        // ====================================================================
+        let patches = self.pre_patch_crates_for_features(workspace_root, &crates);
+        if !patches.is_empty() {
+            info!("Pre-patched {} crates for feature propagation", patches.len());
+        }
 
         let mut state = ctx.state.write().await;
         let mut expanded_count = 0;
@@ -562,7 +1378,7 @@ impl PipelineStage for ExpandStage {
                 expanded_count += 1;
                 Some(cached.clone())
             } else {
-                match self.expand_library(crate_path, crate_path, &crate_name) {
+                match self.expand_library(crate_path, workspace_root, &crate_name) {
                     Ok(exp) => {
                         expanded_count += 1;
                         state.expand_cache.insert(content_hash, exp.clone());
@@ -616,6 +1432,11 @@ impl PipelineStage for ExpandStage {
         // Assign the complete map as a single Arc (no per-insert cloning)
         state.expanded_sources = Arc::new(expanded_map);
         state.counts.files_expanded = expanded_count;
+        
+        // ====================================================================
+        // RESTORE PHASE: Restore all patched Cargo.toml files
+        // ====================================================================
+        self.restore_patched_cargo_files(&patches);
         
         let duration = start.elapsed();
         info!("Expand stage: {} expanded, {} failed, {} skipped (binary-only), {:?}", 
