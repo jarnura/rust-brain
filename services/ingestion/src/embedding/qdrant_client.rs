@@ -230,9 +230,14 @@ struct VectorsConfig {
     distance: String,
 }
 
-/// Collection existence response
+/// Collection existence response (Qdrant wraps in "result" object)
 #[derive(Debug, Deserialize)]
 struct CollectionsResponse {
+    result: CollectionsResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct CollectionsResult {
     collections: Vec<CollectionDescription>,
 }
 
@@ -287,15 +292,17 @@ impl QdrantClient {
             .context("Failed to list Qdrant collections")?;
         
         if !response.status().is_success() {
-            anyhow::bail!("Failed to list collections: {}", response.status());
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to list collections: HTTP {} - {}", status, body);
         }
         
         let collections: CollectionsResponse = response
             .json()
             .await
-            .context("Failed to parse collections response")?;
+            .context("Failed to parse collections response from Qdrant")?;
         
-        Ok(collections.collections.into_iter().map(|c| c.name).collect())
+        Ok(collections.result.collections.into_iter().map(|c| c.name).collect())
     }
     
     /// Create a collection if it doesn't exist
