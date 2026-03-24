@@ -360,6 +360,8 @@ services:
       - ${INGEST_TARGET_PATH:-./target-repo}:/workspace/target-repo
       - ${HOME}/.cargo/registry:/root/.cargo/registry:ro  # Share cargo cache
       - ${HOME}/.cargo/git:/root/.cargo/git:ro            # Share git cache
+      - rustbrain-expand-cache:/tmp/rustbrain-expand-cache  # Persist expand cache
+      - ${INGEST_TARGET_PATH:-./target-repo}/target:/workspace/target-repo/target  # Persist build artifacts
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       NEO4J_URI: bolt://neo4j:7687
@@ -385,8 +387,10 @@ services:
       resources:
         limits:
           memory: 32G
+          cpus: "20"
         reservations:
           memory: 8G
+          cpus: "10"
     # Auto-remove container after run to prevent accumulation
     # Use: docker compose run --rm ingestion
     profiles:
@@ -412,3 +416,4 @@ volumes:
   prometheus_data:
   grafana_data:
   opencode_data:
+  rustbrain-expand-cache:

@@ -19,7 +19,8 @@ use syn::{
 };
 
 /// Maximum body_source length to store (to prevent memory explosion with expanded code)
-const MAX_BODY_SOURCE_LEN: usize = 200;
+/// Set to 50KB - large enough for most code items but prevents storing massive generated code
+const MAX_BODY_SOURCE_LEN: usize = 50_000;
 
 /// Truncate body_source aggressively to prevent OOM on large expanded codebases
 fn truncate_body_source(source: &str) -> String {
