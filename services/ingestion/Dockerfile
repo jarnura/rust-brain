@@ -55,6 +55,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     make \
     protobuf-compiler \
+    g++ \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-expand (pinned version for Rust 1.85 compatibility)
