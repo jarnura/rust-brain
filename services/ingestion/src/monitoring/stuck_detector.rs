@@ -80,7 +80,7 @@ impl StuckDetector {
     /// Create a detector with the default per-stage thresholds.
     pub fn new() -> Self {
         Self::with_thresholds([
-            Duration::from_secs(120), // expand
+            Duration::from_secs(600), // expand (cargo expand can take 3-5 min for large crates)
             Duration::from_secs(30),  // parse
             Duration::from_secs(30),  // typecheck
             Duration::from_secs(60),  // extract
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn default_thresholds() {
         let detector = StuckDetector::new();
-        assert_eq!(detector.thresholds[0], Duration::from_secs(120)); // expand
+        assert_eq!(detector.thresholds[0], Duration::from_secs(600)); // expand
         assert_eq!(detector.thresholds[1], Duration::from_secs(30));  // parse
         assert_eq!(detector.thresholds[2], Duration::from_secs(30));  // typecheck
         assert_eq!(detector.thresholds[3], Duration::from_secs(60));  // extract
