@@ -219,7 +219,7 @@ class ChatPanel {
     async _switchToSession(sessionId) {
         try {
             // Save current messages before switching
-            if (this._sessionId && this._messages.length > 0) {
+            if (this._sessionId && this._messages && this._messages.length > 0) {
                 this._state.setMessages(this._sessionId, this._messages);
             }
 
@@ -281,7 +281,7 @@ class ChatPanel {
         if (this._sessionId === id) return;
 
         // Save current messages before switching
-        if (this._sessionId && this._messages.length > 0) {
+        if (this._sessionId && this._messages && this._messages.length > 0) {
             this._state.setMessages(this._sessionId, this._messages);
         }
 
@@ -646,7 +646,7 @@ class ChatPanel {
 
     destroy() {
         // Save messages before destroying
-        if (this._sessionId && this._messages.length > 0) {
+        if (this._sessionId && this._messages && this._messages.length > 0) {
             this._state.setMessages(this._sessionId, this._messages);
         }
         for (const unsub of this._unsubs) unsub();
