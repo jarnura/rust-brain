@@ -663,11 +663,14 @@ let panel = null;
 
 export function init(container) {
     if (panel) {
-        // Panel exists - just restore it to the new container
-        // Messages are already in state, will be restored by _initSession
+        // Panel exists - restore it to the new container
+        // Re-render and re-bind to ensure UI is fresh
+        panel.destroy();
         panel._container = container;
+        panel._unsubs = [];
         panel._render();
         panel._bindDom();
+        panel._bindEvents();
         panel._renderAllMessages();
         return;
     }
