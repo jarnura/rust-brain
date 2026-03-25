@@ -977,6 +977,31 @@ code:not(pre code) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.chat-session-select {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  margin-right: var(--space-2);
+  cursor: pointer;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-session-select:hover {
+  border-color: var(--accent-blue);
+}
+.chat-header__btn--new {
+  background: var(--accent-blue);
+  color: white;
+  margin-right: var(--space-2);
+}
+.chat-header__btn--new:hover {
+  background: var(--accent-blue-hover);
+}
 .chat-header__status-label {
   font-size: var(--font-size-xs);
   color: var(--text-muted);

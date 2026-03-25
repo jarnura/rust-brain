@@ -63,11 +63,14 @@ class ChatPanel {
             <div class="chat-container">
                 <div class="chat-header">
                     <div class="chat-header__title">
-                        <span class="chat-header__session">New Session</span>
+                        <select class="chat-session-select" title="Select session">
+                            <option value="">New Session</option>
+                        </select>
                         <span class="chat-header__status status-dot status-unknown"></span>
                         <span class="chat-header__status-label">Disconnected</span>
                     </div>
                     <div class="chat-header__actions">
+                        <button class="chat-header__btn chat-header__btn--new" title="New session">+ New</button>
                         <button class="chat-header__btn chat-header__btn--clear" title="Clear messages">Clear</button>
                     </div>
                 </div>
@@ -86,9 +89,10 @@ class ChatPanel {
     _bindDom() {
         const root = this._container;
         this._els = {
-            sessionTitle: root.querySelector('.chat-header__session'),
+            sessionSelect: root.querySelector('.chat-session-select'),
             statusDot:    root.querySelector('.chat-header__status'),
             statusLabel:  root.querySelector('.chat-header__status-label'),
+            newBtn:       root.querySelector('.chat-header__btn--new'),
             clearBtn:     root.querySelector('.chat-header__btn--clear'),
             messagesArea: root.querySelector('.chat-messages'),
             input:        root.querySelector('.chat-input'),
@@ -115,6 +119,17 @@ class ChatPanel {
         this._els.sendBtn.addEventListener('click', () => this._sendMessage());
         this._els.abortBtn.addEventListener('click', () => this._abort());
         this._els.clearBtn.addEventListener('click', () => this._clearMessages());
+        this._els.newBtn.addEventListener('click', () => this._createNewSession());
+
+        // Session selector
+        this._els.sessionSelect.addEventListener('change', (e) => {
+            const sessionId = e.target.value;
+            if (sessionId) {
+                this._switchToSession(sessionId);
+            } else {
+                this._createNewSession();
+            }
+        });
 
         // SSE events
         this._unsubs.push(
@@ -138,26 +153,155 @@ class ChatPanel {
     // ── Session Management ─────────────────────────────────────────────────
 
     async _initSession() {
+        // Load session list for dropdown
+        await this._loadSessionList();
+
         const existing = this._state.getKey('currentSession');
         if (existing) {
-            this._onSessionChanged(existing);
+            await this._onSessionChanged(existing);
             return;
         }
 
+        // Try to reuse the most recent session
+        const sessions = this._state.getKey('sessions');
+        if (sessions && sessions.length > 0) {
+            const recent = sessions[0];
+            await this._switchToSession(recent.id);
+            return;
+        }
+
+        // Create a new session
+        await this._createNewSession();
+    }
+
+    async _loadSessionList() {
         try {
-            const session = await this._api.createSession();
+            const sessions = await this._api.listSessions();
+            this._state.setSessions(sessions);
+            this._updateSessionSelect();
+        } catch (err) {
+            console.error('Failed to load sessions:', err);
+        }
+    }
+
+    _updateSessionSelect() {
+        const sessions = this._state.getKey('sessions') || [];
+        const currentId = this._sessionId;
+
+        this._els.sessionSelect.innerHTML = `
+            <option value="">+ New Session</option>
+            ${sessions.map(s => `
+                <option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>
+                    ${s.title || s.slug || s.id.slice(0, 8)}
+                </option>
+            `).join('')}
+        `;
+    }
+
+    async _createNewSession() {
+        try {
+            const session = await this._api.createSession({ title: 'New Session' });
             this._state.setCurrentSession(session);
+            this._messages = [];
+            this._els.messagesArea.innerHTML = '';
+            await this._loadSessionList();
         } catch (err) {
             this._appendSystemMessage(`Failed to create session: ${err.message}`);
         }
     }
 
-    _onSessionChanged(session) {
+    async _switchToSession(sessionId) {
+        try {
+            // Save current messages before switching
+            if (this._sessionId && this._messages.length > 0) {
+                this._state.setMessages(this._sessionId, this._messages);
+            }
+
+            // Load session details including messages
+            const detail = await this._api.getSession(sessionId);
+            this._state.setCurrentSession(detail.session);
+
+            // Restore messages from API response
+            this._messages = (detail.messages || []).map(msg => ({
+                id: msg.id,
+                role: msg.role,
+                content: msg.parts?.filter(p => p.type === 'text').map(p => p.text).join('') || '',
+                timestamp: msg.time?.created || Date.now(),
+            }));
+
+            // Also save to state for persistence
+            this._state.setMessages(sessionId, this._messages);
+
+            // Re-render messages
+            this._renderAllMessages();
+        } catch (err) {
+            this._appendSystemMessage(`Failed to switch session: ${err.message}`);
+        }
+    }
+
+    _renderAllMessages() {
+        this._els.messagesArea.innerHTML = '';
+        for (const msg of this._messages) {
+            if (msg.role === 'user') {
+                this._renderUserMessage(msg.content, msg.timestamp);
+            } else if (msg.role === 'assistant') {
+                this._renderAssistantMessage(msg.content, msg.timestamp);
+            }
+        }
+        this._scrollToBottom();
+    }
+
+    _renderUserMessage(text, timestamp) {
+        const el = document.createElement('div');
+        el.className = 'chat-message chat-message--user';
+        el.innerHTML = `
+            <div class="chat-bubble">${escapeHtml(text)}</div>
+            <div class="chat-meta">${formatTime(new Date(timestamp))}</div>`;
+        this._els.messagesArea.appendChild(el);
+    }
+
+    _renderAssistantMessage(text, timestamp) {
+        const el = document.createElement('div');
+        el.className = 'chat-message chat-message--assistant';
+        el.innerHTML = `
+            <div class="chat-bubble">${renderMarkdown(text || '')}</div>
+            <div class="chat-meta">${formatTime(new Date(timestamp))}</div>`;
+        this._els.messagesArea.appendChild(el);
+        this._highlightCode(el.querySelector('.chat-bubble'));
+    }
+
+    async _onSessionChanged(session) {
         const id = session.session_id || session.id;
         if (this._sessionId === id) return;
 
+        // Save current messages before switching
+        if (this._sessionId && this._messages.length > 0) {
+            this._state.setMessages(this._sessionId, this._messages);
+        }
+
         this._sessionId = id;
-        this._els.sessionTitle.textContent = session.title || `Session ${id.slice(0, 8)}`;
+
+        // Load messages from state or API
+        let messages = this._state.getMessages(id);
+        if (messages.length === 0) {
+            // Try to load from API
+            try {
+                const detail = await this._api.getSession(id);
+                messages = (detail.messages || []).map(msg => ({
+                    id: msg.id,
+                    role: msg.role,
+                    content: msg.parts?.filter(p => p.type === 'text').map(p => p.text).join('') || '',
+                    timestamp: msg.time?.created || Date.now(),
+                }));
+                this._state.setMessages(id, messages);
+            } catch (err) {
+                console.error('Failed to load messages:', err);
+            }
+        }
+
+        this._messages = messages;
+        this._renderAllMessages();
+        this._updateSessionSelect();
 
         // Connect SSE stream for this session
         this._sse.connect(id);
@@ -324,8 +468,13 @@ class ChatPanel {
             <div class="chat-meta">${formatTime(new Date())}</div>`;
 
         this._els.messagesArea.appendChild(el);
-        this._messages.push({ id, role: 'user', content: text, timestamp: Date.now() });
+        const msg = { id, role: 'user', content: text, timestamp: Date.now() };
+        this._messages.push(msg);
         if (this._messages.length > MAX_MESSAGES) this._messages.shift();
+        // Save to state for persistence
+        if (this._sessionId) {
+            this._state.addMessage(this._sessionId, msg);
+        }
         this._scrollToBottom();
     }
 
@@ -490,10 +639,15 @@ class ChatPanel {
     // ── Cleanup ────────────────────────────────────────────────────────────
 
     destroy() {
+        // Save messages before destroying
+        if (this._sessionId && this._messages.length > 0) {
+            this._state.setMessages(this._sessionId, this._messages);
+        }
         for (const unsub of this._unsubs) unsub();
         this._unsubs = [];
         this._sse.disconnect();
-        this._container.innerHTML = '';
+        // Don't clear container - just hide it
+        // this._container.innerHTML = '';
     }
 }
 
@@ -502,7 +656,15 @@ class ChatPanel {
 let panel = null;
 
 export function init(container) {
-    if (panel) panel.destroy();
+    if (panel) {
+        // Panel exists - just restore it to the new container
+        // Messages are already in state, will be restored by _initSession
+        panel._container = container;
+        panel._render();
+        panel._bindDom();
+        panel._renderAllMessages();
+        return;
+    }
     panel = new ChatPanel({
         container,
         bus,

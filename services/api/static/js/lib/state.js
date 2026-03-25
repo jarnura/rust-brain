@@ -6,6 +6,7 @@ import { bus } from './event-bus.js';
 const INITIAL_STATE = {
     currentSession: null,
     sessions: [],
+    messagesBySession: {},  // sessionId -> messages[]
     activePanel: 'dashboard',
     searchResults: null,
     functionDetail: null,
@@ -71,6 +72,30 @@ class AppState {
 
     setSessions(sessions) {
         this.set({ sessions: [...sessions] });
+    }
+
+    // Messages for a specific session
+    getMessages(sessionId) {
+        return this._state.messagesBySession[sessionId] || [];
+    }
+
+    setMessages(sessionId, messages) {
+        const messagesBySession = { ...this._state.messagesBySession };
+        messagesBySession[sessionId] = [...messages];
+        this.set({ messagesBySession });
+    }
+
+    addMessage(sessionId, message) {
+        const messagesBySession = { ...this._state.messagesBySession };
+        const existing = messagesBySession[sessionId] || [];
+        messagesBySession[sessionId] = [...existing, message];
+        this.set({ messagesBySession });
+    }
+
+    clearMessages(sessionId) {
+        const messagesBySession = { ...this._state.messagesBySession };
+        delete messagesBySession[sessionId];
+        this.set({ messagesBySession });
     }
 
     setActivePanel(panel) {
