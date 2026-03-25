@@ -225,7 +225,7 @@ services:
       QDRANT_COLLECTION: code_embeddings
       OLLAMA_HOST: http://ollama:11434
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:4b}
-      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-2560}
       RUST_LOG: ${RUST_LOG:-info,rustbrain_api=debug}
       API_PORT: 8080
       OPENCODE_HOST: http://opencode:4096

@@ -101,6 +101,17 @@ impl EmbeddingService {
         let mut config = EmbeddingConfig::default();
         config.ollama.base_url = ollama_url;
         config.qdrant.base_url = qdrant_url;
+        
+        // Read model and dimensions from environment if set
+        if let Ok(model) = std::env::var("EMBEDDING_MODEL") {
+            config.ollama.model = model;
+        }
+        if let Ok(dims) = std::env::var("EMBEDDING_DIMENSIONS") {
+            if let Ok(dims) = dims.parse::<usize>() {
+                config.qdrant.vector_size = dims;
+            }
+        }
+        
         Self::new(config)
     }
     
