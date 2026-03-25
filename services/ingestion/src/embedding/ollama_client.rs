@@ -18,7 +18,7 @@ pub const MAX_BATCH_SIZE: usize = 32;
 pub const DEFAULT_MODEL: &str = "nomic-embed-text";
 
 /// Expected embedding dimensions for nomic-embed-text
-pub const EXPECTED_DIMENSIONS: usize = 768;
+pub const EXPECTED_DIMENSIONS: usize = 2560;
 
 /// Ollama client configuration
 #[derive(Debug, Clone)]
@@ -337,7 +337,7 @@ mod tests {
     
     #[test]
     fn test_expected_dimensions() {
-        assert_eq!(EXPECTED_DIMENSIONS, 768);
+        assert_eq!(EXPECTED_DIMENSIONS, 2560);
     }
 
     #[test]

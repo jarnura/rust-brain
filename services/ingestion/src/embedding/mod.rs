@@ -821,7 +821,7 @@ mod tests {
         let config = EmbeddingConfig::default();
         assert_eq!(config.max_doc_chunk_size, MAX_DOC_CHUNK_SIZE);
         assert_eq!(config.ollama.model, "nomic-embed-text");
-        assert_eq!(config.qdrant.vector_size, 768);
+        assert_eq!(config.qdrant.vector_size, 2560);
     }
 
     #[test]

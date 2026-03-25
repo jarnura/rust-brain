@@ -41,7 +41,7 @@ impl Default for QdrantConfig {
             base_url: "http://qdrant:6333".to_string(),
             code_collection: CODE_COLLECTION.to_string(),
             doc_collection: DOC_COLLECTION.to_string(),
-            vector_size: 768,
+            vector_size: 2560,
             timeout: Duration::from_secs(30),
         }
     }
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(config.base_url, "http://qdrant:6333");
         assert_eq!(config.code_collection, CODE_COLLECTION);
         assert_eq!(config.doc_collection, DOC_COLLECTION);
-        assert_eq!(config.vector_size, 768);
+        assert_eq!(config.vector_size, 2560);
     }
     
     #[test]
@@ -650,7 +650,7 @@ mod tests {
         let client = client.unwrap();
         assert_eq!(client.code_collection(), CODE_COLLECTION);
         assert_eq!(client.doc_collection(), DOC_COLLECTION);
-        assert_eq!(client.vector_size(), 768);
+        assert_eq!(client.vector_size(), 2560);
     }
 
     #[test]

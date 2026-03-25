@@ -1,0 +1,2 @@
+Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.
+opencode server listening on http://100.87.157.74:9999
