@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "juspay-grid:glm-latest",
   "mcp": {
     "rustbrain": {
       "type": "remote",
