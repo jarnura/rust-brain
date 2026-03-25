@@ -231,7 +231,8 @@ impl OpenCodeClient {
     }
 
     pub async fn send_message_async(&self, session_id: &str, content: &str) -> Result<String> {
-        let path = format!("/session/{}/message/async", session_id);
+        // OpenCode uses the same endpoint for async - it returns immediately with the message ID
+        let path = format!("/session/{}/message", session_id);
         let body = SendMessageRequest {
             parts: vec![SendMessagePart {
                 r#type: "text".to_string(),
@@ -249,8 +250,10 @@ impl OpenCodeClient {
             .json()
             .await
             .context("send_message_async parse failed")?;
-        json["id"]
+        // The response has the message ID in info.id
+        json["info"]["id"]
             .as_str()
+            .or_else(|| json["id"].as_str())
             .context("send_message_async: missing id field")
             .map(|s| s.to_string())
     }
