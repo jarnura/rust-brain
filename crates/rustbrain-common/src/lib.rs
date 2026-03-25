@@ -7,6 +7,7 @@
 pub mod types;
 pub mod errors;
 pub mod config;
+pub mod logging;
 
 pub use types::*;
 pub use errors::*;
