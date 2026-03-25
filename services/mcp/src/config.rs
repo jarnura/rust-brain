@@ -1,6 +1,7 @@
 //! Configuration for the MCP server
 
 use clap::Parser;
+use tracing::{debug, info};
 
 /// Transport mode for the MCP server
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,12 +87,23 @@ impl Default for Config {
 impl Config {
     /// Create configuration from environment and CLI args
     pub fn parse_args() -> Self {
-        Parser::parse()
+        debug!("Parsing MCP server configuration from CLI args and environment");
+        let config: Self = Parser::parse();
+        info!(
+            transport = ?config.transport,
+            api_base_url = %config.api_base_url,
+            http_timeout = config.http_timeout,
+            max_search_results = config.max_search_results,
+            "MCP server configuration loaded"
+        );
+        config
     }
 
     /// Get the full URL for an API endpoint
     pub fn api_url(&self, path: &str) -> String {
-        format!("{}{}", self.api_base_url.trim_end_matches('/'), path)
+        let url = format!("{}{}", self.api_base_url.trim_end_matches('/'), path);
+        debug!(path = %path, url = %url, "Resolved API URL");
+        url
     }
 }
 

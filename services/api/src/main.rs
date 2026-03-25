@@ -22,7 +22,8 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use rustbrain_common::logging::init_logging_with_directives;
+use tracing::{info, Level};
 
 use config::{Config, redact_url};
 use state::{AppState, Metrics};
@@ -34,14 +35,8 @@ async fn playground_redirect() -> Redirect {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("rustbrain_api=debug".parse()?)
-        )
-        .json()
-        .init();
+    // Initialize tracing (stdout + optional LOG_FILE; format via LOG_FORMAT env var)
+    let _log_guard = init_logging_with_directives(Level::INFO, &["rustbrain_api=debug"]);
 
     info!("Starting rust-brain API server");
 
@@ -112,6 +107,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/get_module_tree", get(handlers::graph::get_module_tree))
         .route("/tools/query_graph", post(handlers::graph::query_graph))
         .route("/tools/aggregate_search", post(handlers::search::aggregate_search))
+        // Ingestion progress
+        .route("/api/ingestion/progress", get(handlers::ingestion::ingestion_progress))
         // OpenCode session management
         .route("/tools/chat/sessions", post(handlers::chat::chat_sessions_create).get(handlers::chat::chat_sessions_list))
         .route("/tools/chat/sessions/:id", get(handlers::chat::chat_sessions_get).delete(handlers::chat::chat_sessions_delete))

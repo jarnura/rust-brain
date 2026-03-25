@@ -54,7 +54,7 @@ impl Config {
                 .map(|s| s.parse().unwrap_or(768))
                 .unwrap_or(768),
             collection_name: std::env::var("QDRANT_COLLECTION")
-                .unwrap_or_else(|_| "rust_functions".to_string()),
+                .unwrap_or_else(|_| "code_embeddings".to_string()),
             chat_model: std::env::var("CHAT_MODEL")
                 .unwrap_or_else(|_| "codellama:7b".to_string()),
             port: std::env::var("API_PORT")
@@ -83,7 +83,7 @@ mod tests {
             ollama_host: "http://ollama:11434".to_string(),
             embedding_model: "nomic-embed-text".to_string(),
             embedding_dimensions: 768,
-            collection_name: "rust_functions".to_string(),
+            collection_name: "code_embeddings".to_string(),
             chat_model: "codellama:7b".to_string(),
             port: 8080,
             opencode_host: "http://opencode:4096".to_string(),

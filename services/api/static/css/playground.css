@@ -852,6 +852,26 @@ code:not(pre code) {
   padding: 0 var(--space-1);
 }
 
+.chat-source {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-right: var(--space-1);
+  vertical-align: middle;
+}
+
+.chat-source--opencode {
+  background: var(--accent-bg, #e0f2fe);
+  color: var(--accent-fg, #0369a1);
+}
+
+.chat-source--ollama {
+  background: var(--warning-bg, #fef3c7);
+  color: var(--warning-fg, #92400e);
+}
+
 .chat-input-row {
   display: flex;
   align-items: flex-end;

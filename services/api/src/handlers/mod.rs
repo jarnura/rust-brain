@@ -5,6 +5,7 @@ pub mod search;
 pub mod graph;
 pub mod items;
 pub mod chat;
+pub mod ingestion;
 pub mod playground;
 
 use serde::{Deserialize, Serialize};

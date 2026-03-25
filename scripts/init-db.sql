@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS source_files (
     original_source TEXT NOT NULL,
     expanded_source TEXT,
     git_hash TEXT,
+    content_hash TEXT,
     git_blame JSONB,
     last_indexed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -146,6 +147,25 @@ CREATE TABLE IF NOT EXISTS repositories (
 
 -- Add repository_id to source_files for multi-repo support
 ALTER TABLE source_files ADD COLUMN IF NOT EXISTS repository_id UUID REFERENCES repositories(id);
+
+-- =============================================================================
+-- AUDIT EVENTS: Pipeline audit trail
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id UUID PRIMARY KEY,
+    pipeline_id UUID NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    event_type TEXT NOT NULL,
+    stage TEXT,
+    detail JSONB,
+    severity TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_pipeline_id ON audit_events (pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events (timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events (event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_severity ON audit_events (severity);
 
 -- =============================================================================
 -- UPDATE TRIGGER: Auto-update updated_at

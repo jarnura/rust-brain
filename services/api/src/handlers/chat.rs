@@ -1,4 +1,4 @@
-//! Chat handlers — legacy Ollama + OpenCode streaming & sessions.
+//! Chat handlers — OpenCode streaming & sessions.
 
 use axum::{
     extract::{Path, State},
@@ -19,7 +19,7 @@ use crate::opencode;
 use crate::state::AppState;
 
 // =============================================================================
-// Legacy Ollama Chat (kept for backwards compatibility)
+// Chat via OpenCode
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +33,7 @@ pub struct ChatRequest {
 pub struct ChatResponse {
     pub response: String,
     pub session_id: String,
+    pub source: String,
 }
 
 pub async fn chat_handler(
@@ -42,105 +43,51 @@ pub async fn chat_handler(
     state.metrics.record_request("chat", "POST");
     debug!("Chat request: {:?}", req.message);
 
-    // Try OpenCode first, fall back to Ollama.
     // Reuse existing session if the frontend passed one; otherwise create a new one.
-    let opencode_session_id = if let Some(ref sid) = req.session_id {
+    let session_id = if let Some(ref sid) = req.session_id {
         if sid.starts_with("ses_") {
-            Some(sid.clone())
+            sid.clone()
         } else {
-            None
+            state
+                .opencode_client
+                .create_session(Some("Chat"))
+                .await
+                .map_err(|e| AppError::OpenCode(format!("Failed to create session: {}", e)))?
+                .id
         }
     } else {
-        None
-    };
-
-    // Attempt OpenCode
-    let session_result = match opencode_session_id {
-        Some(sid) => Ok(sid),
-        None => state
+        state
             .opencode_client
             .create_session(Some("Chat"))
             .await
-            .map(|s| s.id),
+            .map_err(|e| AppError::OpenCode(format!("Failed to create session: {}", e)))?
+            .id
     };
 
-    match session_result {
-        Ok(sid) => {
-            match state.opencode_client.send_message(&sid, &req.message).await {
-                Ok(msg) => {
-                    let response_text = msg.parts.iter()
-                        .filter_map(|p| match p {
-                            opencode::MessagePart::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-
-                    return Ok(Json(ChatResponse {
-                        response: if response_text.is_empty() {
-                            "I couldn't generate a response. Please try again.".to_string()
-                        } else {
-                            response_text
-                        },
-                        session_id: sid,
-                    }));
-                }
-                Err(e) => {
-                    warn!("OpenCode send_message failed, falling back to Ollama: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            warn!("OpenCode create_session failed, falling back to Ollama: {}", e);
-        }
-    }
-
-    let session_id = req.session_id.clone().unwrap_or_else(|| {
-        format!("rustbrain-{}", chrono::Utc::now().timestamp_millis())
-    });
-
-    // Fallback: Ollama
-    let system_prompt = r#"You are a helpful AI assistant with access to a Rust codebase knowledge graph.
-You can help users understand code, find functions, trace call graphs, and answer questions about the codebase.
-The codebase has been indexed with semantic search, call graphs, and type information.
-Be concise but thorough in your responses. When discussing code, reference specific functions or modules when relevant."#;
-
-    let chat_request = serde_json::json!({
-        "model": state.config.chat_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": req.message}
-        ],
-        "stream": false
-    });
-
-    let response = state.http_client
-        .post(format!("{}/api/chat", state.config.ollama_host))
-        .json(&chat_request)
-        .send()
+    let msg = state
+        .opencode_client
+        .send_message(&session_id, &req.message)
         .await
-        .map_err(|e| AppError::Ollama(format!("Failed to call Ollama chat: {}", e)))?;
+        .map_err(|e| AppError::OpenCode(format!("Failed to send message: {}", e)))?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Ollama(format!("Ollama chat failed: {} - {}", status, body)));
-    }
-
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Ollama(format!("Failed to parse Ollama response: {}", e)))?;
-
-    let assistant_message = result.get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("I couldn't generate a response. Please try again.")
-        .to_string();
+    let response_text = msg
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            opencode::MessagePart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
 
     Ok(Json(ChatResponse {
-        response: assistant_message,
+        response: if response_text.is_empty() {
+            "I couldn't generate a response. Please try again.".to_string()
+        } else {
+            response_text
+        },
         session_id,
+        source: "opencode".to_string(),
     }))
 }
 
@@ -283,6 +230,7 @@ pub async fn chat_stream_handler(
                                                 if !accumulated_text.is_empty() {
                                                     let payload = serde_json::json!({
                                                         "message": accumulated_text,
+                                                        "source": "opencode",
                                                     });
                                                     yield Ok(Event::default()
                                                         .event("complete")
@@ -305,6 +253,7 @@ pub async fn chat_stream_handler(
                                             if !accumulated_text.is_empty() {
                                                 let payload = serde_json::json!({
                                                     "message": accumulated_text,
+                                                    "source": "opencode",
                                                 });
                                                 yield Ok(Event::default()
                                                     .event("complete")
@@ -314,7 +263,7 @@ pub async fn chat_stream_handler(
                                             // Signal that generation is fully done
                                             yield Ok(Event::default()
                                                 .event("done")
-                                                .data("{}".to_string()));
+                                                .data(serde_json::json!({"source": "opencode"}).to_string()));
                                         }
                                     }
 
@@ -354,24 +303,23 @@ pub struct ChatSendRequest {
     pub message: String,
 }
 
-/// Async send — spawns the blocking OpenCode call in background, returns 204 immediately.
+/// Async send — uses OpenCode's non-blocking endpoint, returns 202 with message ID.
 /// Results arrive via the SSE stream.
 pub async fn chat_send_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatSendRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let client = state.opencode_client.clone();
-    let session_id = req.session_id.clone();
-    let message = req.message.clone();
+    let message_id = state
+        .opencode_client
+        .send_message_async(&req.session_id, &req.message)
+        .await
+        .map_err(|e| {
+            error!("send_message_async failed for session {}: {}", req.session_id, e);
+            AppError::OpenCode(format!("Failed to send message: {}", e))
+        })?;
 
-    // Spawn the blocking send in the background — SSE stream delivers events
-    tokio::spawn(async move {
-        if let Err(e) = client.send_message(&session_id, &message).await {
-            warn!("Background send_message failed for session {}: {}", session_id, e);
-        }
-    });
-
-    Ok(StatusCode::NO_CONTENT)
+    debug!("Async message queued: {} for session {}", message_id, req.session_id);
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"message_id": message_id}))))
 }
 
 // =============================================================================

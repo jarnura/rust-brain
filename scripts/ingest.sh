@@ -132,7 +132,6 @@ $COMPOSE_CMD -f "$PROJECT_ROOT/docker-compose.yml" build ingestion
 echo "Starting ingestion..."
 $COMPOSE_CMD -f "$PROJECT_ROOT/docker-compose.yml" run --rm \
     -e INGESTION_MEMORY_BUDGET="$MEMORY_BUDGET" \
-    -e DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
     -v "$WORKSPACE_PATH:/workspace/target-repo" \
     ingestion \
     --crate-path /workspace/target-repo \

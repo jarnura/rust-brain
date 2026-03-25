@@ -65,7 +65,7 @@ export function init(pane) {
 
     try {
       const data  = await apiClient.getTraitImpls(traitName, +limitEl.value || 20);
-      const impls = data.impls ?? data.results ?? data.items
+      const impls = data.implementations ?? data.impls ?? data.results ?? data.items
                     ?? (Array.isArray(data) ? data : []);
 
       statusEl.textContent = `${impls.length} impl(s) found`;
@@ -78,8 +78,8 @@ export function init(pane) {
       resultsEl.innerHTML = impls.map((impl, i) => {
         const implFqn  = impl.impl_fqn  ?? impl.fqn  ?? impl.name ?? '(unknown)';
         const typeName = impl.type_name ?? impl.type ?? impl.struct_name ?? '';
-        const file     = impl.file ?? impl.location?.file ?? '';
-        const line     = impl.line ?? impl.location?.line ?? '';
+        const file     = impl.file_path ?? impl.file ?? impl.location?.file ?? '';
+        const line     = impl.start_line ?? impl.line ?? impl.location?.line ?? '';
         const loc      = file ? `${file}${line ? ':' + line : ''}` : '';
         const display  = typeName || implFqn;
         return `

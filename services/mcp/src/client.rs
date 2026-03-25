@@ -5,7 +5,7 @@ use crate::error::{McpError, Result};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// HTTP client wrapper for the rust-brain API
 #[derive(Debug, Clone)]
@@ -17,11 +17,17 @@ pub struct ApiClient {
 impl ApiClient {
     /// Create a new API client
     pub fn new(config: &Config) -> Result<Self> {
+        debug!(
+            base_url = %config.api_base_url,
+            timeout_secs = config.http_timeout,
+            "Creating ApiClient"
+        );
         let client = Client::builder()
             .timeout(Duration::from_secs(config.http_timeout))
             .build()
             .map_err(McpError::Http)?;
 
+        info!(base_url = %config.api_base_url, "ApiClient created");
         Ok(Self {
             client,
             base_url: config.api_base_url.clone(),
@@ -78,8 +84,10 @@ impl ApiClient {
     }
 
     /// Check if the API is healthy
+    #[instrument(skip(self))]
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/health", self.base_url.trim_end_matches('/'));
+        debug!("Health check GET {}", url);
 
         let response = self
             .client
@@ -88,7 +96,13 @@ impl ApiClient {
             .await
             .map_err(McpError::Http)?;
 
-        Ok(response.status().is_success())
+        let healthy = response.status().is_success();
+        if healthy {
+            debug!("API health check passed");
+        } else {
+            warn!(status = %response.status(), "API health check failed");
+        }
+        Ok(healthy)
     }
 }
 
@@ -104,11 +118,18 @@ pub struct OpenCodeClient {
 impl OpenCodeClient {
     /// Create a new OpenCode client
     pub fn new(config: &Config) -> Result<Self> {
+        debug!(
+            host = %config.opencode_host,
+            timeout_secs = config.http_timeout,
+            has_auth = config.opencode_auth_user.is_some(),
+            "Creating OpenCodeClient"
+        );
         let client = Client::builder()
             .timeout(Duration::from_secs(config.http_timeout))
             .build()
             .map_err(McpError::Http)?;
 
+        info!(host = %config.opencode_host, "OpenCodeClient created");
         Ok(Self {
             client,
             host: config.opencode_host.clone(),
@@ -141,8 +162,10 @@ impl OpenCodeClient {
     }
 
     /// Check if OpenCode is healthy
+    #[instrument(skip(self))]
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/health", self.host.trim_end_matches('/'));
+        debug!("OpenCode health check GET {}", url);
 
         let mut request = self.client.get(&url);
 
@@ -152,7 +175,13 @@ impl OpenCodeClient {
 
         let response = request.send().await.map_err(McpError::Http)?;
 
-        Ok(response.status().is_success())
+        let healthy = response.status().is_success();
+        if healthy {
+            debug!("OpenCode health check passed");
+        } else {
+            warn!(status = %response.status(), "OpenCode health check failed");
+        }
+        Ok(healthy)
     }
 }
 

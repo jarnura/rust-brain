@@ -77,6 +77,12 @@ class ApiClient {
         return this._get('/health');
     }
 
+    // ------------------------------------------------------------------ ingestion
+
+    getIngestionProgress() {
+        return this._get('/api/ingestion/progress');
+    }
+
     // ------------------------------------------------------------------ search
 
     /**

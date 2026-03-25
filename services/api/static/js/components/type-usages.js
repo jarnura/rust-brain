@@ -91,7 +91,7 @@ export function init(pane) {
       resultsEl.innerHTML = usages.map((u, i) => {
         const fqn  = u.fqn  ?? u.name ?? '(unknown)';
         const kind = u.kind ?? '';
-        const file = u.file ?? u.location?.file ?? '';
+        const file = u.file_path ?? u.file ?? u.location?.file ?? '';
         const line = u.line ?? u.location?.line ?? '';
         const loc  = file ? `${file}${line ? ':' + line : ''}` : '';
         return `

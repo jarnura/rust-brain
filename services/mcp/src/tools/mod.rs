@@ -13,10 +13,11 @@ pub mod search_code;
 use crate::client::ApiClient;
 use crate::error::Result;
 use serde_json::Value;
+use tracing::{debug, info, instrument, warn};
 
 /// Get all tool definitions
 pub fn all_definitions() -> Vec<Value> {
-    vec![
+    let definitions = vec![
         search_code::definition(),
         get_function::definition(),
         get_callers::definition(),
@@ -24,15 +25,19 @@ pub fn all_definitions() -> Vec<Value> {
         find_type_usages::definition(),
         get_module_tree::definition(),
         query_graph::definition(),
-    ]
+    ];
+    debug!(count = definitions.len(), "Returning tool definitions");
+    definitions
 }
 
 /// Execute a tool by name
+#[instrument(skip(client), fields(tool = %name))]
 pub async fn execute_tool(
     client: &ApiClient,
     name: &str,
     arguments: Value,
 ) -> Result<String> {
+    info!("Executing tool: {}", name);
     match name {
         "search_code" => {
             let request: search_code::SearchCodeRequest = serde_json::from_value(arguments)?;
@@ -62,10 +67,13 @@ pub async fn execute_tool(
             let request: query_graph::QueryGraphRequest = serde_json::from_value(arguments)?;
             query_graph::execute(client, request).await
         }
-        _ => Err(crate::error::McpError::InvalidRequest(format!(
-            "Unknown tool: {}",
-            name
-        ))),
+        unknown => {
+            warn!(tool = %unknown, "Unknown tool requested");
+            Err(crate::error::McpError::InvalidRequest(format!(
+                "Unknown tool: {}",
+                unknown
+            )))
+        }
     }
 }
 

@@ -231,7 +231,7 @@ class ChatPanel {
         this._scrollToBottom();
     }
 
-    _onComplete({ message, response }) {
+    _onComplete({ message, response, source }) {
         // Update bubble with accumulated tokens or event content — but don't finalize yet.
         // Multi-step responses (tool call → text) emit multiple completes.
         const content = this._currentTokens || message || response || '';
@@ -240,6 +240,11 @@ class ChatPanel {
             const bubble = this._currentAssistantEl.querySelector('.chat-bubble');
             bubble.innerHTML = renderMarkdown(content);
             this._highlightCode(bubble);
+        }
+
+        // Update source badge if provided
+        if (source && this._currentAssistantEl) {
+            this._setSourceBadge(this._currentAssistantEl, source);
         }
 
         // Finalize running tool indicators for this step
@@ -252,7 +257,11 @@ class ChatPanel {
         this._scrollToBottom();
     }
 
-    _onDone() {
+    _onDone({ source } = {}) {
+        // Update source badge on final done event
+        if (source && this._currentAssistantEl) {
+            this._setSourceBadge(this._currentAssistantEl, source);
+        }
         // Session went idle — generation is fully complete
         this._finalizeStreaming();
     }
@@ -320,14 +329,15 @@ class ChatPanel {
         this._scrollToBottom();
     }
 
-    _createAssistantBubble() {
+    _createAssistantBubble(source) {
         const id = generateId();
         const el = document.createElement('div');
         el.className = 'chat-message chat-message--assistant';
         el.id = id;
+        const sourceTag = source ? this._sourceTag(source) : '';
         el.innerHTML = `
             <div class="chat-bubble"><span class="spinner"></span></div>
-            <div class="chat-meta">${formatTime(new Date())}</div>`;
+            <div class="chat-meta">${sourceTag}${formatTime(new Date())}</div>`;
 
         this._els.messagesArea.appendChild(el);
         this._messages.push({ id, role: 'assistant', content: '', timestamp: Date.now() });
@@ -393,6 +403,25 @@ class ChatPanel {
 
             const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
             resultDiv.innerHTML = `<pre>${escapeHtml(resultStr)}</pre>`;
+        }
+    }
+
+    _sourceTag(source) {
+        const label = source === 'ollama' ? 'via Ollama' : 'via OpenCode';
+        const cls = source === 'ollama' ? 'chat-source--ollama' : 'chat-source--opencode';
+        return `<span class="chat-source ${cls}">${escapeHtml(label)}</span> `;
+    }
+
+    _setSourceBadge(messageEl, source) {
+        const meta = messageEl.querySelector('.chat-meta');
+        if (!meta) return;
+        // Replace existing badge or prepend one
+        const existing = meta.querySelector('.chat-source');
+        if (existing) {
+            existing.className = `chat-source ${source === 'ollama' ? 'chat-source--ollama' : 'chat-source--opencode'}`;
+            existing.textContent = source === 'ollama' ? 'via Ollama' : 'via OpenCode';
+        } else {
+            meta.insertAdjacentHTML('afterbegin', this._sourceTag(source));
         }
     }
 
