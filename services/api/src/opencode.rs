@@ -39,6 +39,32 @@ pub struct Message {
     pub id: String,
     pub role: String,
     pub parts: Vec<MessagePart>,
+    #[serde(default)]
+    pub time: Option<MessageTime>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageTime {
+    pub created: Option<i64>,
+}
+
+/// Response from OpenCode's message list endpoint.
+/// Shape: `[{info: {...}, parts: [...]}, ...]`
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageListEntry {
+    pub info: MessageInfo,
+    pub parts: Vec<MessagePart>,
+}
+
+impl From<MessageListEntry> for Message {
+    fn from(entry: MessageListEntry) -> Self {
+        Message {
+            id: entry.info.id,
+            role: entry.info.role.unwrap_or_else(|| "user".to_string()),
+            parts: entry.parts,
+            time: entry.info.time,
+        }
+    }
 }
 
 /// Response from OpenCode's send_message endpoint.
@@ -55,6 +81,8 @@ pub struct MessageInfo {
     pub role: Option<String>,
     #[serde(rename = "sessionID")]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub time: Option<MessageTime>,
 }
 
 impl SendMessageResponse {
@@ -63,6 +91,7 @@ impl SendMessageResponse {
             id: self.info.id,
             role: self.info.role.unwrap_or_else(|| "assistant".to_string()),
             parts: self.parts,
+            time: self.info.time,
         }
     }
 }
@@ -294,9 +323,11 @@ impl OpenCodeClient {
             .send()
             .await
             .context("get_messages request failed")?;
-        resp.error_for_status()?
-            .json::<Vec<Message>>()
+        let entries = resp
+            .error_for_status()?
+            .json::<Vec<MessageListEntry>>()
             .await
-            .context("get_messages parse failed")
+            .context("get_messages parse failed")?;
+        Ok(entries.into_iter().map(Message::from).collect())
     }
 }
