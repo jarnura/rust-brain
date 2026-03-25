@@ -199,8 +199,14 @@ class ChatPanel {
     }
 
     async _createNewSession() {
+        // Prompt for session name
+        const title = prompt('Enter session name:', '');
+        if (title === null) return; // User cancelled
+        
+        const sessionTitle = title.trim() || `Session ${new Date().toLocaleDateString()}`;
+        
         try {
-            const session = await this._api.createSession({ title: 'New Session' });
+            const session = await this._api.createSession({ title: sessionTitle });
             this._state.setCurrentSession(session);
             this._messages = [];
             this._els.messagesArea.innerHTML = '';
