@@ -285,7 +285,81 @@ free -h
              capabilities: [gpu]
    ```
 
-### 4. Qdrant Collection Not Found
+### 4. Ingestion OOM with Large Crates
+
+If ingestion runs out of memory when processing large codebases with `cargo expand`:
+
+**Symptoms:**
+- Ingestion process killed during expand stage
+- System becomes unresponsive during batch processing
+
+**Fix:**
+The ingestion pipeline now streams expanded sources to cache files instead of loading everything into memory. Ensure you're using the latest version. For very large monorepos:
+
+```bash
+# Reduce batch size in .env
+EMBED_BATCH_SIZE=8
+# Run with single parallel job
+PARALLEL_JOBS=1
+```
+
+### 5. Feature Flags Not Propagating (olap/frm)
+
+If `cargo expand` fails due to missing features:
+
+**Symptoms:**
+- Expand errors about undefined features
+- Conditional compilation not working
+
+**Fix:**
+The pipeline now pre-patches `Cargo.toml` to enable required features before expansion. For custom features:
+
+```bash
+# In ingestion config
+REQUIRED_FEATURES=olap,frm
+```
+
+### 6. Chat Operations Timeout
+
+If chat requests timeout during long-running queries:
+
+**Symptoms:**
+- Chat returns timeout errors
+- Long queries never complete
+
+**Fix:**
+Timeouts have been increased to 10 minutes. If you need longer:
+
+```bash
+# In .env
+CHAT_TIMEOUT=900  # 15 minutes
+```
+
+### 7. Ingestion Appears Stuck
+
+If ingestion appears to hang without progress:
+
+**Symptoms:**
+- No log output for extended periods
+- Process not using CPU
+
+**Diagnosis:**
+The stuck detector now waits 10 minutes before warning. Large crates can legitimately take time.
+
+**Fix:**
+If genuinely stuck after 10+ minutes:
+```bash
+# Check process is still running
+ps aux | grep rustbrain
+
+# Check for zombie cargo expand processes
+ps aux | grep cargo
+
+# Restart ingestion with verbose logging
+rustbrain-ingestion -v --stages expand,parse
+```
+
+### 8. Qdrant Collection Not Found
 
 **Symptoms:**
 - 404 errors when querying vectors
@@ -303,7 +377,7 @@ curl -s http://localhost:6333/collections | jq '.'
 bash scripts/init-qdrant.sh
 ```
 
-### 5. Postgres Connection Refused
+### 9. Postgres Connection Refused
 
 **Symptoms:**
 - Connection errors from services
@@ -512,8 +586,8 @@ Key variables in `.env`:
 | `POSTGRES_DB` | rustbrain | Database name |
 | `NEO4J_PASSWORD` | <your-password> | Neo4j password |
 | `GRAFANA_PASSWORD` | rustbrain | Grafana admin password |
-| `EMBEDDING_MODEL` | nomic-embed-text | Embedding model |
-| `EMBEDDING_DIMENSIONS` | 768 | Vector dimensions |
+| `EMBEDDING_MODEL` | qwen3-embedding:4b | Embedding model |
+| `EMBEDDING_DIMENSIONS` | 2560 | Vector dimensions |
 | `CODE_MODEL` | codellama:7b | Code understanding model |
 | `EMBED_BATCH_SIZE` | 32 | Concurrent embeddings |
 | `NEO4J_BATCH_SIZE` | 1000 | Concurrent graph writes |
@@ -549,3 +623,6 @@ curl -X POST http://localhost:6333/collections/code_embeddings/snapshots
 # Download snapshot
 curl http://localhost:6333/collections/code_embeddings/snapshots > qdrant_snapshot.tar
 ```
+snapshots > qdrant_snapshot.tar
+```
+

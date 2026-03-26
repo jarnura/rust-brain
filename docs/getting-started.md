@@ -63,8 +63,8 @@ NEO4J_PASSWORD=<your-password>
 GRAFANA_PASSWORD=rustbrain
 
 # AI Models
-EMBEDDING_MODEL=nomic-embed-text
-EMBEDDING_DIMENSIONS=768
+EMBEDDING_MODEL=qwen3-embedding:4b
+EMBEDDING_DIMENSIONS=2560
 CODE_MODEL=codellama:7b
 
 # Performance tuning

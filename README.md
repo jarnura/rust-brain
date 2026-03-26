@@ -183,7 +183,7 @@ See [docs/opencode-integration.md](./docs/opencode-integration.md) for architect
 - **Triple storage**: Neo4j (graph traversal) + Qdrant (semantic search) + Postgres (raw data) — each DB does what it's best at
 - **Dual parsing**: tree-sitter (fast skeleton) + syn (deep analysis) — speed where possible, accuracy where needed
 - **Lazy monomorphization**: Store generics as-is, index concrete call sites, resolve on query — avoids compilation cost
-- **Local embeddings**: Ollama for code embeddings — full data privacy, no external API dependency
+- **Local embeddings**: Ollama for code embeddings (qwen3-embedding:4b, 2560 dims) — full data privacy, no external API dependency
 - **Monorepo-first**: FQN scheme and graph schema support multi-repo with zero schema changes
 - **Streaming responses**: SSE-based MCP transport for real-time tool invocations in IDEs
 - **Model flexibility**: LiteLLM routing supports Anthropic, OpenAI, local models with transparent fallbacks

@@ -79,6 +79,20 @@ phases:
       streaming_responses: ENABLED (SSE for chat, async tool invocations)
       tool_call_visibility: COMPLETE (render tool invocations + results in UI)
 
+  PHASE_6:
+    name: "Production Hardening"
+    status: PASSED
+    completed: 2026-03-27T03:30:00+05:30
+    details:
+      embedding_model: UPGRADED (qwen3-embedding:4b, 2560 dims, was nomic-embed-text 768 dims)
+      feature_propagation: FIXED (pre-patch Cargo.toml for olap/frm before cargo expand)
+      body_source_storage: EXPANDED (MAX_BODY_SOURCE_LEN 50000 bytes, was 200)
+      oom_prevention: IMPLEMENTED (stream expanded sources to cache files, batch processing)
+      stuck_detector: TUNED (threshold 600s/10min, was 120s/2min)
+      chat_session_management: IMPLEMENTED (session dropdown, "+ New" button, message persistence)
+      opencode_integration: FIXED (model format uses "/" not ":", correct API endpoint, MessageListEntry parsing)
+      timeouts: INCREASED (10 min for chat, was 2 min)
+
 # INFRASTRUCTURE STATUS
 infrastructure:
   postgres:
