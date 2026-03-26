@@ -16,7 +16,7 @@ class ApiClient {
     constructor(baseUrl) {
         this.baseUrl = baseUrl || window.location.origin;
         this.defaultTimeout = 30_000;
-        this.chatTimeout = 120_000;
+        this.chatTimeout = 300_000;  // 5 minutes for long LLM responses
     }
 
     // ------------------------------------------------------------------ core
