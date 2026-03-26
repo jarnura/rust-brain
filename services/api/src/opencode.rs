@@ -154,7 +154,7 @@ pub struct OpenCodeClient {
 impl OpenCodeClient {
     pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))  // 5 minutes for long LLM responses
+            .timeout(Duration::from_secs(600))  // 10 minutes for long LLM responses
             .build()
             .expect("Failed to build HTTP client");
         Self {
