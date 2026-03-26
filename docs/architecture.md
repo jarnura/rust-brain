@@ -32,7 +32,7 @@ graph TB
     end
 
     subgraph "API Layer"
-        API[Tool API :8080]
+        API[Tool API :8088]
     end
 
     subgraph "Observability"

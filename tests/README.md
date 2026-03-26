@@ -51,7 +51,7 @@ cargo test
 ### Services Checked
 
 - PostgreSQL (5432)
-- pgweb (8081)
+- pgweb (8085)
 - Neo4j HTTP (7474) and Bolt (7687)
 - Qdrant REST (6333) and gRPC (6334)
 - Ollama (11434)
@@ -120,7 +120,7 @@ cargo test
 ./tests/integration/test_api.sh
 ```
 
-Note: API tests require the Tool API service running on port 8080.
+Note: API tests require the Tool API service running on port 8088.
 
 ### MCP Server Tests
 

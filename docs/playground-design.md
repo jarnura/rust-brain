@@ -429,7 +429,7 @@ Configuration options for the playground and connected services.
 │  │  Connection Settings                                      [Save]  │  │
 │  ├───────────────────────────────────────────────────────────────────┤  │
 │  │                                                                    │  │
-│  │  Tool API URL         [http://localhost:8080            ] [Test]  │  │
+│  │  Tool API URL         [http://localhost:8088            ] [Test]  │  │
 │  │  Neo4j URL            [bolt://localhost:7687           ] [Test]  │  │
 │  │  Qdrant URL           [http://localhost:6333           ] [Test]  │  │
 │  │  Ollama URL           [http://localhost:11434          ] [Test]  │  │
@@ -589,7 +589,7 @@ For a more polished UI with better UX:
 
 | Endpoint | Description |
 |----------|-------------|
-| `ws://localhost:8081/playground/ws` | Real-time updates |
+| `ws://localhost:8088/playground/ws` | Real-time updates |
 
 **Message Types:**
 

@@ -32,8 +32,8 @@ phases:
       qdrant: RUNNING (2 collections initialized)
       ollama: RUNNING (nomic-embed-text + codellama:7b)
       prometheus: RUNNING
-      grafana: RUNNING (4 dashboards)
-      pgweb: RUNNING (port 8082)
+      grafana: RUNNING (3 dashboards)
+      pgweb: RUNNING (port 8085)
 
   PHASE_2:
     name: "Ingestion Pipeline"
@@ -111,15 +111,15 @@ infrastructure:
   grafana:
     status: running
     port: 3000
-    dashboards: 4
-  
+    dashboards: 3
+
   pgweb:
     status: running
-    port: 8082
-  
+    port: 8085
+
   api:
     status: built
-    port: 8080
+    port: 8088
     endpoints: 9
 
 # CODE STATISTICS
@@ -167,13 +167,13 @@ next_steps:
 endpoints:
   playground_ui: http://localhost:8088/playground
   opencode_ide: http://localhost:4096
-  litellm_proxy: http://localhost:4000
+  litellm_proxy: (external — https://grid.ai.juspay.net)
   mcp_sse_server: ws://localhost:3001
   tool_api_rest: http://localhost:8088/tools
   grafana: http://localhost:3000
   neo4j_browser: http://localhost:7474
   qdrant_dashboard: http://localhost:6333/dashboard
-  pgweb: http://localhost:8082
+  pgweb: http://localhost:8085
   prometheus: http://localhost:9090
   ollama_api: http://localhost:11434
 

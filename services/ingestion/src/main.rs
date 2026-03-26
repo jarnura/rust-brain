@@ -6,14 +6,37 @@
 //!
 //! ```bash
 //! # Run full pipeline on a crate
-//! rustbrain-ingestion --crate-path /path/to/crate
+//! rustbrain-ingestion -c /path/to/crate -d postgres://localhost/rustbrain
 //!
-//! # Run specific stages
-//! rustbrain-ingestion --crate-path /path/to/crate --stages expand,parse
+//! # Run specific stages only
+//! rustbrain-ingestion --crate-path /path/to/crate --stages expand,parse \
+//!     --database-url postgres://localhost/rustbrain
 //!
 //! # Dry run (no database writes)
 //! rustbrain-ingestion --crate-path /path/to/crate --dry-run
+//!
+//! # With Neo4j and embedding service
+//! rustbrain-ingestion -c /path/to/crate \
+//!     --neo4j-url bolt://localhost:7687 \
+//!     --embedding-url http://localhost:11434
+//!
+//! # Stop on first error, limit concurrency, enable debug output
+//! rustbrain-ingestion -c /path/to/crate --fail-fast --max-concurrency 2 --verbose
 //! ```
+//!
+//! # Flags
+//!
+//! | Flag | Short | Default | Env var |
+//! |------|-------|---------|---------|
+//! | `--crate-path` | `-c` | `.` | — |
+//! | `--database-url` | `-d` | — | `DATABASE_URL` (required) |
+//! | `--neo4j-url` | — | — | `NEO4J_URL` |
+//! | `--embedding-url` | — | — | `EMBEDDING_URL` |
+//! | `--stages` | `-s` | all | — |
+//! | `--dry-run` | — | false | — |
+//! | `--fail-fast` | — | false | — |
+//! | `--max-concurrency` | — | 4 | — |
+//! | `--verbose` | `-v` | false | — |
 
 
 pub mod parsers;

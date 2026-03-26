@@ -120,7 +120,7 @@ Tool API             ✓ OK
 | Grafana | http://localhost:3000 | admin / rustbrain |
 | Neo4j Browser | http://localhost:7474 | neo4j / <your-password> |
 | Qdrant Dashboard | http://localhost:6333/dashboard | None |
-| Pgweb | http://localhost:8081 | Auto-connected |
+| Pgweb | http://localhost:8085 | Auto-connected |
 | Prometheus | http://localhost:9090 | None |
 
 ## First Ingestion Example
@@ -182,7 +182,7 @@ curl -s http://localhost:6333/collections/code_embeddings | jq '.result.points_c
 ### Check API Health
 
 ```bash
-curl http://localhost:8080/health | jq .
+curl http://localhost:8088/health | jq .
 ```
 
 Expected response:
@@ -205,7 +205,7 @@ Expected response:
 Search for functions using natural language:
 
 ```bash
-curl -X POST http://localhost:8080/tools/search_semantic \
+curl -X POST http://localhost:8088/tools/search_semantic \
   -H "Content-Type: application/json" \
   -d '{
     "query": "function that deserializes JSON",
@@ -238,7 +238,7 @@ Response:
 Retrieve full details for a specific function:
 
 ```bash
-curl "http://localhost:8080/tools/get_function?fqn=serde_json::from_str" | jq .
+curl "http://localhost:8088/tools/get_function?fqn=serde_json::from_str" | jq .
 ```
 
 Response:
@@ -267,7 +267,7 @@ Response:
 Find all functions that call a specific function:
 
 ```bash
-curl "http://localhost:8080/tools/get_callers?fqn=serde_json::from_str&depth=2" | jq .
+curl "http://localhost:8088/tools/get_callers?fqn=serde_json::from_str&depth=2" | jq .
 ```
 
 Response:
@@ -287,7 +287,7 @@ Response:
 Find all types implementing a trait:
 
 ```bash
-curl "http://localhost:8080/tools/get_trait_impls?trait_name=Serialize" | jq .
+curl "http://localhost:8088/tools/get_trait_impls?trait_name=Serialize" | jq .
 ```
 
 ### Query the Graph Directly
@@ -295,7 +295,7 @@ curl "http://localhost:8080/tools/get_trait_impls?trait_name=Serialize" | jq .
 Execute raw Cypher queries:
 
 ```bash
-curl -X POST http://localhost:8080/tools/query_graph \
+curl -X POST http://localhost:8088/tools/query_graph \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (f:Function)-[:CALLS]->(g:Function) WHERE f.name CONTAINS \"parse\" RETURN f.name, g.name LIMIT 10"

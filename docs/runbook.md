@@ -412,7 +412,7 @@ docker-compose up -d grafana
 | Service | Port | Protocol | Purpose |
 |---------|------|----------|---------|
 | Postgres | 5432 | TCP | SQL database |
-| Pgweb | 8081 | HTTP | Postgres web UI |
+| Pgweb | 8085 | HTTP | Postgres web UI |
 | Neo4j HTTP | 7474 | HTTP | Neo4j Browser |
 | Neo4j Bolt | 7687 | Bolt | Cypher protocol |
 | Qdrant REST | 6333 | HTTP | Vector DB API |

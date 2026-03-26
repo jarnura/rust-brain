@@ -45,7 +45,7 @@ A production-grade Rust code intelligence platform. Ingests Rust codebases and b
       │  └──────────┘ └──────────┘ └──────────┘     │
       │  ┌──────────┐ ┌──────────────────────────┐  │
       │  │  Ollama  │ │  Prometheus → Grafana    │  │
-      │  │ +Models  │ │  (6 dashboards)          │  │
+      │  │ +Models  │ │  (3 dashboards)          │  │
       │  └──────────┘ └──────────────────────────┘  │
       └─────────────────────────────────────────────┘
 ```
@@ -60,9 +60,42 @@ cp .env.example .env
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."  # Optional: for alternative models
 
+# Optional: enable HTTP basic auth on the API server
+export OPENCODE_AUTH_USER="admin"
+export OPENCODE_AUTH_PASS="..."
+
 # Start the platform
 bash scripts/start.sh
 bash scripts/healthcheck.sh
+```
+
+## Ingestion CLI
+
+```
+rustbrain-ingestion [OPTIONS]
+```
+
+| Flag | Short | Default | Env Var | Description |
+|------|-------|---------|---------|-------------|
+| `--crate-path <PATH>` | `-c` | `.` | — | Path to the Rust crate to ingest |
+| `--database-url <URL>` | `-d` | — | `DATABASE_URL` | Postgres connection URL (required) |
+| `--neo4j-url <URL>` | — | — | `NEO4J_URL` | Neo4j bolt URL |
+| `--embedding-url <URL>` | — | — | `EMBEDDING_URL` | Ollama embedding endpoint |
+| `--stages <STAGES>` | `-s` | all | — | Comma-separated list of stages to run |
+| `--dry-run` | — | `false` | — | Parse and validate without writing to DBs |
+| `--fail-fast` | — | `false` | — | Stop on first stage error |
+| `--max-concurrency <N>` | — | `4` | — | Maximum parallel tasks |
+| `--verbose` | `-v` | `false` | — | Enable debug logging |
+
+```bash
+# Ingest a crate with custom concurrency
+rustbrain-ingestion -c ./my-crate -d postgres://... --max-concurrency 8
+
+# Dry run to validate parsing only
+rustbrain-ingestion -c ./my-crate --dry-run -v
+
+# Run specific stages only
+rustbrain-ingestion -c ./my-crate -s parse,extract,embed
 ```
 
 ## Service Endpoints
@@ -71,12 +104,12 @@ bash scripts/healthcheck.sh
 |---------|-----|---------|
 | **rust-brain Playground** | http://localhost:8088/playground | Interactive UI for code exploration |
 | **OpenCode IDE** | http://localhost:4096 | AI IDE with MCP integration |
-| **LiteLLM Proxy** | http://localhost:4000 | Model routing & fallbacks |
+| **LiteLLM Proxy** | (external — not a local container) | Model routing & fallbacks |
 | **MCP SSE Server** | ws://localhost:3001 | Streaming tool transport |
 | Grafana | http://localhost:3000 | Observability dashboards |
 | Neo4j Browser | http://localhost:7474 | Graph exploration |
 | Qdrant Dashboard | http://localhost:6333/dashboard | Vector DB management |
-| Pgweb | http://localhost:8081 | Postgres query UI |
+| Pgweb | http://localhost:8085 | Postgres query UI |
 | Prometheus | http://localhost:9090 | Metrics & alerting |
 | Ollama API | http://localhost:11434 | Embedding & LLM inference |
 | Tool API | http://localhost:8088/tools | REST endpoints for code tools |

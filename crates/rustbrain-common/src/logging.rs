@@ -121,8 +121,10 @@ pub fn init_logging_with_directives(default_level: Level, extra_directives: &[&s
     guard
 }
 
+// `rolling::never` means a single fixed file with no rotation or date suffix.
 fn make_file_appender(path: &str) -> (tracing_appender::non_blocking::NonBlocking, WorkerGuard) {
     let p = Path::new(path);
+    // Split into parent dir + filename because tracing_appender requires them separately.
     let dir = p.parent().unwrap_or_else(|| Path::new("."));
     let filename = p
         .file_name()

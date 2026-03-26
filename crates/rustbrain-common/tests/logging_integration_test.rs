@@ -1,9 +1,10 @@
-//! Integration tests verifying logging output for key public functions.
+//! Integration tests for key public functions in `rustbrain-common`.
 //!
-//! Uses `tracing-test` to capture log records emitted during each call and
-//! assert that the expected structured fields / messages are present.
-//! Every test is independent: `#[traced_test]` installs a per-test subscriber
-//! so there is no global-state cross-contamination between tests.
+//! NOTE: These tests use `tracing_test::{traced_test, logs_contain}` which
+//! requires `tracing-test` in `[dev-dependencies]` of Cargo.toml, and the
+//! production methods under test must emit the asserted `trace!`/`debug!`
+//! log records.  Both prerequisites are currently absent — tests will not
+//! compile until they are added.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sanity: verify tracing-test subscriber captures logs at all levels
@@ -311,7 +312,8 @@ fn resolution_quality_invalid_input_emits_warn() {
 #[traced_test]
 #[test]
 fn resolution_quality_from_str_entry_trace_always_emitted() {
-    // The entry trace! is emitted before the match, regardless of outcome.
+    // Asserts a trace! record emitted before the match — requires production
+    // code to call trace!("ResolutionQuality::from_str entry") before the match.
     let _ = "analyzed".parse::<ResolutionQuality>();
     assert!(logs_contain("ResolutionQuality::from_str entry"));
 }

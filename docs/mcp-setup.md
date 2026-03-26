@@ -43,7 +43,7 @@ docker compose up -d
 
 ```bash
 # Check health
-curl http://localhost:8080/health
+curl http://localhost:8088/health
 
 # Run integration tests
 ./scripts/test-mcp.sh
@@ -70,7 +70,7 @@ Create a `.mcp.json` file in your repository root:
   "mcpServers": {
     "rust-brain": {
       "type": "http",
-      "url": "http://localhost:8080",
+      "url": "http://localhost:8088",
       "tools": [
         {
           "name": "search_semantic",
@@ -232,7 +232,7 @@ For Claude Code, add to your global MCP configuration:
   "servers": {
     "rust-brain": {
       "type": "http",
-      "url": "http://localhost:8080",
+      "url": "http://localhost:8088",
       "enabled": true
     }
   }
@@ -245,7 +245,7 @@ Configure the MCP server via environment variables in `.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_PORT` | `8080` | HTTP API port |
+| `API_PORT` | `8088` | Host port mapped to the API container |
 | `DATABASE_URL` | - | PostgreSQL connection string |
 | `NEO4J_URI` | `bolt://neo4j:7687` | Neo4j connection URI |
 | `NEO4J_USER` | `neo4j` | Neo4j username |
@@ -259,7 +259,7 @@ Configure the MCP server via environment variables in `.env`:
 ### search_semantic
 
 ```bash
-curl -X POST http://localhost:8080/tools/search_semantic \
+curl -X POST http://localhost:8088/tools/search_semantic \
   -H "Content-Type: application/json" \
   -d '{
     "query": "function that parses JSON string into struct",
@@ -270,37 +270,37 @@ curl -X POST http://localhost:8080/tools/search_semantic \
 ### get_function
 
 ```bash
-curl "http://localhost:8080/tools/get_function?fqn=serde_json::from_str&include_body=true"
+curl "http://localhost:8088/tools/get_function?fqn=serde_json::from_str&include_body=true"
 ```
 
 ### get_callers
 
 ```bash
-curl "http://localhost:8080/tools/get_callers?fqn=my_app::process_data&depth=2"
+curl "http://localhost:8088/tools/get_callers?fqn=my_app::process_data&depth=2"
 ```
 
 ### get_trait_impls
 
 ```bash
-curl "http://localhost:8080/tools/get_trait_impls?trait_name=serde::Serialize&include_methods=true"
+curl "http://localhost:8088/tools/get_trait_impls?trait_name=serde::Serialize&include_methods=true"
 ```
 
 ### find_usages_of_type
 
 ```bash
-curl "http://localhost:8080/tools/find_usages_of_type?type_name=my_app::models::User"
+curl "http://localhost:8088/tools/find_usages_of_type?type_name=my_app::models::User"
 ```
 
 ### get_module_tree
 
 ```bash
-curl "http://localhost:8080/tools/get_module_tree?crate=serde_json&include_items=true"
+curl "http://localhost:8088/tools/get_module_tree?crate=serde_json&include_items=true"
 ```
 
 ### query_graph
 
 ```bash
-curl -X POST http://localhost:8080/tools/query_graph \
+curl -X POST http://localhost:8088/tools/query_graph \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (f:Function)-[:CALLS]->(c:Function) WHERE f.fqn STARTS WITH $prefix RETURN f.fqn, c.fqn LIMIT 10",
@@ -313,7 +313,7 @@ curl -X POST http://localhost:8080/tools/query_graph \
 The MCP server exposes Prometheus metrics at `/metrics`:
 
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:8088/metrics
 ```
 
 Key metrics:
@@ -354,7 +354,7 @@ View in Grafana at http://localhost:3000
 ```
 ┌──────────────────┐     ┌─────────────────┐
 │   Claude Code    │────▶│   MCP Server    │
-│   (MCP Client)   │     │   (HTTP :8080)  │
+│   (MCP Client)   │     │   (HTTP :8088)  │
 └──────────────────┘     └────────┬────────┘
                                   │
           ┌───────────────────────┼───────────────────────┐

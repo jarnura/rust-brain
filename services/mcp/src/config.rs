@@ -1,4 +1,34 @@
 //! Configuration for the MCP server
+//!
+//! # Usage
+//!
+//! ```bash
+//! # Default stdio transport (used by Claude Desktop / MCP clients)
+//! rustbrain-mcp
+//!
+//! # Override API base URL
+//! rustbrain-mcp --api-base-url http://localhost:8088
+//!
+//! # SSE transport (requires sse feature flag at compile time)
+//! rustbrain-mcp --transport sse --port 3001
+//!
+//! # Tune result limits
+//! rustbrain-mcp --max-search-results 100 --default-search-limit 20
+//! ```
+//!
+//! # Flags
+//!
+//! | Flag | Default | Env var |
+//! |------|---------|---------|
+//! | `--transport` | `stdio` | `MCP_TRANSPORT` |
+//! | `--api-base-url` | `http://localhost:8088` | `API_BASE_URL` |
+//! | `--http-timeout` | `30` (seconds) | `HTTP_TIMEOUT` |
+//! | `--port` *(sse feature)* | `3001` | `MCP_PORT` |
+//! | `--max-search-results` | `50` | `MAX_SEARCH_RESULTS` |
+//! | `--default-search-limit` | `10` | `DEFAULT_SEARCH_LIMIT` |
+//! | `--opencode-host` | `http://opencode:4096` | `OPENCODE_HOST` |
+//! | `--opencode-auth-user` | — | `OPENCODE_AUTH_USER` |
+//! | `--opencode-auth-pass` | — | `OPENCODE_AUTH_PASS` |
 
 use clap::Parser;
 use tracing::{debug, info};
