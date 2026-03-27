@@ -10,28 +10,34 @@
             darkMode: 'class',
             theme: {
                 extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
                     colors: {
                         dark: {
-                            50: '#f8fafc',
-                            100: '#f1f5f9',
-                            200: '#e2e8f0',
-                            300: '#cbd5e1',
-                            400: '#94a3b8',
-                            500: '#64748b',
-                            600: '#475569',
-                            700: '#334155',
-                            800: '#1e293b',
-                            900: '#0f172a',
-                            950: '#020617',
+                            50:  '#fafafa',
+                            100: '#fafafa',
+                            200: '#e4e4e7',
+                            300: '#d4d4d8',
+                            400: '#a1a1aa',
+                            500: '#71717a',
+                            600: '#444444',
+                            700: '#333333',
+                            800: '#222222',
+                            900: '#111111',
+                            950: '#0a0a0a',
                         }
                     }
                 }
             }
         }
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
 </head>
-<body class="bg-dark-950 text-dark-100 min-h-screen">
+<body class="bg-dark-950 text-dark-100 min-h-screen font-sans">
     <!-- Navigation -->
     <nav class="bg-dark-900 border-b border-dark-800">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -41,6 +47,17 @@
                         <span class="text-2xl">🧠</span>
                         <span class="ml-2 text-xl font-bold text-white">Rust Brain</span>
                     </div>
+                <!-- Mobile hamburger (hidden md+) -->
+                    <details class="nav-mobile-details md:hidden ml-3">
+                        <summary class="nav-mobile-summary" aria-label="Open navigation">☰</summary>
+                        <nav class="nav-mobile-dropdown">
+                            <a href="index.html">Dashboard</a>
+                            <a href="playground.html">Query</a>
+                            <a href="audit.html">Audit Trail</a>
+                            <a href="gaps.html" class="active-page">Gap Analysis</a>
+                        </nav>
+                    </details>
+
                     <div class="hidden md:block ml-10">
                         <div class="flex items-baseline space-x-4">
                             <a href="index.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Dashboard</a>
@@ -153,7 +170,7 @@
         <!-- Action Items -->
         <div class="mt-8">
             <h2 class="text-lg font-semibold text-dark-100 mb-4">Action Items</h2>
-            <div class="bg-dark-800 rounded-lg overflow-hidden">
+            <div class="bg-dark-800 rounded-lg overflow-hidden overflow-table-wrap">
                 <table class="min-w-full divide-y divide-dark-700">
                     <thead>
                         <tr class="bg-dark-900">
@@ -356,7 +373,7 @@
                 return `
                     <tr class="hover:bg-dark-700">
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <input type="checkbox" class="rounded bg-dark-700 border-dark-600 text-blue-500 focus:ring-blue-500" ${item.status === 'done' ? 'checked' : ''}>
+                            <input type="checkbox" class="rounded bg-dark-700 border-dark-600 text-indigo-500 focus:ring-indigo-500" ${item.status === 'done' ? 'checked' : ''}>
                         </td>
                         <td class="px-6 py-4 text-sm text-dark-200">${item.action}</td>
                         <td class="px-6 py-4 whitespace-nowrap">

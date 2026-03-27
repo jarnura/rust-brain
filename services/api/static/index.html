@@ -21,10 +21,19 @@
   <!-- Favicon -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
 
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
   <!-- Local styles -->
-  <link rel="stylesheet" href="css/playground.css?v=20260326">
+  <link rel="stylesheet" href="css/playground.css?v=20260327">
 </head>
 <body>
+  <!-- Mobile nav checkbox (CSS-only drawer — no JS) -->
+  <input type="checkbox" id="mobile-nav" aria-hidden="true">
+  <label for="mobile-nav" class="mobile-nav-backdrop" aria-hidden="true"></label>
+
   <!-- Command Palette Overlay -->
   <div id="cmd-palette" class="cmd-palette" role="dialog" aria-label="Command palette" hidden>
     <div class="cmd-palette__backdrop"></div>
@@ -91,6 +100,8 @@
     <main class="main-panel" id="main-panel">
       <!-- Tab Bar -->
       <div class="tab-bar" id="tab-bar" role="tablist">
+        <!-- Hamburger: visible only on mobile (≤768px via CSS) -->
+        <label for="mobile-nav" class="mobile-nav-toggle" aria-label="Open navigation" title="Open navigation">☰</label>
         <button class="tab-bar__tab active" role="tab" data-tab="dashboard" aria-selected="true">Dashboard</button>
         <button class="tab-bar__tab" role="tab" data-tab="search" aria-selected="false">Search</button>
         <button class="tab-bar__tab" role="tab" data-tab="callgraph" aria-selected="false">Call Graph</button>

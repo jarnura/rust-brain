@@ -10,28 +10,34 @@
             darkMode: 'class',
             theme: {
                 extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
                     colors: {
                         dark: {
-                            50: '#f8fafc',
-                            100: '#f1f5f9',
-                            200: '#e2e8f0',
-                            300: '#cbd5e1',
-                            400: '#94a3b8',
-                            500: '#64748b',
-                            600: '#475569',
-                            700: '#334155',
-                            800: '#1e293b',
-                            900: '#0f172a',
-                            950: '#020617',
+                            50:  '#fafafa',
+                            100: '#fafafa',
+                            200: '#e4e4e7',
+                            300: '#d4d4d8',
+                            400: '#a1a1aa',
+                            500: '#71717a',
+                            600: '#444444',
+                            700: '#333333',
+                            800: '#222222',
+                            900: '#111111',
+                            950: '#0a0a0a',
                         }
                     }
                 }
             }
         }
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
 </head>
-<body class="bg-dark-950 text-dark-100 min-h-screen">
+<body class="bg-dark-950 text-dark-100 min-h-screen font-sans">
     <!-- Navigation -->
     <nav class="bg-dark-900 border-b border-dark-800">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -41,6 +47,17 @@
                         <span class="text-2xl">🧠</span>
                         <span class="ml-2 text-xl font-bold text-white">Rust Brain</span>
                     </div>
+                <!-- Mobile hamburger (hidden md+) -->
+                    <details class="nav-mobile-details md:hidden ml-3">
+                        <summary class="nav-mobile-summary" aria-label="Open navigation">☰</summary>
+                        <nav class="nav-mobile-dropdown">
+                            <a href="index.html">Dashboard</a>
+                            <a href="playground.html">Query</a>
+                            <a href="audit.html" class="active-page">Audit Trail</a>
+                            <a href="gaps.html">Gap Analysis</a>
+                        </nav>
+                    </details>
+
                     <div class="hidden md:block ml-10">
                         <div class="flex items-baseline space-x-4">
                             <a href="index.html" class="text-dark-300 hover:bg-dark-800 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Dashboard</a>
@@ -59,18 +76,18 @@
         <!-- Filters -->
         <div class="bg-dark-800 rounded-lg p-6 mb-6">
             <div class="flex flex-wrap items-center gap-4">
-                <div class="flex-1 min-w-64">
+                <div class="flex-1 w-full" style="min-width: min(256px, 100%)">
                     <label class="block text-sm font-medium text-dark-300 mb-2">Search</label>
                     <div class="relative">
                         <svg class="absolute left-3 top-2.5 h-5 w-5 text-dark-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                         </svg>
-                        <input type="text" id="searchInput" placeholder="Search operations..." class="w-full bg-dark-700 border border-dark-600 rounded-md pl-10 pr-3 py-2 text-dark-100 focus:outline-none focus:ring-2 focus:ring-blue-500" onkeyup="filterAuditLog()">
+                        <input type="text" id="searchInput" placeholder="Search operations..." class="w-full bg-dark-700 border border-dark-600 rounded-md pl-10 pr-3 py-2 text-dark-100 focus:outline-none focus:ring-1 focus:ring-indigo-500" onkeyup="filterAuditLog()">
                     </div>
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-dark-300 mb-2">Type</label>
-                    <select id="typeFilter" onchange="filterAuditLog()" class="bg-dark-700 border border-dark-600 rounded-md px-3 py-2 text-dark-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <select id="typeFilter" onchange="filterAuditLog()" class="bg-dark-700 border border-dark-600 rounded-md px-3 py-2 text-dark-100 focus:outline-none focus:ring-1 focus:ring-indigo-500">
                         <option value="all">All Types</option>
                         <option value="ingest">Ingest</option>
                         <option value="query">Query</option>
@@ -80,7 +97,7 @@
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-dark-300 mb-2">Time Range</label>
-                    <select id="timeFilter" onchange="filterAuditLog()" class="bg-dark-700 border border-dark-600 rounded-md px-3 py-2 text-dark-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <select id="timeFilter" onchange="filterAuditLog()" class="bg-dark-700 border border-dark-600 rounded-md px-3 py-2 text-dark-100 focus:outline-none focus:ring-1 focus:ring-indigo-500">
                         <option value="all">All Time</option>
                         <option value="1h">Last Hour</option>
                         <option value="24h">Last 24 Hours</option>
