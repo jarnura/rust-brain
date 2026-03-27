@@ -339,3 +339,43 @@ if (document.readyState === 'loading') {
 } else {
   initPlayground();
 }
+
+// ── Detail Panel Toggle ────────────────────────────────────────────────────
+(function() {
+  function addDetailToggle() {
+    const toggleBtn = document.createElement('button');
+    toggleBtn.id = 'detail-toggle-btn';
+    toggleBtn.innerHTML = '◀ Hide Details';
+    toggleBtn.style.cssText = `
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      z-index: 1000;
+      background: #333;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: #fafafa;
+      cursor: pointer;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    `;
+    
+    toggleBtn.addEventListener('click', () => {
+      const appShell = document.getElementById('app-shell');
+      if (appShell) {
+        appShell.classList.toggle('detail-hidden');
+        const isHidden = appShell.classList.contains('detail-hidden');
+        toggleBtn.innerHTML = isHidden ? '▶ Show Details' : '◀ Hide Details';
+      }
+    });
+    
+    document.body.appendChild(toggleBtn);
+  }
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', addDetailToggle);
+  } else {
+    addDetailToggle();
+  }
+})();

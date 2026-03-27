@@ -1,0 +1,141 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "juspay-grid/glm-latest",
+  "small_model": "juspay-grid/glm-latest",
+  "default_agent": "orchestrator",
+  
+  "mcp": {},
+  
+  "tools": {
+    "knowledge_write*": false,
+    "knowledge_embed*": false,
+    "knowledge_index*": false,
+    "knowledge_delete*": false
+  },
+  
+  "agent": {
+    "orchestrator": {
+      "description": "Master coordinator. Plans work, routes to researcher and explorer, synthesizes results into final output. Never edits files.",
+      "mode": "primary",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:./.opencode/prompts/orchestrator.txt}",
+      "steps": 80,
+      "temperature": 0.3,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "git status": "allow",
+          "git log --oneline*": "allow",
+          "git diff --stat*": "allow",
+          "ls *": "allow",
+          "cat *": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "allow"
+        }
+      },
+      "tools": {
+        "knowledge_query*": false,
+        "knowledge_search*": false,
+        "knowledge_*": false
+      }
+    },
+    
+    "researcher": {
+      "description": "Knowledge retrieval specialist. Queries vector DB, graph DB via MCP. Returns structured findings with sources and confidence.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:./.opencode/agents/researcher.md}",
+      "steps": 30,
+      "temperature": 0.2,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "knowledge_vector_search*": true,
+        "knowledge_graph_query*": true,
+        "knowledge_query*": true,
+        "knowledge_search*": true,
+        "knowledge_get*": true,
+        "knowledge_list*": true,
+        "knowledge_write*": false,
+        "knowledge_embed*": false
+      }
+    },
+    
+    "explorer": {
+      "description": "Codebase and filesystem navigator. Reads files, runs safe read-only commands, explores project structure.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:./.opencode/agents/explorer.md}",
+      "steps": 40,
+      "temperature": 0.1,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "ls *": "allow",
+          "ls": "allow",
+          "find *": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "tree *": "allow",
+          "git status": "allow",
+          "git log *": "allow",
+          "git diff *": "allow",
+          "git branch*": "allow",
+          "cargo metadata*": "allow",
+          "cargo tree*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "knowledge_query*": true,
+        "knowledge_search*": true,
+        "knowledge_get*": true,
+        "knowledge_list*": true,
+        "knowledge_write*": false,
+        "knowledge_embed*": false
+      }
+    }
+  },
+  
+  "command": {
+    "research": {
+      "description": "Ask the researcher agent a specific knowledge question",
+      "template": "Research the following topic deeply using all available knowledge sources:\n\n$ARGUMENTS\n\nReturn structured findings with sources, confidence, and actionable insights.",
+      "agent": "researcher"
+    },
+    "explore": {
+      "description": "Explore the codebase for a specific component or pattern",
+      "template": "Explore the codebase to understand:\n\n$ARGUMENTS\n\nProvide a structural map, key files, entry points, and how the pieces connect.",
+      "agent": "explorer"
+    },
+    "investigate": {
+      "description": "Full investigation: orchestrator runs researcher + explorer in parallel then synthesizes",
+      "template": "Investigate the following thoroughly:\n\n$ARGUMENTS\n\nRun parallel research (knowledge bases) and exploration (codebase) then synthesize a complete, accurate answer.",
+      "agent": "orchestrator"
+    }
+  },
+  
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 12000
+  }
+}
