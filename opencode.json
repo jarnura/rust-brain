@@ -36,11 +36,7 @@
           "*": "allow"
         }
       },
-      "tools": {
-        "knowledge_query*": false,
-        "knowledge_search*": false,
-        "knowledge_*": false
-      }
+      "tools": {}
     },
     
     "researcher": {
@@ -61,14 +57,13 @@
         }
       },
       "tools": {
-        "knowledge_vector_search*": true,
-        "knowledge_graph_query*": true,
-        "knowledge_query*": true,
-        "knowledge_search*": true,
-        "knowledge_get*": true,
-        "knowledge_list*": true,
-        "knowledge_write*": false,
-        "knowledge_embed*": false
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_get_function": true,
+        "mcp_rustbrain_get_callers": true,
+        "mcp_rustbrain_get_trait_impls": true,
+        "mcp_rustbrain_find_type_usages": true,
+        "mcp_rustbrain_get_module_tree": true,
+        "mcp_rustbrain_query_graph": true
       }
     },
     
@@ -105,12 +100,10 @@
         }
       },
       "tools": {
-        "knowledge_query*": true,
-        "knowledge_search*": true,
-        "knowledge_get*": true,
-        "knowledge_list*": true,
-        "knowledge_write*": false,
-        "knowledge_embed*": false
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_get_function": true,
+        "mcp_rustbrain_get_callers": true,
+        "mcp_rustbrain_get_module_tree": true
       }
     }
   },
