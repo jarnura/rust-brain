@@ -43,6 +43,19 @@ pub async fn chat_handler(
     state.metrics.record_request("chat", "POST");
     debug!("Chat request: {:?}", req.message);
 
+    // Check if OpenCode is reachable before attempting to create a session
+    match state.opencode_client.health_check().await {
+        Ok(true) => {}
+        _ => {
+            return Err(AppError::OpenCode(
+                "Chat is unavailable — the OpenCode service is not running. \
+                 Search, call graph, types, traits, and all other code intelligence \
+                 features work without it. To enable chat, start the OpenCode container: \
+                 docker compose up -d opencode".to_string(),
+            ));
+        }
+    }
+
     // Reuse existing session if the frontend passed one; otherwise create a new one.
     let session_id = if let Some(ref sid) = req.session_id {
         if sid.starts_with("ses_") {

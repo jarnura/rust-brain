@@ -361,8 +361,10 @@ if [ "$NEED_RESTORE" = true ]; then
 fi
 
 echo ""
-echo -e "${CYAN}=== Starting databases ===${NC}"
-docker compose up -d postgres neo4j qdrant
+echo -e "${CYAN}=== Starting databases + Ollama ===${NC}"
+# Ollama is required for semantic search (query embedding).
+# CPU-only is fine — single query embedding takes ~200ms on CPU.
+docker compose up -d postgres neo4j qdrant ollama
 
 # Wait for PostgreSQL
 echo -n "  Postgres "
@@ -413,6 +415,54 @@ for i in $(seq 1 30); do
   echo -n "."
   sleep 1
 done
+
+# Wait for Ollama
+OLLAMA_PORT_VAL="${OLLAMA_PORT:-11434}"
+echo -n "  Ollama   "
+for i in $(seq 1 60); do
+  if curl -sf "http://localhost:${OLLAMA_PORT_VAL}/api/tags" &>/dev/null; then
+    echo -e "${GREEN}✓${NC}"
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo -e "${YELLOW}TIMEOUT (non-fatal — search will be unavailable)${NC}"
+    break
+  fi
+  echo -n "."
+  sleep 1
+done
+
+# Pull the embedding model if needed (reads from manifest or .env)
+EMBED_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
+if [ -f "${SNAPSHOT_DIR}/manifest.json" ] && command -v jq &>/dev/null; then
+  MANIFEST_MODEL=$(jq -r '.embedding.model // empty' "${SNAPSHOT_DIR}/manifest.json" 2>/dev/null)
+  if [ -n "$MANIFEST_MODEL" ]; then
+    EMBED_MODEL="$MANIFEST_MODEL"
+  fi
+fi
+
+if curl -sf "http://localhost:${OLLAMA_PORT_VAL}/api/tags" &>/dev/null; then
+  # Check if model is already pulled
+  HAVE_MODEL=$(curl -sf "http://localhost:${OLLAMA_PORT_VAL}/api/tags" 2>/dev/null \
+    | jq -r ".models[]?.name // empty" 2>/dev/null | grep -c "^${EMBED_MODEL}" || true)
+  if [ "$HAVE_MODEL" -eq 0 ]; then
+    echo ""
+    echo -e "${CYAN}=== Pulling embedding model: ${EMBED_MODEL} ===${NC}"
+    echo -e "  ${YELLOW}This is a one-time download (may take a few minutes)${NC}"
+    curl -sf -X POST "http://localhost:${OLLAMA_PORT_VAL}/api/pull" \
+      -d "{\"name\": \"${EMBED_MODEL}\"}" \
+      --no-buffer 2>/dev/null | while read -r line; do
+        STATUS=$(echo "$line" | jq -r '.status // empty' 2>/dev/null)
+        if [ -n "$STATUS" ] && [ "$STATUS" != "null" ]; then
+          printf "\r  %s" "$STATUS"
+        fi
+      done
+    echo ""
+    echo -e "  ${GREEN}✓${NC} Model ${EMBED_MODEL} ready"
+  else
+    echo -e "  ${GREEN}✓${NC} Embedding model ${EMBED_MODEL} already available"
+  fi
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 3: Restore Data (only if needed)

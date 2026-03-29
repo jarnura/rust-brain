@@ -148,46 +148,113 @@ pub async fn search_semantic(
     state.metrics.record_request("search_semantic", "POST");
     debug!("Semantic search for: {}", req.query);
 
-    // Get embedding from Ollama
-    let embedding = get_embedding(&state, &req.query).await?;
+    // Try semantic search via Ollama embedding → Qdrant vector search.
+    // If Ollama is unavailable, fall back to Postgres keyword search.
+    match get_embedding(&state, &req.query).await {
+        Ok(embedding) => {
+            // Vector search path — full semantic similarity
+            let search_request = serde_json::json!({
+                "vector": embedding,
+                "limit": req.limit,
+                "with_payload": true,
+                "score_threshold": req.score_threshold,
+            });
 
-    // Search Qdrant
-    let search_request = serde_json::json!({
-        "vector": embedding,
-        "limit": req.limit,
-        "with_payload": true,
-        "score_threshold": req.score_threshold,
-    });
+            let search_url = format!(
+                "{}/collections/{}/points/search",
+                state.config.qdrant_host,
+                state.config.collection_name
+            );
 
-    let search_url = format!(
-        "{}/collections/{}/points/search",
-        state.config.qdrant_host,
-        state.config.collection_name
-    );
+            let response = state.http_client
+                .post(&search_url)
+                .json(&search_request)
+                .send()
+                .await
+                .map_err(|e| AppError::Qdrant(format!("Failed to search Qdrant: {}", e)))?;
 
-    let response = state.http_client
-        .post(&search_url)
-        .json(&search_request)
-        .send()
-        .await
-        .map_err(|e| AppError::Qdrant(format!("Failed to search Qdrant: {}", e)))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(AppError::Qdrant(format!("Qdrant search failed: {} - {}", status, body)));
+            }
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Qdrant(format!("Qdrant search failed: {} - {}", status, body)));
+            let search_result: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| AppError::Qdrant(format!("Failed to parse Qdrant response: {}", e)))?;
+
+            let results = parse_search_results(&search_result);
+
+            Ok(Json(SearchSemanticResponse {
+                query: req.query,
+                total: results.len(),
+                results,
+            }))
+        }
+        Err(ollama_err) => {
+            // Fallback: keyword search via Postgres when Ollama is unavailable
+            debug!("Ollama unavailable ({}), falling back to keyword search", ollama_err);
+            keyword_search_fallback(&state, &req.query, req.limit).await
+        }
     }
+}
 
-    let search_result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Qdrant(format!("Failed to parse Qdrant response: {}", e)))?;
+/// Keyword-based fallback search via Postgres when Ollama is unavailable.
+/// Searches extracted_items by FQN, name, and doc_comment using ILIKE.
+async fn keyword_search_fallback(
+    state: &AppState,
+    query: &str,
+    limit: usize,
+) -> Result<Json<SearchSemanticResponse>, AppError> {
+    let pattern = format!("%{}%", query);
+    let limit_i64 = limit as i64;
 
-    let results = parse_search_results(&search_result);
+    let rows = sqlx::query_as::<_, (String, String, String, String, i32, i32, Option<String>, Option<String>)>(
+        r#"
+        SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
+               ei.signature, ei.doc_comment
+        FROM extracted_items ei
+        LEFT JOIN source_files sf ON ei.source_file_id = sf.id
+        WHERE ei.fqn ILIKE $1
+           OR ei.name ILIKE $1
+           OR ei.doc_comment ILIKE $1
+           OR ei.signature ILIKE $1
+        ORDER BY
+            CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
+            CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
+            ei.name
+        LIMIT $2
+        "#,
+    )
+    .bind(&pattern)
+    .bind(limit_i64)
+    .fetch_all(&state.pg_pool)
+    .await
+    .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?;
 
+    let results: Vec<SearchResult> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (fqn, name, kind, file_path, start_line, end_line, signature, docstring))| {
+            SearchResult {
+                fqn,
+                name,
+                kind,
+                file_path,
+                start_line: start_line as u32,
+                end_line: end_line as u32,
+                score: 1.0 - (i as f32 * 0.01), // decreasing pseudo-score for ranking display
+                snippet: signature,
+                docstring,
+            }
+        })
+        .collect();
+
+    let total = results.len();
     Ok(Json(SearchSemanticResponse {
-        query: req.query,
-        total: results.len(),
+        query: format!("{} (keyword fallback — Ollama unavailable)", query),
+        total,
         results,
     }))
 }
