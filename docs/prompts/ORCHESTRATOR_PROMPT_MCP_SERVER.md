@@ -16,7 +16,7 @@ The API is built with Axum in Rust. It talks to 3 databases:
 - **Neo4j** — code relationship graph (CALLS, IMPLEMENTS, DEFINES, etc.)
 - **Qdrant** — 768-dim vector embeddings for semantic search (via Ollama nomic-embed-text)
 
-### 7 Tool Endpoints Already Working
+### 9 Tool Endpoints Already Working
 
 | Endpoint | Method | MCP Tool Name | Purpose |
 |----------|--------|---------------|---------|
@@ -27,6 +27,8 @@ The API is built with Axum in Rust. It talks to 3 databases:
 | `/tools/find_usages_of_type` | GET | `find_type_usages` | Where a type is used |
 | `/tools/get_module_tree` | GET | `get_module_tree` | Module hierarchy for a crate |
 | `/tools/query_graph` | POST | `query_graph` | Raw read-only Cypher queries |
+| `/tools/find_calls_with_type` | GET | `find_calls_with_type` | Find call sites with specific type argument (turbofish) |
+| `/tools/find_trait_impls_for_type` | GET | `find_trait_impls_for_type` | All trait implementations for a type |
 
 ### Infrastructure
 - Docker Compose orchestrates everything: Postgres, Neo4j, Qdrant, Ollama, Prometheus, Grafana
@@ -286,6 +288,58 @@ Design each tool's `inputSchema` with precision. The schema IS the interface con
 }
 ```
 
+```json
+{
+  "name": "find_calls_with_type",
+  "description": "Find all call sites where a specific type is used as a type argument (turbofish syntax like func::<String>()). This queries the PostgreSQL call_sites table which stores monomorphized call information from typecheck analysis. Use this to find concrete usages of generic functions, track type instantiations, and understand how types flow through generic code.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "type_name": {
+        "type": "string",
+        "description": "Name of the type to search for in concrete type arguments. Examples: 'String', 'Vec', 'PaymentRequest', 'i32'."
+      },
+      "callee_name": {
+        "type": "string",
+        "description": "Optional: filter by callee function name. Use to narrow results to specific generic functions like 'parse' or 'collect'."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of results to return.",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 100
+      }
+    },
+    "required": ["type_name"]
+  }
+}
+```
+
+```json
+{
+  "name": "find_trait_impls_for_type",
+  "description": "Find all trait implementations for a specific type (by self_type). This queries the PostgreSQL trait_implementations table from typecheck analysis. Unlike get_trait_impls which finds implementations BY trait name, this finds implementations BY the implementing type. Use this to discover what traits a type implements.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "type_name": {
+        "type": "string",
+        "description": "Name of the type to search for. Examples: 'String', 'Vec', 'PaymentConnector', 'MyStruct'."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of implementations to return.",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 100
+      }
+    },
+    "required": ["type_name"]
+  }
+}
+```
+
 **CRITICAL**: Tool descriptions are the soul of the skill. They are the primary interface between the agent's reasoning and the tool's capability. Each description must:
 1. Explain WHAT the tool does in plain language
 2. Explain WHEN to use it (use cases)
@@ -431,7 +485,7 @@ port = 8089                            # SSE port
 Create `tests/integration/test_mcp.sh`:
 - Start the MCP server in SSE mode
 - Call `initialize` and verify capabilities
-- Call `tools/list` and verify all 7 tools are present
+- Call `tools/list` and verify all 9 tools are present
 - Call each tool with valid inputs and verify response structure
 - Call with invalid inputs and verify error responses
 - Test timeout handling
@@ -488,7 +542,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 2. `cargo clippy -- -D warnings` passes
 3. `cargo test` for unit tests in the crate
 4. Integration test script passes against running stack
-5. Claude Code can discover and call all 7 tools via stdio transport
+5. Claude Code can discover and call all 9 tools via stdio transport
 6. Tool descriptions produce correct tool selection by the LLM (test with sample queries)
 7. Error messages are actionable (the agent reading the error knows what to do next)
 8. No database drivers in `Cargo.toml` — only HTTP client
@@ -500,7 +554,6 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 - **No authentication implementation** — defer to future phase (see future-scope.md)
 - **No caching in the MCP layer** — the API layer handles this
-- **No new tools beyond the existing 7** — just wrap what exists
 - **No resources or prompts MCP capabilities** — tools only for now
 - **No database access** — HTTP API is the only backend
 - **No WebSocket transport** — stdio + SSE covers all use cases
@@ -536,6 +589,8 @@ tools_allowed:
   - get_callers
   - get_trait_impls
   - get_module_tree
+  - find_calls_with_type
+  - find_trait_impls_for_type
 tools_denied:
   - query_graph  # Too powerful for research, use structured tools
 max_iterations: 20
@@ -552,6 +607,8 @@ tools_allowed:
   - get_callers
   - find_type_usages
   - get_module_tree
+  - find_calls_with_type
+  - find_trait_impls_for_type
   - query_graph  # Architect needs custom traversals
 max_iterations: 30
 ```
@@ -566,6 +623,8 @@ tools_allowed:
   - get_callers
   - get_trait_impls
   - search_code
+  - find_calls_with_type
+  - find_trait_impls_for_type
 max_iterations: 15
 ```
 

@@ -4,17 +4,19 @@ This guide explains how to configure Claude Code (and other MCP clients) to use 
 
 ## What is the rust-brain MCP Server?
 
-The rust-brain MCP (Model Context Protocol) server provides 7 tools for Rust code intelligence:
+The rust-brain MCP (Model Context Protocol) server provides 9 tools for Rust code intelligence:
 
 | Tool | Description |
 |------|-------------|
-| `search_semantic` | Natural language code search using vector embeddings |
+| `search_code` | Natural language code search using vector embeddings |
 | `get_function` | Get full function details with source code |
 | `get_callers` | Find all callers of a function (direct and transitive) |
 | `get_trait_impls` | List all implementations of a trait |
-| `find_usages_of_type` | Find where a type is used |
+| `find_type_usages` | Find where a type is used |
 | `get_module_tree` | Get module hierarchy for a crate |
 | `query_graph` | Execute raw Cypher queries against Neo4j |
+| `find_calls_with_type` | Find call sites with a specific type argument (turbofish) |
+| `find_trait_impls_for_type` | Find all trait implementations for a type |
 
 ## Prerequisites
 
@@ -213,6 +215,48 @@ Create a `.mcp.json` file in your repository root:
             },
             "required": ["query"]
           }
+        },
+        {
+          "name": "find_calls_with_type",
+          "description": "Find all call sites where a specific type is used as a type argument (turbofish syntax). Useful for finding concrete usages of generic functions like parse::<String>() or collect::<Vec<_>>().",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "type_name": {
+                "type": "string",
+                "description": "Name of the type to search for (e.g., 'String', 'Vec', 'i32')"
+              },
+              "callee_name": {
+                "type": "string",
+                "description": "Optional name of the callee function to filter by (e.g., 'parse', 'collect')"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return",
+                "default": 20
+              }
+            },
+            "required": ["type_name"]
+          }
+        },
+        {
+          "name": "find_trait_impls_for_type",
+          "description": "Find all trait implementations for a specific type. Useful for understanding what traits a type implements, like finding all traits implemented by String or Vec.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "type_name": {
+                "type": "string",
+                "description": "Name of the type to search for (e.g., 'String', 'Vec', 'MyStruct')"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Maximum number of implementations to return",
+                "default": 20
+              }
+            },
+            "required": ["type_name"]
+          }
         }
       ]
     }
@@ -307,6 +351,38 @@ curl -X POST http://localhost:8088/tools/query_graph \
     "parameters": {"prefix": "serde_json::"}
   }'
 ```
+
+### find_calls_with_type
+
+Find all call sites where a specific type is used as a type argument (turbofish syntax):
+
+```bash
+curl "http://localhost:8088/tools/find_calls_with_type?type_name=String&limit=10"
+```
+
+Filter by callee function:
+
+```bash
+curl "http://localhost:8088/tools/find_calls_with_type?type_name=PaymentRequest&callee_name=parse&limit=20"
+```
+
+**Use cases:**
+- Find where `String` is used as a generic type argument: `parse::<String>()`
+- Find concrete instantiations of generic functions
+- Track monomorphized call sites
+
+### find_trait_impls_for_type
+
+Find all trait implementations for a specific type:
+
+```bash
+curl "http://localhost:8088/tools/find_trait_impls_for_type?type_name=PaymentRequest&limit=20"
+```
+
+**Use cases:**
+- Find all traits implemented by a type
+- Understand polymorphism landscape for a type
+- Discover trait implementations from typecheck analysis
 
 ## Monitoring
 
