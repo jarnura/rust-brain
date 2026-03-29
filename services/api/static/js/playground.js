@@ -1,7 +1,10 @@
 /**
  * playground.js — rust-brain Playground entry point (ES module)
  *
+ * RETRO-FUTURISTIC edition
+ *
  * Responsibilities:
+ *  - Boot sequence animation with progress bar
  *  - Register highlight.js languages
  *  - Initialize tab switching (tab bar + sidebar nav)
  *  - Initialize collapsible sidebar
@@ -25,6 +28,7 @@ const TABS = [
   { id: 'cypher',    label: 'Cypher',    icon: '⌥', key: '5' },
   { id: 'types',     label: 'Types',     icon: 'T', key: '6' },
   { id: 'traits',    label: 'Traits',    icon: '◈', key: '7' },
+  { id: 'callsites', label: 'Call Sites',icon: '⚡', key: 'C' },
   { id: 'modules',   label: 'Modules',   icon: '⊟', key: '8' },
   { id: 'audit',     label: 'Audit',     icon: '≡', key: '9' },
   { id: 'gaps',      label: 'Gaps',      icon: '△', key: '0' },
@@ -44,6 +48,59 @@ const resizerLeft   = document.getElementById('resizer-left');
 const resizerRight  = document.getElementById('resizer-right');
 
 let activeTab = 'dashboard';
+
+// ══════════════════════════════════════════════════════════════════════════
+// BOOT SEQUENCE — cinematic retro-futuristic entrance
+// ══════════════════════════════════════════════════════════════════════════
+
+function runBootSequence() {
+  return new Promise(resolve => {
+    const overlay    = document.getElementById('boot-overlay');
+    const progressBar = document.getElementById('boot-progress-bar');
+
+    if (!overlay) { resolve(); return; }
+
+    // Check if user prefers reduced motion — skip animation
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      overlay.classList.add('dismissed');
+      appShell.style.opacity = '1';
+      resolve();
+      return;
+    }
+
+    // Animate progress bar over ~1.8s
+    const steps = [
+      { pct: 15,  delay: 200 },
+      { pct: 35,  delay: 400 },
+      { pct: 60,  delay: 700 },
+      { pct: 85,  delay: 1100 },
+      { pct: 100, delay: 1500 },
+    ];
+
+    steps.forEach(({ pct, delay }) => {
+      setTimeout(() => {
+        if (progressBar) progressBar.style.width = `${pct}%`;
+      }, delay);
+    });
+
+    // Dismiss boot overlay, reveal app
+    setTimeout(() => {
+      overlay.classList.add('dismissed');
+      // Set transition BEFORE opacity so the browser animates the change
+      appShell.style.transition = 'opacity 0.4s ease';
+      // Force reflow to ensure transition is registered before property change
+      void appShell.offsetHeight;
+      appShell.style.opacity = '1';
+
+      // Remove overlay from DOM after transition
+      setTimeout(() => {
+        overlay.remove();
+        resolve();
+      }, 600);
+    }, 2000);
+  });
+}
+
 
 // ── Tab switching ──────────────────────────────────────────────────────────
 function switchTab(tabId) {
@@ -98,8 +155,10 @@ detailClose.addEventListener('click', () => {
   appShell.classList.add('detail-hidden');
 });
 
-// Expose so components can show the detail panel
+// Expose palette and detail APIs so components can override/use them
 window.playground = window.playground || {};
+window.playground.openPalette  = openPalette;
+window.playground.closePalette = closePalette;
 window.playground.showDetail = function showDetail(title, html) {
   document.getElementById('detail-title').textContent = title;
   document.getElementById('detail-body').innerHTML = html;
@@ -149,8 +208,8 @@ function initResizer(resizerEl, columnIndex) {
   });
 }
 
-initResizer(resizerLeft,  0); // moves column 0 (sidebar) ↔ column 2 (main)
-initResizer(resizerRight, 2); // moves column 2 (main)    ↔ column 4 (detail)
+initResizer(resizerLeft,  0);
+initResizer(resizerRight, 2);
 
 // ── Command Palette ────────────────────────────────────────────────────────
 function buildCmdItems() {
@@ -227,7 +286,6 @@ cmdPalette.querySelector('.cmd-palette__backdrop').addEventListener('click', clo
 document.addEventListener('keydown', e => {
   const meta = e.metaKey || e.ctrlKey;
 
-  // Escape: close palette or detail
   if (e.key === 'Escape') {
     if (!cmdPalette.hasAttribute('hidden')) { closePalette(); return; }
     if (!appShell.classList.contains('detail-hidden')) {
@@ -236,21 +294,20 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  // Cmd+K: command palette
   if (meta && e.key === 'k') {
     e.preventDefault();
-    cmdPalette.hasAttribute('hidden') ? openPalette() : closePalette();
+    // Delegate to window.playground so command-palette.js can override these
+    const pg = window.playground;
+    cmdPalette.hasAttribute('hidden') ? pg.openPalette() : pg.closePalette();
     return;
   }
 
-  // Cmd+/: toggle sidebar
   if (meta && e.key === '/') {
     e.preventDefault();
     toggleSidebar();
     return;
   }
 
-  // Cmd+1…9,0: switch tabs
   if (meta && /^[0-9]$/.test(e.key)) {
     e.preventDefault();
     const tab = TABS.find(t => t.key === e.key);
@@ -269,14 +326,16 @@ window.addEventListener('resize', () => {
 });
 
 // ── Initialise ─────────────────────────────────────────────────────────────
-// ES modules are deferred, so DOMContentLoaded may have already fired
-function initPlayground() {
+async function initPlayground() {
+  // Run the cinematic boot sequence
+  await runBootSequence();
+
   switchTab('dashboard');
 
-  // Enhanced command palette (eager — not tab-scoped)
+  // Enhanced command palette
   import('./components/command-palette.js')
     .then(m => m.init())
-    .catch(() => {}); // falls back to basic palette already in place
+    .catch(() => {});
 
   // Lazy-load component modules
   const lazyComponents = {
@@ -287,6 +346,7 @@ function initPlayground() {
     cypher:    () => import('./components/cypher.js'),
     types:     () => import('./components/type-usages.js'),
     traits:    () => import('./components/trait-impls.js'),
+    callsites: () => import('./components/call-sites.js'),
     modules:   () => import('./components/module-tree.js'),
     audit:     () => import('./components/audit.js'),
     gaps:      () => import('./components/gaps.js'),
@@ -295,17 +355,17 @@ function initPlayground() {
   document.addEventListener('playground:tab-change', async ({ detail: { tab } }) => {
     if (lazyComponents[tab]) {
       const loader = lazyComponents[tab];
-      delete lazyComponents[tab]; // load once
+      delete lazyComponents[tab];
       try {
         const mod = await loader();
         if (mod.init) mod.init(document.getElementById(`pane-${tab}`));
       } catch {
-        // component not yet implemented — silent
+        // component not yet implemented
       }
     }
   });
 
-  // Trigger dashboard init on first load
+  // Trigger dashboard init
   document.dispatchEvent(new CustomEvent('playground:tab-change', { detail: { tab: 'dashboard' } }));
 
   updateConnectionStatus();
@@ -315,21 +375,21 @@ function initPlayground() {
 async function updateConnectionStatus() {
   const statusDot = document.getElementById('sidebar-status');
   const statusLabel = document.getElementById('sidebar-status-label');
-  
+
   try {
     const resp = await fetch('/health');
     const data = await resp.json();
-    
+
     if (data.status === 'healthy') {
       statusDot.className = 'status-dot status-healthy';
-      statusLabel.textContent = 'Connected';
+      statusLabel.textContent = 'ONLINE';
     } else {
       statusDot.className = 'status-dot status-degraded';
-      statusLabel.textContent = 'Degraded';
+      statusLabel.textContent = 'DEGRADED';
     }
   } catch {
     statusDot.className = 'status-dot status-unhealthy';
-    statusLabel.textContent = 'Disconnected';
+    statusLabel.textContent = 'OFFLINE';
   }
 }
 
@@ -340,42 +400,5 @@ if (document.readyState === 'loading') {
   initPlayground();
 }
 
-// ── Detail Panel Toggle ────────────────────────────────────────────────────
-(function() {
-  function addDetailToggle() {
-    const toggleBtn = document.createElement('button');
-    toggleBtn.id = 'detail-toggle-btn';
-    toggleBtn.innerHTML = '◀ Hide Details';
-    toggleBtn.style.cssText = `
-      position: fixed;
-      top: 8px;
-      right: 8px;
-      z-index: 1000;
-      background: #333;
-      border: 1px solid #555;
-      border-radius: 4px;
-      padding: 6px 12px;
-      font-size: 12px;
-      color: #fafafa;
-      cursor: pointer;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    `;
-    
-    toggleBtn.addEventListener('click', () => {
-      const appShell = document.getElementById('app-shell');
-      if (appShell) {
-        appShell.classList.toggle('detail-hidden');
-        const isHidden = appShell.classList.contains('detail-hidden');
-        toggleBtn.innerHTML = isHidden ? '▶ Show Details' : '◀ Hide Details';
-      }
-    });
-    
-    document.body.appendChild(toggleBtn);
-  }
-  
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', addDetailToggle);
-  } else {
-    addDetailToggle();
-  }
-})();
+// Detail panel toggle is handled by the #detail-close button in the HTML
+// and the Escape key handler above — no floating button needed.

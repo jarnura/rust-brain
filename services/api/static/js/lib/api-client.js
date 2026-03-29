@@ -157,6 +157,35 @@ class ApiClient {
         return this._post('/tools/query_graph', { query, parameters, limit });
     }
 
+    // ------------------------------------------------------------------ typecheck (PostgreSQL)
+
+    /**
+     * Find call sites with a specific type argument (turbofish)
+     * @param {string} typeName - Type name to search for in concrete_type_args
+     * @param {object} opts - Optional filters
+     * @param {string} opts.calleeName - Filter by callee function name
+     * @param {number} opts.limit - Max results (default: 20)
+     */
+    findCallsWithType(typeName, opts = {}) {
+        return this._get('/tools/find_calls_with_type', {
+            type_name: typeName,
+            callee_name: opts.calleeName,
+            limit: opts.limit ?? 20,
+        });
+    }
+
+    /**
+     * Find all trait implementations for a specific type
+     * @param {string} typeName - Type name to search for in self_type
+     * @param {number} limit - Max results (default: 20)
+     */
+    findTraitImplsForType(typeName, limit = 20) {
+        return this._get('/tools/find_trait_impls_for_type', {
+            type_name: typeName,
+            limit,
+        });
+    }
+
     // ------------------------------------------------------------------ chat
 
     /**
