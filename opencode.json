@@ -4,7 +4,31 @@
   "small_model": "juspay-grid/glm-latest",
   "default_agent": "orchestrator",
   
-  "mcp": {},
+  "mcp": {
+    "rustbrain": {
+      "type": "remote",
+      "url": "http://mcp-sse:3001/sse"
+    }
+  },
+  
+  "provider": {
+    "juspay-grid": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM Proxy",
+      "options": {
+        "baseURL": "https://grid.ai.juspay.net"
+      },
+      "models": {
+        "glm-latest": {
+          "name": "GLM Latest",
+          "limit": {
+            "context": 128000,
+            "output": 16000
+          }
+        }
+      }
+    }
+  },
   
   "tools": {
     "knowledge_write*": false,
