@@ -32,7 +32,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # Defaults
-DEFAULT_SNAPSHOT_URL="https://github.com/jarnura/rust-brain/releases/download/snapshot-latest/rustbrain-snapshot-latest.tar.zst"
+DEFAULT_SNAPSHOT_URL="https://github.com/jarnura/rust-brain/releases/download/snapshot-latest/rustbrain-snapshot-hyperswitch.tar.zst"
 SNAPSHOT_URL="${SNAPSHOT_URL:-$DEFAULT_SNAPSHOT_URL}"
 SNAPSHOT_DIR="${PROJECT_ROOT}/.snapshots"
 SNAPSHOT_MARKER="${SNAPSHOT_DIR}/.restored"

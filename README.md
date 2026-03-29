@@ -50,7 +50,39 @@ A production-grade Rust code intelligence platform. Ingests Rust codebases and b
       └─────────────────────────────────────────────┘
 ```
 
-## Getting Started
+## Quick Start (Snapshot)
+
+Run rust-brain with a pre-built snapshot of the [Hyperswitch](https://github.com/juspay/hyperswitch) codebase. **No ingestion, no Ollama, no GPU required.**
+
+```bash
+git clone https://github.com/jarnura/rust-brain.git && cd rust-brain
+./scripts/run-with-snapshot.sh
+```
+
+This downloads a ~1.9GB snapshot containing 161K indexed code items, restores all three databases, and starts the API + MCP server. Takes ~2-7 minutes on first run.
+
+**Open the playground:** http://localhost:8088
+
+**Connect your IDE** (Claude Code, Claude Desktop, Cline, OpenCode):
+
+```json
+{
+  "mcpServers": {
+    "rust-brain": {
+      "type": "sse",
+      "url": "http://localhost:3001/sse"
+    }
+  }
+}
+```
+
+Add to `~/.claude.json` for Claude Code, `claude_desktop_config.json` for Claude Desktop, or VS Code settings for Cline.
+
+**Requirements:** Docker >= 24.0 with Compose V2, ~8GB RAM, ~4GB disk, zstd.
+
+## Getting Started (Full Setup)
+
+For running your own ingestion pipeline:
 
 ```bash
 cd rust-brain
@@ -60,14 +92,24 @@ cp .env.example .env
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."  # Optional: for alternative models
 
-# Optional: enable HTTP basic auth on the API server
-export OPENCODE_AUTH_USER="admin"
-export OPENCODE_AUTH_PASS="..."
-
-# Start the platform
+# Start the platform (includes Ollama for embeddings)
 bash scripts/start.sh
 bash scripts/healthcheck.sh
+
+# Ingest a codebase
+./scripts/ingest.sh ~/projects/my-rust-repo
 ```
+
+### Create Your Own Snapshot
+
+After ingesting your codebase, create a shareable snapshot:
+
+```bash
+./scripts/create-snapshot.sh my-project abc1234
+# Output: dist/rustbrain-snapshot-my-project.tar.zst
+```
+
+Share the file with teammates — they run `./scripts/run-with-snapshot.sh --local=path/to/snapshot.tar.zst`.
 
 ## Ingestion CLI
 
