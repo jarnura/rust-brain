@@ -243,23 +243,140 @@ Run specific pipeline stages only:
 
 ### Clean Ingestion (Reset First)
 
-To completely reset all data before ingestion:
+A **clean ingestion** starts fresh by removing all previous data before ingesting. This is useful when:
+- Switching to a different crate
+- Fixing data corruption
+- Testing with different embedding models
+- Starting fresh after failed ingestion
+
+#### Option 1: Nuclear Reset (All Data)
+
+Completely removes all data volumes and starts fresh:
 
 ```bash
-# Option 1: Reset specific database
-docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c "TRUNCATE extracted_items, source_files CASCADE;"
+# Stop all services and remove all data volumes
+docker compose down -v
 
-# Option 2: Reset Qdrant vectors
+# Start fresh services
+bash scripts/start.sh
+
+# Run ingestion
+./scripts/ingest.sh /path/to/crate
+```
+
+**What this removes:**
+- All Postgres tables (items, source files, call sites)
+- All Neo4j graph nodes and relationships
+- All Qdrant vector collections
+- All Ollama pulled models (optional - only if you remove `ollama_data` volume)
+
+#### Option 2: Clean All 3 Databases (Keep Services Running)
+
+Reset all data while keeping services running:
+
+```bash
+# Reset Postgres
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "TRUNCATE extracted_items, source_files, call_sites, trait_implementations CASCADE;"
+
+# Reset Neo4j
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p yourpassword "MATCH (n) DETACH DELETE n"
+
+# Reset Qdrant
+curl -X DELETE http://localhost:6333/collections/code_embeddings
+curl -X DELETE http://localhost:6333/collections/doc_embeddings
+bash scripts/init-qdrant.sh
+```
+
+#### Option 3: Clean Individual Databases
+
+Reset only specific databases:
+
+```bash
+# Reset Postgres only (items, source files)
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "TRUNCATE extracted_items, source_files CASCADE;"
+
+# Reset Qdrant vectors only
 curl -X DELETE http://localhost:6333/collections/code_embeddings
 bash scripts/init-qdrant.sh
 
-# Option 3: Reset Neo4j graph
-docker exec rustbrain-neo4j cypher-shell -u neo4j -p password "MATCH (n) DETACH DELETE n"
-
-# Option 4: Nuclear - reset everything
-docker compose down -v
-docker compose up -d
+# Reset Neo4j graph only
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p yourpassword "MATCH (n) DETACH DELETE n"
 ```
+
+#### Option 4: Clean Ingestion Script
+
+Create a reusable script:
+
+```bash
+cat > scripts/clean-ingestion.sh << 'EOF'
+#!/bin/bash
+# Clean all rust-brain data before fresh ingestion
+
+set -e
+
+# Load environment
+source .env 2>/dev/null || true
+
+echo "=== Cleaning all rust-brain data ==="
+
+# Reset Postgres
+echo "Clearing Postgres..."
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "TRUNCATE extracted_items, source_files, call_sites, trait_implementations CASCADE;" 2>/dev/null || true
+
+# Reset Neo4j
+echo "Clearing Neo4j..."
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-password}" \
+  "MATCH (n) DETACH DELETE n" 2>/dev/null || true
+
+# Reset Qdrant
+echo "Clearing Qdrant..."
+curl -s -X DELETE http://localhost:6333/collections/code_embeddings 2>/dev/null || true
+curl -s -X DELETE http://localhost:6333/collections/doc_embeddings 2>/dev/null || true
+
+# Reinitialize Qdrant collections
+echo "Reinitializing Qdrant..."
+bash scripts/init-qdrant.sh
+
+echo ""
+echo "=== Clean complete ==="
+echo "Ready for fresh ingestion: ./scripts/ingest.sh /path/to/crate"
+EOF
+chmod +x scripts/clean-ingestion.sh
+```
+
+Usage:
+```bash
+# Clean all data
+./scripts/clean-ingestion.sh
+
+# Run fresh ingestion
+./scripts/ingest.sh /path/to/crate
+```
+
+#### Option 5: Soft Reset (Upsert Mode)
+
+Just run ingestion - it replaces existing items with same FQN:
+
+```bash
+# Upsert mode - replaces existing items
+./scripts/ingest.sh /path/to/crate
+```
+
+**Note:** This doesn't remove orphaned items (files deleted from crate but still in database).
+
+#### Clean Ingestion Summary
+
+| Method | Speed | Scope | When to Use |
+|--------|-------|-------|-------------|
+| `docker compose down -v` | Slow | Everything | Complete reset, switching projects |
+| `./scripts/clean-ingestion.sh` | Medium | All 3 databases | Fresh ingestion, same project |
+| `TRUNCATE` Postgres | Fast | Items only | Re-ingesting same crate |
+| `DELETE` Qdrant collections | Fast | Vectors only | Re-embedding with new model |
+| `DETACH DELETE` Neo4j | Fast | Graph only | Rebuilding graph |
+| Just run ingestion | Fastest | Upsert only | Quick re-ingestion |
 
 ---
 
@@ -420,16 +537,292 @@ CARGO_EXPAND_TIMEOUT=180      # Per-crate expand timeout
 
 #### 6. Embed Stage
 
-**Purpose:** Generate vector embeddings for semantic search
+**Purpose:** Generate vector embeddings for semantic search using GPU acceleration
 
 **Process:**
 1. Generate text representation for each item (signature + docs + context)
-2. Send to Ollama embedding API
+2. Send to Ollama embedding API (GPU-accelerated)
 3. Store vectors in Qdrant with metadata payload
 
 **Output:** Vector embeddings (2560 dimensions with qwen3-embedding:4b)
 
 **Batching:** Processes items in batches of 8 to balance speed vs memory
+
+---
+
+## GPU Embedding Configuration
+
+### Overview
+
+The embed stage uses **Ollama** with GPU acceleration to generate vector embeddings. GPU support significantly speeds up embedding generation, especially for large codebases.
+
+### Supported GPUs
+
+| Vendor | Requirements | Notes |
+|--------|--------------|-------|
+| **NVIDIA** | CUDA 11.0+ | Most common, best support |
+| **AMD** | ROCm 5.0+ | Linux only |
+| **Apple Silicon** | Metal | macOS only (M1/M2/M3) |
+
+### Checking GPU Availability
+
+```bash
+# Check NVIDIA GPU
+nvidia-smi
+
+# Check if Docker has GPU access
+docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
+
+# Check Ollama GPU usage
+docker exec rustbrain-ollama nvidia-smi
+```
+
+### GPU Configuration in docker-compose.yml
+
+The Ollama service is configured for GPU in `docker-compose.yml`:
+
+```yaml
+ollama:
+  image: ollama/ollama:latest
+  container_name: rustbrain-ollama
+  ports:
+    - "${OLLAMA_PORT:-11434}:11434"
+  volumes:
+    - ollama_data:/root/.ollama
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  environment:
+    - CUDA_VISIBLE_DEVICES=all
+```
+
+### Enabling GPU (if disabled)
+
+If GPU is not enabled, edit `docker-compose.yml`:
+
+```yaml
+# Option 1: Use all GPUs
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
+
+# Option 2: Use specific GPU
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ['0']  # First GPU only
+          capabilities: [gpu]
+```
+
+Then restart:
+```bash
+docker compose down
+docker compose up -d ollama
+```
+
+### Verifying GPU Usage
+
+```bash
+# Watch GPU during embedding
+watch -n 1 nvidia-smi
+
+# Check Ollama is using GPU
+docker logs rustbrain-ollama 2>&1 | grep -i cuda
+
+# Verify model loaded on GPU
+docker exec rustbrain-ollama ollama ps
+```
+
+Expected output shows model loaded:
+```
+NAME                    ID              SIZE    PROCESSOR    UNTIL
+qwen3-embedding:4b      abc123...       2.5 GB  100% GPU     Forever
+```
+
+### GPU Memory Requirements
+
+| Model | Dimensions | VRAM Required | Notes |
+|-------|------------|---------------|-------|
+| `nomic-embed-text` | 768 | ~1 GB | Small, fast |
+| `all-minilm` | 384 | ~0.5 GB | Smallest |
+| `qwen3-embedding:4b` | 2560 | ~3 GB | **Recommended** |
+| `qwen3-embedding:8b` | 4096 | ~6 GB | Higher quality |
+
+**For Hyperswitch (161K items):**
+- Model: `qwen3-embedding:4b`
+- GPU VRAM: ~3 GB for model + ~1 GB for batch processing
+- Total time: ~50 minutes (vs ~4+ hours on CPU)
+
+### Configuring Embedding Model
+
+In `.env`:
+```bash
+# Embedding model (GPU)
+EMBEDDING_MODEL=qwen3-embedding:4b
+EMBEDDING_DIMENSIONS=2560
+
+# Alternative models
+# EMBEDDING_MODEL=nomic-embed-text
+# EMBEDDING_DIMENSIONS=768
+```
+
+### Pulling Embedding Model
+
+```bash
+# Pull model to Ollama
+docker exec rustbrain-ollama ollama pull qwen3-embedding:4b
+
+# Verify model is available
+docker exec rustbrain-ollama ollama list
+```
+
+### Embedding Performance Tuning
+
+#### Batch Size
+
+Control concurrent embedding requests in `.env`:
+
+```bash
+# Small GPU (4GB VRAM)
+EMBED_BATCH_SIZE=4
+
+# Medium GPU (8GB VRAM) - default
+EMBED_BATCH_SIZE=8
+
+# Large GPU (16GB+ VRAM)
+EMBED_BATCH_SIZE=16
+
+# CPU only (very slow)
+EMBED_BATCH_SIZE=2
+```
+
+#### Parallel vs Sequential
+
+For limited GPU memory, use smaller batches:
+
+```bash
+# Reduce batch size
+./scripts/ingest.sh /path/to/crate --memory-budget 32GB
+
+# Or set in .env
+EMBED_BATCH_SIZE=4
+```
+
+### Embedding Text Representation
+
+Each item is converted to text before embedding:
+
+```
+Function Example:
+─────────────────
+pub fn process_payment<T: PaymentMethod>(payment: T) -> Result<PaymentResult, Error>
+Process a payment through the configured payment gateway
+
+Module: router::payments
+Crate: router
+Traits used: T: PaymentMethod
+Body preview:
+{
+    let gateway = self.select_gateway(&payment)?;
+    gateway.process(payment).await
+}
+
+Struct Example:
+─────────────────
+pub struct PaymentRouter {
+    gateways: Vec<Box<dyn Gateway>>,
+    config: RouterConfig,
+}
+
+Route payments to appropriate payment gateways based on rules.
+
+Module: router::core
+Crate: router
+Fields: gateways, config
+```
+
+### Embedding Without GPU (CPU Fallback)
+
+If no GPU is available, Ollama falls back to CPU:
+
+```bash
+# Check if using CPU
+docker exec rustbrain-ollama ollama ps
+# Shows "100% CPU" instead of "100% GPU"
+```
+
+CPU embedding is **much slower**:
+- GPU: ~100-200 embeddings/second
+- CPU: ~5-10 embeddings/second
+
+For CPU-only, reduce batch size:
+```bash
+EMBED_BATCH_SIZE=2
+```
+
+### Troubleshooting GPU Issues
+
+#### GPU Not Detected
+
+```bash
+# Check NVIDIA driver
+nvidia-smi
+
+# Check CUDA version
+nvcc --version
+
+# Check Docker GPU support
+docker run --rm --gpus all nvidia/cuda:11.8-base nvidia-smi
+```
+
+#### Out of GPU Memory
+
+```bash
+# Check GPU memory
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+
+# Reduce batch size
+EMBED_BATCH_SIZE=2
+
+# Or use smaller model
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSIONS=768
+```
+
+#### Model Not Loading on GPU
+
+```bash
+# Force GPU load
+docker exec rustbrain-ollama ollama run qwen3-embedding:4b
+
+# Check logs
+docker logs rustbrain-ollama 2>&1 | grep -i "gpu\|cuda"
+```
+
+### GPU Embedding Performance
+
+**Benchmarks with qwen3-embedding:4b (2560 dims):**
+
+| Hardware | Items/sec | 100K items |
+|----------|-----------|------------|
+| RTX 4070 Ti SUPER (16GB) | ~180/sec | ~9 minutes |
+| RTX 3080 (10GB) | ~120/sec | ~14 minutes |
+| RTX 3060 (12GB) | ~80/sec | ~21 minutes |
+| CPU (32 cores) | ~8/sec | ~3.5 hours |
+
+**Your setup (RTX 4070 Ti SUPER):**
+- Previous ingestion: 161,258 items in ~50 minutes total
+- Embed stage alone: ~15 minutes at ~180 embeddings/sec
 
 ---
 
