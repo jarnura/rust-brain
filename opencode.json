@@ -30,13 +30,6 @@
     }
   },
   
-  "tools": {
-    "knowledge_write*": false,
-    "knowledge_embed*": false,
-    "knowledge_index*": false,
-    "knowledge_delete*": false
-  },
-  
   "agent": {
     "orchestrator": {
       "description": "Master coordinator. Plans work, routes to researcher and explorer, synthesizes results into final output. Never edits files.",
