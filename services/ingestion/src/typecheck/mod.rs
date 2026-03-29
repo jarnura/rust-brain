@@ -89,6 +89,34 @@ impl TypeResolutionService {
         Ok(result)
     }
     
+    /// Analyze expanded source using heuristics only (for large files)
+    ///
+    /// This skips syn-based parsing and uses regex heuristics directly.
+    /// Use for files > 10MB where syn would be too slow.
+    pub async fn analyze_with_heuristics(
+        &self,
+        crate_name: &str,
+        module_path: &str,
+        file_path: &str,
+        expanded_source: &str,
+        caller_fqns: &[String],
+    ) -> Result<TypeResolutionResult> {
+        // Use the resolver's heuristic analysis directly
+        let result = self.resolver.analyze_heuristics_only(
+            crate_name,
+            module_path,
+            file_path,
+            expanded_source,
+            caller_fqns,
+        );
+        
+        // Store results in database
+        self.store_trait_implementations(&result.trait_impls).await?;
+        self.store_call_sites(&result.call_sites).await?;
+        
+        Ok(result)
+    }
+    
     /// Store trait implementations in the database
     async fn store_trait_implementations(
         &self,

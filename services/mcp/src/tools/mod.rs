@@ -9,6 +9,7 @@ pub mod get_module_tree;
 pub mod get_trait_impls;
 pub mod query_graph;
 pub mod search_code;
+pub mod typecheck_tools;
 
 use crate::client::ApiClient;
 use crate::error::Result;
@@ -25,6 +26,8 @@ pub fn all_definitions() -> Vec<Value> {
         find_type_usages::definition(),
         get_module_tree::definition(),
         query_graph::definition(),
+        typecheck_tools::definition_find_calls_with_type(),
+        typecheck_tools::definition_find_trait_impls_for_type(),
     ];
     debug!(count = definitions.len(), "Returning tool definitions");
     definitions
@@ -67,6 +70,14 @@ pub async fn execute_tool(
             let request: query_graph::QueryGraphRequest = serde_json::from_value(arguments)?;
             query_graph::execute(client, request).await
         }
+        "find_calls_with_type" => {
+            let request: typecheck_tools::FindCallsWithTypeRequest = serde_json::from_value(arguments)?;
+            typecheck_tools::execute_find_calls_with_type(client, request).await
+        }
+        "find_trait_impls_for_type" => {
+            let request: typecheck_tools::FindTraitImplsForTypeRequest = serde_json::from_value(arguments)?;
+            typecheck_tools::execute_find_trait_impls_for_type(client, request).await
+        }
         unknown => {
             warn!(tool = %unknown, "Unknown tool requested");
             Err(crate::error::McpError::InvalidRequest(format!(
@@ -84,7 +95,7 @@ mod tests {
     #[test]
     fn test_all_definitions_count() {
         let definitions = all_definitions();
-        assert_eq!(definitions.len(), 7);
+        assert_eq!(definitions.len(), 9);
     }
 
     #[test]
@@ -132,6 +143,8 @@ mod tests {
         assert!(names.contains(&"find_type_usages"));
         assert!(names.contains(&"get_module_tree"));
         assert!(names.contains(&"query_graph"));
+        assert!(names.contains(&"find_calls_with_type"));
+        assert!(names.contains(&"find_trait_impls_for_type"));
     }
 
     #[test]

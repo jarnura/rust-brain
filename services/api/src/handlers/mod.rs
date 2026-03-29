@@ -7,6 +7,7 @@ pub mod items;
 pub mod chat;
 pub mod ingestion;
 pub mod playground;
+pub mod typecheck;
 
 use serde::{Deserialize, Serialize};
 

@@ -145,6 +145,38 @@ impl TypeResolver {
         }
     }
     
+    /// Analyze source using heuristics only (skips syn parsing)
+    /// Use for large files where syn would be too slow.
+    pub fn analyze_heuristics_only(
+        &self,
+        crate_name: &str,
+        module_path: &str,
+        file_path: &str,
+        expanded_source: &str,
+        caller_fqns: &[String],
+    ) -> super::TypeResolutionResult {
+        let mut errors = Vec::new();
+        
+        match self.analyze_with_heuristics(crate_name, module_path, file_path, expanded_source, caller_fqns) {
+            Ok((trait_impls, call_sites)) => {
+                super::TypeResolutionResult {
+                    trait_impls,
+                    call_sites,
+                    errors,
+                }
+            }
+            Err(e) => {
+                warn!("Heuristic analysis failed: {}", e);
+                errors.push(format!("Heuristic analysis failed: {}", e));
+                super::TypeResolutionResult {
+                    trait_impls: Vec::new(),
+                    call_sites: Vec::new(),
+                    errors,
+                }
+            }
+        }
+    }
+    
     /// Analyze source using syn for precise type extraction
     fn analyze_with_syn(
         &self,

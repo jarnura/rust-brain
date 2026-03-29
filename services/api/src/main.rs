@@ -105,6 +105,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/get_trait_impls", get(handlers::graph::get_trait_impls))
         .route("/tools/find_usages_of_type", get(handlers::graph::find_usages_of_type))
         .route("/tools/get_module_tree", get(handlers::graph::get_module_tree))
+        // Type check queries
+        .route("/tools/find_calls_with_type", get(handlers::typecheck::find_calls_with_type))
+        .route("/tools/find_trait_impls_for_type", get(handlers::typecheck::find_trait_impls_for_type))
         .route("/tools/query_graph", post(handlers::graph::query_graph))
         .route("/tools/aggregate_search", post(handlers::search::aggregate_search))
         // Ingestion progress

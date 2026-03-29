@@ -1519,9 +1519,12 @@ impl PipelineStage for ParseStage {
             let expanded_cache_paths = state.expanded_sources.clone();
             drop(state);
             
-            // Clear state to free memory (expanded sources are now on disk)
+            // Clear source_files to free memory (these are cloned for local use).
+            // Note: We preserve expanded_sources because TypecheckStage needs these
+            // path mappings to read expanded source from disk cache. The HashMap only
+            // stores PathBuf → PathBuf mappings (~1-2 MB for large codebases), not
+            // actual source content, so the memory cost is negligible.
             let mut state = ctx.state.write().await;
-            state.expanded_sources = Arc::new(HashMap::new());
             state.source_files.clear();
             drop(state);
             
@@ -1903,7 +1906,6 @@ impl PipelineStage for TypecheckStage {
         }
         
         let state = ctx.state.read().await;
-        let source_files = state.source_files.clone();
         let expanded_cache_paths = state.expanded_sources.clone();
         let parsed_items = state.parsed_items.clone();
         drop(state);
@@ -1948,35 +1950,69 @@ impl PipelineStage for TypecheckStage {
         }
         
         // Process each source file with expanded source
-        for file_info in &source_files {
-            // Read expanded source from cache file on-demand
-            let cache_path = match expanded_cache_paths.get(&file_info.path) {
-                Some(p) => p,
-                None => continue, // Skip files without expanded source
-            };
+        // Note: We iterate over expanded_cache_paths values (deduplicated) because
+        // multiple source files map to the same cache file (one per crate).
+        // This avoids re-reading the same large expanded file multiple times.
+        let mut processed_cache_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        
+        for (file_path, cache_path) in expanded_cache_paths.iter() {
+            // Skip if we've already processed this cache file
+            if !processed_cache_files.insert(cache_path.clone()) {
+                continue;
+            }
             
             let expanded_source = match std::fs::read_to_string(cache_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    debug!("Could not read expanded cache for {:?}: {}", file_info.path, e);
+                    debug!("Could not read expanded cache for {:?}: {}", file_path, e);
                     continue;
                 }
             };
             
+            // For large files, use heuristic analysis instead of skipping
+            // Heuristics process line-by-line without loading the full AST
+            let use_heuristics = expanded_source.len() > 10 * 1024 * 1024;
+            
+            if use_heuristics {
+                debug!("Using heuristic analysis for large cache file {:?} ({} bytes)", cache_path, expanded_source.len());
+            }
+            
             // Get caller FQNs for this file
             let caller_fqns = file_to_caller_fqns
-                .get(&file_info.path)
+                .get(file_path)
                 .cloned()
                 .unwrap_or_default();
             
-            // Run type resolution analysis
-            match type_resolution_service.analyze_expanded_source(
-                &file_info.crate_name,
-                &file_info.module_path,
-                &file_info.path.to_string_lossy(),
-                &expanded_source,
-                &caller_fqns,
-            ).await {
+            // Derive crate_name and module_path from file path
+            // The expanded cache filename format is: {crate_name}-{hash}.expand
+            let crate_name = cache_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".expand"))
+                .and_then(|n| n.rsplit_once('-'))
+                .map(|(name, _)| name.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            // Run type resolution analysis (heuristic for large files, syn otherwise)
+            let result = if use_heuristics {
+                type_resolution_service.analyze_with_heuristics(
+                    &crate_name,
+                    "", // module_path not critical for typecheck
+                    &file_path.to_string_lossy(),
+                    &expanded_source,
+                    &caller_fqns,
+                ).await
+            } else {
+                type_resolution_service.analyze_expanded_source(
+                    &crate_name,
+                    "", // module_path not critical for typecheck
+                    &file_path.to_string_lossy(),
+                    &expanded_source,
+                    &caller_fqns,
+                ).await
+            };
+            
+            match result {
                 Ok(result) => {
                     typechecked_count += 1;
                     trait_impls_count += result.trait_impls.len();
@@ -1984,13 +2020,13 @@ impl PipelineStage for TypecheckStage {
                     
                     // Log any resolution errors
                     for err in result.errors {
-                        debug!("Type resolution warning for {:?}: {}", file_info.path, err);
+                        debug!("Type resolution warning for {:?}: {}", file_path, err);
                     }
                 }
                 Err(e) => {
-                    warn!("Type resolution failed for {:?}: {}", file_info.path, e);
+                    warn!("Type resolution failed for {:?}: {}", file_path, e);
                     state.errors.push(StageError::new("typecheck", e.to_string())
-                        .with_context(file_info.path.display().to_string()));
+                        .with_context(file_path.display().to_string()));
                     failed_count += 1;
                 }
             }

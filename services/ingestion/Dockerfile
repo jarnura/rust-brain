@@ -5,7 +5,7 @@
 # =============================================================================
 
 # Build stage
-FROM rust:1.85-slim AS builder
+FROM rust:slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -44,7 +44,7 @@ RUN touch crates/rustbrain-common/src/lib.rs services/ingestion/src/main.rs && \
 # RUN cargo test --release -p rustbrain-ingestion --all
 
 # Runtime stage
-FROM rust:1.85-slim AS runtime
+FROM rust:slim AS runtime
 
 # Install runtime dependencies including cargo-expand
 RUN apt-get update && apt-get install -y \
