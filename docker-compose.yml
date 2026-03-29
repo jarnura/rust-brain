@@ -330,7 +330,7 @@ services:
       CHAT_MODEL: ${CHAT_MODEL:-glm-latest}
     volumes:
       - opencode_data:/home/opencode/.local/share/opencode
-      - ./configs/opencode/config.json:/home/opencode/.config/opencode/config.json:ro
+      - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
       - ./:/home/opencode/projects/rust-brain:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4096/ || exit 1"]
