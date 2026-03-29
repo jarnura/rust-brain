@@ -14,8 +14,9 @@ Complete guide to ingesting Rust codebases into rust-brain for code intelligence
 6. [Configuration](#configuration)
 7. [Pipeline Stages](#pipeline-stages)
 8. [Memory Management](#memory-management)
-9. [Troubleshooting](#troubleshooting)
-10. [Incremental Ingestion (Planned)](#incremental-ingestion-planned)
+9. [Monitoring Ingestion](#monitoring-ingestion)
+10. [Troubleshooting](#troubleshooting)
+11. [Incremental Ingestion (Planned)](#incremental-ingestion-planned)
 
 ---
 
@@ -488,6 +489,164 @@ watch -n 5 'free -h'
 # Or reduce concurrency
 ./scripts/ingest.sh /path/to/crate --max-concurrency 2
 ```
+
+---
+
+## Monitoring Ingestion
+
+### Real-time Container Logs
+
+```bash
+# Follow ingestion logs in real-time
+docker logs -f rustbrain-ingestion
+
+# Last 100 lines
+docker logs rustbrain-ingestion --tail 100
+
+# With timestamps
+docker logs -f rustbrain-ingestion --timestamps
+```
+
+### Memory & Resource Monitoring
+
+```bash
+# Watch container resource usage (updates every 2 seconds)
+watch -n 2 'docker stats rustbrain-ingestion --no-stream'
+
+# Check host memory
+watch -n 5 'free -h'
+
+# Check all running containers
+docker stats --no-stream
+```
+
+### Service Health During Ingestion
+
+```bash
+# Check all services at once
+bash scripts/healthcheck.sh
+
+# Individual service checks
+curl -s http://localhost:6333/healthz                        # Qdrant
+curl -s http://localhost:11434/api/tags                      # Ollama
+docker exec rustbrain-postgres pg_isready -U rustbrain       # Postgres
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p pass "RETURN 1"  # Neo4j
+```
+
+### Grafana Dashboards
+
+```bash
+# Open Grafana in browser
+open http://localhost:3000
+# Login: admin / rustbrain
+```
+
+Available dashboards:
+- **rust-brain Overview** - System-wide metrics
+- **Ingestion Pipeline** - Stage progress and timing
+
+### Database Progress Queries
+
+```bash
+# Items inserted so far
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "SELECT COUNT(*) FROM extracted_items;"
+
+# Source files processed
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "SELECT COUNT(*) FROM source_files;"
+
+# Current ingestion run status
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "SELECT * FROM ingestion_runs ORDER BY started_at DESC LIMIT 5;"
+```
+
+### Vector Count in Qdrant
+
+```bash
+# Embeddings created so far
+curl -s http://localhost:6333/collections/code_embeddings | jq '.result.points_count'
+
+# Collection info (vectors, segments, status)
+curl -s http://localhost:6333/collections/code_embeddings | jq '.result'
+```
+
+### Neo4j Graph Progress
+
+```bash
+# Node count by type
+curl -s http://localhost:7474/db/neo4j/tx/commit \
+  -u neo4j:yourpassword \
+  -H "Content-Type: application/json" \
+  -d '{"statements":[{"statement":"MATCH (n) RETURN labels(n)[0] as type, count(n) as count ORDER BY count DESC"}]}' | jq .
+
+# Total relationship count
+curl -s http://localhost:7474/db/neo4j/tx/commit \
+  -u neo4j:yourpassword \
+  -H "Content-Type: application/json" \
+  -d '{"statements":[{"statement":"MATCH ()-[r]->() RETURN count(r)"}]}' | jq .
+```
+
+### Combined Monitor Script
+
+Create a monitoring script for quick status:
+
+```bash
+cat > scripts/monitor-ingestion.sh << 'EOF'
+#!/bin/bash
+# Monitor ingestion progress
+
+echo "=== INGESTION MONITOR ==="
+echo "Time: $(date)"
+echo ""
+
+echo "--- Container Status ---"
+docker ps --filter "name=ingestion" --format "table {{.Names}}\t{{.Status}}"
+
+echo ""
+echo "--- Memory Usage ---"
+docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}" \
+  rustbrain-ingestion rustbrain-ollama rustbrain-postgres rustbrain-neo4j 2>/dev/null
+
+echo ""
+echo "--- Progress ---"
+ITEMS=$(docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -t -c 'SELECT COUNT(*) FROM extracted_items;' 2>/dev/null | tr -d ' ')
+VECTORS=$(curl -s http://localhost:6333/collections/code_embeddings 2>/dev/null | jq -r '.result.points_count // "N/A"')
+echo "Items: ${ITEMS:-N/A}"
+echo "Vectors: ${VECTORS:-N/A}"
+
+echo ""
+echo "--- Last 10 Log Lines ---"
+docker logs rustbrain-ingestion --tail 10 2>&1
+EOF
+chmod +x scripts/monitor-ingestion.sh
+```
+
+Run it:
+```bash
+./scripts/monitor-ingestion.sh
+```
+
+### Stage Progress from Verbose Logs
+
+```bash
+# Run ingestion with verbose logging
+./scripts/ingest.sh /path/to/crate --verbose 2>&1 | tee ingestion.log
+
+# In another terminal, watch for stage progress
+tail -f ingestion.log | grep -E "Stage|Processing|Completed|ERROR|items"
+```
+
+### Monitoring Quick Reference
+
+| What | Command |
+|------|---------|
+| **Logs** | `docker logs -f rustbrain-ingestion` |
+| **Memory** | `docker stats rustbrain-ingestion --no-stream` |
+| **Items** | `docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -t -c "SELECT COUNT(*) FROM extracted_items;"` |
+| **Vectors** | `curl -s localhost:6333/collections/code_embeddings \| jq '.result.points_count'` |
+| **Health** | `bash scripts/healthcheck.sh` |
+| **Grafana** | `http://localhost:3000` |
 
 ---
 
