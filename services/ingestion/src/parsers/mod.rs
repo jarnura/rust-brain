@@ -170,10 +170,10 @@ impl DualParser {
                     continue;
                 };
 
-            // Try syn parsing
-            match self.syn.parse_item(item_source, module_path, &skeleton) {
-                Ok(parsed_item) => {
-                    items.push(parsed_item);
+            // Try syn parsing (parse_items returns Vec for impl blocks with methods)
+            match self.syn.parse_items(item_source, module_path, &skeleton) {
+                Ok(parsed_items) => {
+                    items.extend(parsed_items);
                 }
                 Err(e) => {
                     // Record the error

@@ -268,7 +268,8 @@ impl TypeResolver {
         
         let self_type = self.type_to_string(&impl_item.self_ty);
         
-        let impl_fqn = format!("{}::<impl {} for {}>", module_path, trait_fqn, self_type);
+        // Use canonical format matching syn_parser: module::TraitName_Type
+        let impl_fqn = format!("{}::{}_{}", module_path, trait_fqn, self_type);
         
         // Extract generic parameters
         let generic_params = self.extract_generic_params(&impl_item.generics);
@@ -690,16 +691,15 @@ impl TypeResolver {
         segments.join("::")
     }
     
-    /// Generate caller FQN for an impl block
+    /// Generate caller FQN for an impl block.
+    ///
+    /// Uses canonical `module::Type` format to match FQNs produced by
+    /// syn_parser's parse_impl_with_methods (which creates `module::Type::method`).
     fn impl_caller_fqn(&self, impl_item: &ItemImpl, module_path: &str) -> String {
         let self_type = self.type_to_string(&impl_item.self_ty);
-        
-        if let Some((_, trait_path, _)) = &impl_item.trait_ {
-            let trait_name = self.path_to_fqn(trait_path);
-            format!("{}::<impl {} for {}>", module_path, trait_name, self_type)
-        } else {
-            format!("{}::<impl {}>", module_path, self_type)
-        }
+
+        // Use module::Type so that appending ::method yields module::Type::method
+        format!("{}::{}", module_path, self_type)
     }
     
     /// Extract generic parameters from syn Generics
@@ -792,7 +792,7 @@ impl TypeResolver {
                 trait_impls.push(TraitImplementation {
                     trait_fqn: trait_fqn.to_string(),
                     self_type: self_type.to_string(),
-                    impl_fqn: format!("{}::<impl {} for {}>", module_path, trait_fqn, self_type),
+                    impl_fqn: format!("{}::{}_{}", module_path, trait_fqn, self_type),
                     file_path: file_path.to_string(),
                     line_number: line_num + 1,
                     generic_params: Vec::new(),

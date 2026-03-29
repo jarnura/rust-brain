@@ -5,3 +5,6 @@ members = [
     "services/ingestion",
     "services/api",
 ]
+exclude = [
+    "target-repo",
+]

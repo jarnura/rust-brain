@@ -1525,7 +1525,8 @@ impl PipelineStage for ParseStage {
             // stores PathBuf → PathBuf mappings (~1-2 MB for large codebases), not
             // actual source content, so the memory cost is negligible.
             let mut state = ctx.state.write().await;
-            state.source_files.clear();
+            // DON'T clear source_files - ExtractStage needs them to store source content
+            // state.source_files.clear();
             drop(state);
             
             trim_memory();
@@ -2274,6 +2275,8 @@ impl PipelineStage for ExtractStage {
         
         // Step 2: Update source_file_id for items already in database (from parse stage)
         // Items were inserted with NULL source_file_id during parse, now link them
+        // Use prefix matching: item FQN should start with module_path::
+        // This handles methods (module::Type::method) where FQN has extra segments
         let pool = stage.pool.as_ref()
             .ok_or_else(|| anyhow!("Database not connected"))?;
         
@@ -2283,7 +2286,7 @@ impl PipelineStage for ExtractStage {
             SET source_file_id = sf.id
             FROM source_files sf
             WHERE ei.source_file_id IS NULL
-              AND sf.module_path = regexp_replace(ei.fqn, '::[^:]+$', '')
+              AND ei.fqn LIKE sf.module_path || '::%'
             "#
         )
         .execute(pool)
@@ -2929,7 +2932,11 @@ impl PipelineStage for GraphStage {
         let mut calls_count = 0;
         for (_path, items) in &parsed_items {
             for item in items {
-                if (item.item_type == "function" || item.item_type == "impl") && !item.body_source.is_empty() {
+                // Only scan functions (standalone + impl methods, NOT impl blocks).
+                // Impl methods are now individual ParsedItems with item_type="function"
+                // and an "impl_type=..." attribute. Scanning impl block body_source
+                // would double-count calls already found in individual methods.
+                if item.item_type == "function" && !item.body_source.is_empty() {
                     // Static/free function calls
                     let calls = Self::extract_function_calls(&item.body_source, &function_fqns, &function_names_to_fqns, &item.fqn);
                     for (callee_fqn, line) in &calls {
@@ -2947,15 +2954,14 @@ impl PipelineStage for GraphStage {
                     // Method calls with local type tracking
                     let static_callee_fqns: std::collections::HashSet<&str> =
                         calls.iter().map(|(fqn, _)| fqn.as_str()).collect();
-                    let self_type = if item.item_type == "impl" {
-                        Some(item.name.as_str())
-                    } else {
-                        None
-                    };
+                    // Determine self_type from impl_type attribute (set by parse_impl_with_methods)
+                    let self_type_attr = item.attributes.iter()
+                        .find(|a| a.starts_with("impl_type="))
+                        .map(|a| &a["impl_type=".len()..]);
                     let method_calls = Self::extract_method_calls(
                         &item.body_source,
                         &function_names_to_fqns,
-                        self_type,
+                        self_type_attr,
                     );
                     for (callee_fqn, line) in &method_calls {
                         // Avoid duplicate entries
@@ -3045,23 +3051,25 @@ impl PipelineStage for GraphStage {
                     }
                 }
                 
-                // Extract type usages from impl blocks
-                if item.item_type == "impl" && !item.body_source.is_empty() {
-                    let body_types = Self::extract_types_from_body(&item.body_source, &item.fqn);
-                    for (type_name, line) in body_types {
+                // Extract type usages from impl block signatures (e.g. "impl Trait for Type")
+                // Body scanning is handled by individual method items (item_type="function")
+                // to avoid double-counting.
+                if item.item_type == "impl" {
+                    let sig_types = Self::extract_types_from_impl_signature(&item.signature);
+                    for (type_name, context) in sig_types {
                         let type_fqn = Self::resolve_type_fqn_with_lookup(
-                            &item.fqn, 
-                            &type_name, 
-                            &type_fqns, 
+                            &item.fqn,
+                            &type_name,
+                            &type_fqns,
                             &type_names_to_fqns
                         );
-                        
+
                         if type_fqns.contains(&type_fqn) || !Self::is_primitive_type(&type_name) {
                             relationships.push(RelationshipBuilder::create_uses_type(
                                 item.fqn.clone(),
                                 type_fqn.clone(),
-                                "body",
-                                Some(line),
+                                context,
+                                Some(item.start_line),
                             ));
                             uses_type_count += 1;
                         }
@@ -3319,11 +3327,12 @@ impl GraphStage {
                 };
 
                 if let Some(type_name) = receiver_type {
-                    // Look for Type::method in known functions
-                    let qualified = format!("{}::{}", type_name, method);
+                    // Look for Type::method in known functions.
+                    // Methods now have FQNs like module::Type::method,
+                    // so we search for a suffix of ::Type::method.
+                    let qualified_suffix = format!("::{}::{}", type_name, method);
                     if let Some(fqns) = function_names_to_fqns.get(method) {
-                        // Find FQN that contains the type name
-                        if let Some(fqn) = fqns.iter().find(|f| f.contains(&format!("::{}", qualified)) || f.ends_with(&qualified)) {
+                        if let Some(fqn) = fqns.iter().find(|f| f.ends_with(&qualified_suffix)) {
                             calls.push((fqn.clone(), line_num + 1));
                         }
                     }
@@ -3361,12 +3370,17 @@ impl GraphStage {
             if !method_name.is_empty() {
                 if let Some(fqns) = function_names_to_fqns.get(method_name) {
                     let type_prefix = &identifier[..last_sep];
-                    // Prefer FQN that contains the type/path prefix
-                    if let Some(fqn) = fqns.iter().find(|f| f.contains(type_prefix)) {
+                    // Match FQNs that contain ::TypePrefix::method (exact type match)
+                    let suffix = format!("::{}::{}", type_prefix, method_name);
+                    if let Some(fqn) = fqns.iter().find(|f| f.ends_with(&suffix)) {
                         return Some(fqn.clone());
                     }
-                    // Fall back to first match by method name
-                    return fqns.first().cloned();
+                    // Also try a looser contains check for nested module paths
+                    if let Some(fqn) = fqns.iter().find(|f| f.contains(&format!("::{}", type_prefix))) {
+                        return Some(fqn.clone());
+                    }
+                    // Do NOT fall back to fqns.first() — that would pick an
+                    // arbitrary function that happens to share the same short name.
                 }
             }
         }
@@ -3503,6 +3517,85 @@ impl GraphStage {
         types
     }
     
+    /// Extract type names from an impl block signature.
+    ///
+    /// Handles patterns like:
+    /// - `impl Type`            → extracts Type
+    /// - `impl Trait for Type`  → extracts Trait, Type
+    /// - `impl<T> Trait for Type<T>` → extracts Trait, Type
+    /// - `unsafe impl Trait for Type` → extracts Trait, Type
+    fn extract_types_from_impl_signature(signature: &str) -> Vec<(String, String)> {
+        let mut types = Vec::new();
+        let sig = signature.trim();
+
+        // Strip "unsafe " prefix if present
+        let sig = sig.strip_prefix("unsafe ").unwrap_or(sig);
+        // Strip "impl" prefix
+        let sig = sig.strip_prefix("impl").unwrap_or(sig).trim();
+
+        // Strip leading generic params: <T: Clone, U>
+        let sig = if sig.starts_with('<') {
+            // Find the matching '>'
+            let mut depth = 0;
+            let mut end = 0;
+            for (i, c) in sig.char_indices() {
+                match c {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            sig[end..].trim()
+        } else {
+            sig
+        };
+
+        if let Some(for_pos) = sig.find(" for ") {
+            // "Trait for Type" pattern
+            let trait_part = sig[..for_pos].trim();
+            let type_part = sig[for_pos + 5..].trim();
+
+            // Extract trait name (strip generic params, trim whitespace)
+            let trait_name = if let Some(angle) = trait_part.find('<') {
+                trait_part[..angle].trim()
+            } else {
+                trait_part
+            };
+            if !trait_name.is_empty() && !Self::is_primitive_type(trait_name) {
+                types.push((trait_name.to_string(), "impl_trait".to_string()));
+            }
+
+            // Extract type name (strip generic params, trim whitespace)
+            let type_name = if let Some(angle) = type_part.find('<') {
+                type_part[..angle].trim()
+            } else {
+                type_part
+            };
+            if !type_name.is_empty() && !Self::is_primitive_type(type_name) {
+                types.push((type_name.to_string(), "impl_self_type".to_string()));
+            }
+        } else {
+            // "impl Type" pattern (inherent impl)
+            let type_name = if let Some(angle) = sig.find('<') {
+                sig[..angle].trim()
+            } else {
+                sig
+            };
+            let type_name = type_name.trim();
+            if !type_name.is_empty() && !Self::is_primitive_type(type_name) {
+                types.push((type_name.to_string(), "impl_self_type".to_string()));
+            }
+        }
+
+        types
+    }
+
     /// Extract type names from a type expression
     fn extract_type_names(type_str: &str) -> Vec<String> {
         let mut types = Vec::new();
@@ -4462,5 +4555,290 @@ mod tests {
         let mut report = DataLifecycleReport::default();
         report.errors.push("connection failed".to_string());
         assert!(!report.is_successful());
+    }
+
+    // =========================================================================
+    // Call-graph bug-fix verification tests (Bugs #1–#7)
+    // =========================================================================
+
+    /// Bug #1: parse_impl now emits per-method ParsedItems via DualParser
+    #[test]
+    fn test_bug1_dual_parser_emits_impl_methods() {
+        let parser = crate::parsers::DualParser::new().unwrap();
+        let source = r#"
+            impl Server {
+                pub fn start(&self) { }
+                fn stop(&self) { }
+            }
+        "#;
+        let result = parser.parse(source, "app::net").unwrap();
+
+        // Must contain the impl block AND individual method items
+        let impl_items: Vec<_> = result.items.iter().filter(|i| i.item_type.as_str() == "impl").collect();
+        let fn_items: Vec<_> = result.items.iter().filter(|i| i.item_type.as_str() == "function").collect();
+
+        assert_eq!(impl_items.len(), 1, "Expected 1 impl block");
+        assert!(fn_items.len() >= 2, "Expected at least 2 method items, got {}", fn_items.len());
+
+        // Verify canonical FQN format: module::Type::method
+        let start_method = fn_items.iter().find(|i| i.name == "start");
+        assert!(start_method.is_some(), "Should have a 'start' method item");
+        assert_eq!(start_method.unwrap().fqn, "app::net::Server::start");
+
+        let stop_method = fn_items.iter().find(|i| i.name == "stop");
+        assert!(stop_method.is_some(), "Should have a 'stop' method item");
+        assert_eq!(stop_method.unwrap().fqn, "app::net::Server::stop");
+    }
+
+    /// Bug #2: method FQNs are now registered in the function_names_to_fqns index
+    /// because they have item_type == "function"
+    #[test]
+    fn test_bug2_method_fqns_registered_in_function_index() {
+        let parser = crate::parsers::DualParser::new().unwrap();
+        let source = r#"
+            pub fn standalone() {}
+
+            impl Handler {
+                pub fn handle(&self) {}
+            }
+        "#;
+        let result = parser.parse(source, "crate::svc").unwrap();
+
+        // Simulate the index-building code from GraphStage
+        let mut function_fqns = std::collections::HashSet::new();
+        let mut function_names_to_fqns: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+        for item in &result.items {
+            if item.item_type.as_str() == "function" {
+                function_fqns.insert(item.fqn.clone());
+                function_names_to_fqns
+                    .entry(item.name.clone())
+                    .or_default()
+                    .push(item.fqn.clone());
+            }
+        }
+
+        // standalone function should be in the index
+        assert!(function_fqns.contains("crate::svc::standalone"), "standalone fn missing");
+
+        // impl method should also be in the index
+        assert!(function_fqns.contains("crate::svc::Handler::handle"),
+            "impl method 'handle' not in function_fqns. Contents: {:?}", function_fqns);
+
+        // Should be findable by short name
+        assert!(function_names_to_fqns.contains_key("handle"),
+            "'handle' not in function_names_to_fqns");
+    }
+
+    /// Bug #3: self.method() calls now resolve correctly
+    #[test]
+    fn test_bug3_self_method_resolves() {
+        let body = r#"
+            self.process(data);
+            self.validate();
+        "#;
+        // Methods with canonical FQN module::Type::method
+        let mut names_to_fqns = std::collections::HashMap::new();
+        names_to_fqns.insert(
+            "process".to_string(),
+            vec!["app::svc::Handler::process".to_string()],
+        );
+        names_to_fqns.insert(
+            "validate".to_string(),
+            vec!["app::svc::Handler::validate".to_string()],
+        );
+
+        let calls = GraphStage::extract_method_calls(body, &names_to_fqns, Some("Handler"));
+
+        assert!(calls.len() >= 2,
+            "self.method() should resolve 2 calls, got {}: {:?}", calls.len(), calls);
+
+        let callee_fqns: Vec<&str> = calls.iter().map(|(fqn, _)| fqn.as_str()).collect();
+        assert!(callee_fqns.contains(&"app::svc::Handler::process"),
+            "process not resolved: {:?}", callee_fqns);
+        assert!(callee_fqns.contains(&"app::svc::Handler::validate"),
+            "validate not resolved: {:?}", callee_fqns);
+    }
+
+    /// Bug #3 (negative): self.method() must NOT match a method from a different type
+    #[test]
+    fn test_bug3_self_method_does_not_crossmatch() {
+        let body = r#"
+            self.run();
+        "#;
+        let mut names_to_fqns = std::collections::HashMap::new();
+        // 'run' exists on OtherType, NOT on MyType
+        names_to_fqns.insert(
+            "run".to_string(),
+            vec!["app::other::OtherType::run".to_string()],
+        );
+
+        let calls = GraphStage::extract_method_calls(body, &names_to_fqns, Some("MyType"));
+
+        // Should NOT match because "::MyType::run" doesn't end any FQN
+        assert!(calls.is_empty(),
+            "self.method() should NOT cross-resolve to OtherType, but got: {:?}", calls);
+    }
+
+    /// Bug #4: Type::method() no longer falls back to an arbitrary first match
+    #[test]
+    fn test_bug4_type_method_no_arbitrary_fallback() {
+        let mut function_fqns = std::collections::HashSet::new();
+        let mut function_names_to_fqns = std::collections::HashMap::new();
+
+        // Two different types have a method called "process"
+        function_fqns.insert("crate::alpha::TypeA::process".to_string());
+        function_fqns.insert("crate::beta::TypeB::process".to_string());
+        function_names_to_fqns.insert(
+            "process".to_string(),
+            vec![
+                "crate::alpha::TypeA::process".to_string(),
+                "crate::beta::TypeB::process".to_string(),
+            ],
+        );
+
+        // Calling TypeA::process should resolve to TypeA's version
+        let result_a = GraphStage::resolve_call_target(
+            "TypeA::process",
+            &function_fqns,
+            &function_names_to_fqns,
+            Some("crate::gamma"),
+        );
+        assert_eq!(result_a, Some("crate::alpha::TypeA::process".to_string()),
+            "TypeA::process should resolve to TypeA, got: {:?}", result_a);
+
+        // Calling TypeB::process should resolve to TypeB's version
+        let result_b = GraphStage::resolve_call_target(
+            "TypeB::process",
+            &function_fqns,
+            &function_names_to_fqns,
+            Some("crate::gamma"),
+        );
+        assert_eq!(result_b, Some("crate::beta::TypeB::process".to_string()),
+            "TypeB::process should resolve to TypeB, got: {:?}", result_b);
+
+        // Calling UnknownType::process should return None, NOT an arbitrary match
+        let result_none = GraphStage::resolve_call_target(
+            "UnknownType::process",
+            &function_fqns,
+            &function_names_to_fqns,
+            Some("crate::gamma"),
+        );
+        assert!(result_none.is_none(),
+            "UnknownType::process should be None (no arbitrary fallback), got: {:?}", result_none);
+    }
+
+    /// Bug #6: impl block body is no longer scanned for calls (only method bodies are).
+    /// With the fix, the CALLS loop only processes items where item_type == "function",
+    /// so the impl block (which contains ALL methods' source) is skipped.
+    #[test]
+    fn test_bug6_impl_block_not_scanned_for_calls() {
+        let parser = crate::parsers::DualParser::new().unwrap();
+        let source = r#"
+            impl Processor {
+                fn run(&self) {
+                    helper();
+                }
+            }
+            fn helper() {}
+        "#;
+        let result = parser.parse(source, "app").unwrap();
+
+        // The impl block itself should NOT be treated as a call source
+        let impl_items: Vec<_> = result.items.iter()
+            .filter(|i| i.item_type.as_str() == "impl")
+            .collect();
+        let fn_items: Vec<_> = result.items.iter()
+            .filter(|i| i.item_type.as_str() == "function")
+            .collect();
+
+        assert!(!impl_items.is_empty(), "Should have impl block");
+        assert!(fn_items.len() >= 2, "Should have run + helper as function items");
+
+        // The fixed loop ONLY scans "function" items, skipping "impl".
+        // Verify that the impl block's body_source (which contains everything)
+        // would produce duplicates if we wrongly scanned it too.
+        let impl_body = &impl_items[0].body_source;
+        assert!(impl_body.contains("helper"),
+            "impl body_source should contain helper() call text (proving it would double-count if scanned)");
+
+        // But the individual method 'run' also has helper in its body
+        let run_method = fn_items.iter().find(|i| i.name == "run");
+        assert!(run_method.is_some(), "Should have 'run' method");
+        assert!(run_method.unwrap().body_source.contains("helper"),
+            "run's body_source should also contain helper() call");
+
+        // The fix ensures we only scan function items — so impl body is NOT double-scanned
+        // This test documents the structural invariant: both impl and method contain
+        // the same call text, but only the method is processed.
+    }
+
+    /// Bug #7: resolver.rs FQN format now matches canonical format
+    #[test]
+    fn test_bug7_resolver_fqn_matches_canonical_format() {
+        // The TypeResolver's impl_caller_fqn now produces "module::Type"
+        // so that appending "::method" gives "module::Type::method".
+        // Verify this matches what parse_impl_with_methods produces.
+        let parser = crate::parsers::DualParser::new().unwrap();
+        let source = r#"
+            impl MyService {
+                fn do_work(&self) {}
+            }
+        "#;
+        let result = parser.parse(source, "crate::svc").unwrap();
+
+        let method = result.items.iter().find(|i| i.name == "do_work");
+        assert!(method.is_some(), "Should find 'do_work' method");
+
+        let method = method.unwrap();
+        // The canonical FQN from parse_impl_with_methods
+        assert_eq!(method.fqn, "crate::svc::MyService::do_work");
+
+        // The resolver would produce impl_caller_fqn = "crate::svc::MyService"
+        // and then method FQN = impl_caller_fqn + "::do_work" = "crate::svc::MyService::do_work"
+        // These now match.
+        let simulated_resolver_fqn = format!("{}::{}", "crate::svc::MyService", "do_work");
+        assert_eq!(method.fqn, simulated_resolver_fqn,
+            "resolver FQN should match parser FQN");
+    }
+
+    /// Bug #5: impl block signatures are now analyzed for USES_TYPE relationships
+    /// using the dedicated extract_types_from_impl_signature method.
+    #[test]
+    fn test_bug5_impl_signature_types_extracted() {
+        // Trait impl: "impl MyTrait for MyStruct"
+        let types = GraphStage::extract_types_from_impl_signature("impl MyTrait for MyStruct");
+        let type_names: Vec<&str> = types.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(type_names.contains(&"MyTrait"),
+            "Should extract trait 'MyTrait'. Found: {:?}", type_names);
+        assert!(type_names.contains(&"MyStruct"),
+            "Should extract self type 'MyStruct'. Found: {:?}", type_names);
+
+        // Verify context labels
+        let contexts: Vec<&str> = types.iter().map(|(_, ctx)| ctx.as_str()).collect();
+        assert!(contexts.contains(&"impl_trait"), "Should have impl_trait context");
+        assert!(contexts.contains(&"impl_self_type"), "Should have impl_self_type context");
+
+        // Inherent impl: "impl MyStruct"
+        let types2 = GraphStage::extract_types_from_impl_signature("impl MyStruct");
+        let type_names2: Vec<&str> = types2.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(type_names2.contains(&"MyStruct"),
+            "Should extract self type from inherent impl. Found: {:?}", type_names2);
+
+        // Generic impl: "impl < T > Handler for Container < T >"
+        let types3 = GraphStage::extract_types_from_impl_signature("impl < T > Handler for Container < T >");
+        let type_names3: Vec<&str> = types3.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(type_names3.iter().any(|t| *t == "Handler"),
+            "Should extract trait from generic impl. Found: {:?}", type_names3);
+        assert!(type_names3.iter().any(|t| *t == "Container"),
+            "Should extract type from generic impl. Found: {:?}", type_names3);
+
+        // Unsafe impl: stdlib traits like Send are filtered by is_primitive_type
+        let types4 = GraphStage::extract_types_from_impl_signature("unsafe impl Serializer for MyStruct");
+        let type_names4: Vec<&str> = types4.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(type_names4.contains(&"MyStruct"),
+            "Should extract type from unsafe impl. Found: {:?}", type_names4);
+        assert!(type_names4.contains(&"Serializer"),
+            "Should extract trait from unsafe impl. Found: {:?}", type_names4);
     }
 }

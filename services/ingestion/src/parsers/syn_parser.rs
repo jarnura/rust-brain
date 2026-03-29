@@ -40,14 +40,30 @@ impl SynParser {
         Self
     }
 
-    /// Parse a single item from source
+    /// Parse a single item from source (returns first item only, for backward compat)
     pub fn parse_item(
         &self,
         source: &str,
         module_path: &str,
         skeleton: &SkeletonItem,
     ) -> Result<ParsedItem> {
-        // Try to parse as a valid Rust item
+        let items = self.parse_items(source, module_path, skeleton)?;
+        items
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("No items parsed"))
+    }
+
+    /// Parse source into one or more items.
+    ///
+    /// For impl blocks this returns the impl block itself PLUS individual
+    /// method items with Type-qualified FQNs (e.g. `module::Type::method`).
+    pub fn parse_items(
+        &self,
+        source: &str,
+        module_path: &str,
+        skeleton: &SkeletonItem,
+    ) -> Result<Vec<ParsedItem>> {
         let item: SynItem = syn::parse_str(source).with_context(|| {
             format!(
                 "Failed to parse item: {}",
@@ -55,11 +71,30 @@ impl SynParser {
             )
         })?;
 
-        self.item_to_parsed(item, source, module_path, skeleton)
+        self.item_to_parsed_items(item, source, module_path, skeleton)
     }
 
-    /// Convert syn Item to ParsedItem
-    fn item_to_parsed(
+    /// Convert syn Item to one or more ParsedItems.
+    ///
+    /// Impl blocks yield the block itself plus per-method items.
+    fn item_to_parsed_items(
+        &self,
+        item: SynItem,
+        source: &str,
+        module_path: &str,
+        skeleton: &SkeletonItem,
+    ) -> Result<Vec<ParsedItem>> {
+        match item {
+            SynItem::Impl(impl_item) => self.parse_impl_with_methods(impl_item, source, module_path, skeleton),
+            other => {
+                let parsed = self.item_to_parsed_single(other, source, module_path, skeleton)?;
+                Ok(vec![parsed])
+            }
+        }
+    }
+
+    /// Convert a non-impl syn Item to a single ParsedItem
+    fn item_to_parsed_single(
         &self,
         item: SynItem,
         source: &str,
@@ -75,7 +110,6 @@ impl SynParser {
             SynItem::Trait(trait_item) => {
                 self.parse_trait(trait_item, source, module_path, skeleton)
             }
-            SynItem::Impl(impl_item) => self.parse_impl(impl_item, source, module_path, skeleton),
             SynItem::Type(type_item) => {
                 self.parse_type_alias(type_item, source, module_path, skeleton)
             }
@@ -261,30 +295,36 @@ impl SynParser {
         })
     }
 
-    /// Parse an impl block
-    fn parse_impl(
+    /// Parse an impl block, emitting the block itself plus per-method items.
+    ///
+    /// Methods get FQNs like `module::Type::method_name` so they appear in
+    /// the call-graph resolution index alongside standalone functions.
+    fn parse_impl_with_methods(
         &self,
         item: ItemImpl,
         source: &str,
         module_path: &str,
         skeleton: &SkeletonItem,
-    ) -> Result<ParsedItem> {
+    ) -> Result<Vec<ParsedItem>> {
+        let mut results = Vec::new();
+
         // Extract the self type name
         let self_type = self.type_to_string(&item.self_ty);
 
         // Determine if this is a trait impl
-        let (name, trait_fqn) = if let Some((_, path, _)) = &item.trait_ {
+        let (impl_name, trait_fqn) = if let Some((_, path, _)) = &item.trait_ {
             let trait_name = path
                 .segments
                 .iter()
                 .map(|s| s.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");
-            (format!("{}_{}", trait_name, self_type), Some(trait_name))
+            (format!("{}_{}", trait_name, self_type), Some(trait_name.clone()))
         } else {
             (self_type.clone(), None)
         };
 
+        let impl_fqn = format!("{}::{}", module_path, impl_name);
         let visibility = Visibility::Public; // Impl blocks don't have visibility
         let signature = self.extract_impl_signature(&item);
         let generic_params = self.extract_generic_params(&item.generics);
@@ -292,17 +332,17 @@ impl SynParser {
         let attributes = self.extract_attributes(&item.attrs);
         let doc_comment = self.extract_doc_from_attrs(&item.attrs);
 
-        // For impl blocks, we might want to include trait info in attributes
         let mut final_attributes = attributes;
-        if let Some(trait_name) = trait_fqn {
+        if let Some(ref trait_name) = trait_fqn {
             final_attributes.push(format!("impl_for={}", trait_name));
         }
 
-        Ok(ParsedItem {
-            fqn: format!("{}::{}", module_path, name),
+        // Emit the impl block item itself (with body_source for backward compat)
+        results.push(ParsedItem {
+            fqn: impl_fqn.clone(),
             item_type: ItemType::Impl,
-            name,
-            visibility,
+            name: impl_name,
+            visibility: visibility.clone(),
             signature,
             generic_params,
             where_clauses,
@@ -312,7 +352,49 @@ impl SynParser {
             end_line: skeleton.end_line,
             body_source: truncate_body_source(source),
             generated_by: None,
-        })
+        });
+
+        // Now emit individual method items from item.items
+        for impl_member in &item.items {
+            if let syn::ImplItem::Fn(method) = impl_member {
+                let method_name = method.sig.ident.to_string();
+                let method_visibility = self.convert_visibility(&method.vis);
+                let method_sig = self.extract_impl_method_signature(method);
+                let method_generics = self.extract_generic_params(&method.sig.generics);
+                let method_where = self.extract_where_clauses(&method.sig.generics.where_clause);
+                let method_attrs = self.extract_attributes(&method.attrs);
+                let method_doc = self.extract_doc_from_attrs(&method.attrs);
+                let method_body = method.block.to_token_stream().to_string();
+
+                // Canonical FQN: module::Type::method
+                let method_fqn = format!("{}::{}::{}", module_path, self_type, method_name);
+
+                // Tag with parent impl info
+                let mut method_final_attrs = method_attrs;
+                method_final_attrs.push(format!("impl_type={}", self_type));
+                if let Some(ref trait_name) = trait_fqn {
+                    method_final_attrs.push(format!("impl_for={}", trait_name));
+                }
+
+                results.push(ParsedItem {
+                    fqn: method_fqn,
+                    item_type: ItemType::Function,
+                    name: method_name,
+                    visibility: method_visibility,
+                    signature: method_sig,
+                    generic_params: method_generics,
+                    where_clauses: method_where,
+                    attributes: method_final_attrs,
+                    doc_comment: method_doc,
+                    start_line: skeleton.start_line, // approximate — inside impl block
+                    end_line: skeleton.end_line,
+                    body_source: truncate_body_source(&method_body),
+                    generated_by: None,
+                });
+            }
+        }
+
+        Ok(results)
     }
 
     /// Parse a type alias
@@ -860,6 +942,45 @@ impl SynParser {
         parts.join(" ")
     }
 
+    /// Extract signature from an impl method (ImplItemFn)
+    fn extract_impl_method_signature(&self, method: &syn::ImplItemFn) -> String {
+        let sig = &method.sig;
+        let mut parts = Vec::new();
+
+        parts.push(method.vis.to_token_stream().to_string());
+
+        if sig.constness.is_some() {
+            parts.push("const".to_string());
+        }
+        if sig.asyncness.is_some() {
+            parts.push("async".to_string());
+        }
+        if sig.unsafety.is_some() {
+            parts.push("unsafe".to_string());
+        }
+
+        parts.push("fn".to_string());
+        parts.push(sig.ident.to_string());
+
+        if !sig.generics.params.is_empty() {
+            parts.push(
+                sig.generics
+                    .split_for_impl()
+                    .0
+                    .to_token_stream()
+                    .to_string(),
+            );
+        }
+
+        parts.push(sig.inputs.to_token_stream().to_string());
+
+        if let ReturnType::Type(_, ty) = &sig.output {
+            parts.push(format!("-> {}", ty.to_token_stream()));
+        }
+
+        parts.join(" ")
+    }
+
     /// Extract type alias signature
     fn extract_type_alias_signature(&self, item: &SynItemType) -> String {
         format!(
@@ -1201,5 +1322,85 @@ pub fn simple() {}"#;
             .attributes
             .iter()
             .any(|a| a.starts_with("cfg_conditions=")));
+    }
+
+    #[test]
+    fn test_parse_impl_emits_methods() {
+        let parser = SynParser::new();
+        let source = r#"impl Foo {
+    pub fn new() -> Self { Foo }
+    fn helper(&self) -> i32 { 42 }
+}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let items = parser.parse_items(source, "my_crate::my_mod", &skeleton).unwrap();
+
+        // Should emit impl block + 2 methods = 3 items
+        assert_eq!(items.len(), 3, "Expected 3 items (impl + 2 methods), got {}", items.len());
+
+        // First item is the impl block
+        assert!(matches!(items[0].item_type, ItemType::Impl));
+        assert_eq!(items[0].fqn, "my_crate::my_mod::Foo");
+
+        // Second item is the `new` method
+        assert!(matches!(items[1].item_type, ItemType::Function));
+        assert_eq!(items[1].fqn, "my_crate::my_mod::Foo::new");
+        assert_eq!(items[1].name, "new");
+        assert!(items[1].attributes.iter().any(|a| a == "impl_type=Foo"));
+
+        // Third item is the `helper` method
+        assert!(matches!(items[2].item_type, ItemType::Function));
+        assert_eq!(items[2].fqn, "my_crate::my_mod::Foo::helper");
+        assert_eq!(items[2].name, "helper");
+    }
+
+    #[test]
+    fn test_parse_trait_impl_emits_methods_with_trait_attr() {
+        let parser = SynParser::new();
+        let source = r#"impl Display for Foo {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Foo")
+    }
+}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let items = parser.parse_items(source, "crate::module", &skeleton).unwrap();
+
+        // impl block + 1 method
+        assert_eq!(items.len(), 2);
+
+        // Impl block
+        assert!(matches!(items[0].item_type, ItemType::Impl));
+        assert!(items[0].attributes.iter().any(|a| a == "impl_for=Display"));
+
+        // Method has both impl_type and impl_for
+        let method = &items[1];
+        assert_eq!(method.fqn, "crate::module::Foo::fmt");
+        assert!(method.attributes.iter().any(|a| a == "impl_type=Foo"));
+        assert!(method.attributes.iter().any(|a| a == "impl_for=Display"));
+    }
+
+    #[test]
+    fn test_parse_items_non_impl_returns_single() {
+        let parser = SynParser::new();
+        let source = "pub fn standalone() {}";
+        let skeleton = make_skeleton(0, source.len());
+        let items = parser.parse_items(source, "test", &skeleton).unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0].item_type, ItemType::Function));
+        assert_eq!(items[0].fqn, "test::standalone");
+    }
+
+    #[test]
+    fn test_method_fqn_format_is_type_qualified() {
+        let parser = SynParser::new();
+        let source = r#"impl MyStruct {
+    pub fn process(&self, data: &str) -> bool { true }
+}"#;
+        let skeleton = make_skeleton(0, source.len());
+        let items = parser.parse_items(source, "my_crate::utils", &skeleton).unwrap();
+
+        let method = items.iter().find(|i| i.name == "process").expect("Should find process method");
+        // Canonical format: module::Type::method
+        assert_eq!(method.fqn, "my_crate::utils::MyStruct::process");
     }
 }
