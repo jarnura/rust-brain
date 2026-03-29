@@ -331,6 +331,7 @@ services:
     volumes:
       - opencode_data:/home/opencode/.local/share/opencode
       - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
+      - ./configs/opencode/.opencode:/home/opencode/.config/opencode/.opencode:ro
       - ./:/home/opencode/projects/rust-brain:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4096/ || exit 1"]
