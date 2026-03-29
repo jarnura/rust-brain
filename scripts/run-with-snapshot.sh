@@ -32,7 +32,12 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # Defaults
-DEFAULT_SNAPSHOT_URL="https://github.com/jarnura/rust-brain/releases/download/snapshot-latest/rustbrain-snapshot-hyperswitch.tar.zst"
+# GitHub repo for gh release download (works for both public and private repos)
+GITHUB_REPO="${GITHUB_REPO:-jarnura/rust-brain}"
+RELEASE_TAG="${RELEASE_TAG:-snapshot-latest}"
+SNAPSHOT_ASSET="rustbrain-snapshot-hyperswitch.tar.zst"
+# Fallback URL for direct download (only works for public repos)
+DEFAULT_SNAPSHOT_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${SNAPSHOT_ASSET}"
 SNAPSHOT_URL="${SNAPSHOT_URL:-$DEFAULT_SNAPSHOT_URL}"
 SNAPSHOT_DIR="${PROJECT_ROOT}/.snapshots"
 SNAPSHOT_MARKER="${SNAPSHOT_DIR}/.restored"
@@ -229,32 +234,78 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
     echo -e "  ${GREEN}✓${NC} Copied $(du -h "$SNAPSHOT_FILE" | cut -f1)"
 
   elif [ ! -f "$SNAPSHOT_FILE" ] || [ "$FORCE_REFRESH" = true ]; then
-    # Download
+    # Download — prefer gh CLI (handles private repos), fall back to curl
     echo -e "${CYAN}=== Downloading snapshot ===${NC}"
-    echo -e "  URL: ${SNAPSHOT_URL}"
-    echo ""
 
-    curl -L --progress-bar --retry 3 --retry-delay 5 \
-      -o "${SNAPSHOT_FILE}.tmp" \
-      -C - \
-      "$SNAPSHOT_URL"
+    DOWNLOAD_OK=false
 
-    mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
+    # Method 1: gh release download (works with private repos via gh auth)
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+      echo -e "  Using: ${BOLD}gh release download${NC} (repo: ${GITHUB_REPO}, tag: ${RELEASE_TAG})"
+      echo ""
+      if gh release download "$RELEASE_TAG" \
+           --repo "$GITHUB_REPO" \
+           --pattern "$SNAPSHOT_ASSET" \
+           --pattern "${SNAPSHOT_ASSET}.sha256" \
+           --dir "$SNAPSHOT_DIR" \
+           --clobber 2>&1; then
+        # gh downloads with the original filename
+        if [ -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" ]; then
+          mv "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" "$SNAPSHOT_FILE"
+          DOWNLOAD_OK=true
+        fi
+      fi
+    fi
+
+    # Method 2: curl (works for public repos or custom URLs)
+    if [ "$DOWNLOAD_OK" = false ]; then
+      echo -e "  Using: ${BOLD}curl${NC}"
+      echo -e "  URL: ${SNAPSHOT_URL}"
+      echo ""
+
+      if curl -L --progress-bar --retry 3 --retry-delay 5 \
+          -o "${SNAPSHOT_FILE}.tmp" \
+          -C - \
+          "$SNAPSHOT_URL" && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
+        mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
+        DOWNLOAD_OK=true
+      else
+        rm -f "${SNAPSHOT_FILE}.tmp"
+      fi
+    fi
+
+    if [ "$DOWNLOAD_OK" = false ]; then
+      echo -e "${RED}ERROR: Failed to download snapshot.${NC}"
+      echo ""
+      echo "  Possible causes:"
+      echo "  - Private repo: install gh CLI and run 'gh auth login' first"
+      echo "    https://cli.github.com/"
+      echo "  - Network issue: check your connection and retry"
+      echo "  - Custom URL: use --snapshot-url=<URL> with a valid download link"
+      exit 1
+    fi
+
     echo ""
     echo -e "  ${GREEN}✓${NC} Downloaded $(du -h "$SNAPSHOT_FILE" | cut -f1)"
 
     # Try to verify checksum
-    CHECKSUM_URL="${SNAPSHOT_URL}.sha256"
-    if curl -sfL "$CHECKSUM_URL" -o "${SNAPSHOT_FILE}.sha256" 2>/dev/null; then
+    CHECKSUM_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.sha256"
+    if [ -f "$CHECKSUM_FILE" ]; then
       echo -e "${CYAN}=== Verifying checksum ===${NC}"
-      if (cd "$SNAPSHOT_DIR" && sha256sum -c "$(basename "${SNAPSHOT_FILE}.sha256")" 2>/dev/null); then
+      # The .sha256 file contains the original path — fix it to match our local filename
+      EXPECTED_SHA=$(awk '{print $1}' "$CHECKSUM_FILE")
+      ACTUAL_SHA=$(sha256sum "$SNAPSHOT_FILE" | awk '{print $1}')
+      if [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]; then
         echo -e "  ${GREEN}✓${NC} Checksum verified"
       else
         echo -e "${RED}ERROR: Checksum mismatch — snapshot may be corrupted${NC}"
+        echo "  Expected: ${EXPECTED_SHA}"
+        echo "  Got:      ${ACTUAL_SHA}"
         echo "  Re-run with --force-refresh to re-download"
         rm -f "$SNAPSHOT_FILE"
         exit 1
       fi
+      rm -f "$CHECKSUM_FILE"
     else
       echo -e "  ${YELLOW}⚠${NC} No checksum file available, skipping verification"
     fi
