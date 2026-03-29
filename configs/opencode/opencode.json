@@ -47,7 +47,7 @@
       "mode": "primary",
       "model": "juspay-grid/glm-latest",
       "prompt": "{file:./.opencode/prompts/orchestrator.txt}",
-      "steps": 80,
+      "steps": 2000,
       "temperature": 0.3,
       "permission": {
         "edit": "deny",
@@ -72,7 +72,7 @@
       "mode": "subagent",
       "model": "juspay-grid/glm-latest",
       "prompt": "{file:./.opencode/agents/researcher.md}",
-      "steps": 30,
+      "steps": 2000,
       "temperature": 0.2,
       "permission": {
         "edit": "deny",
@@ -100,7 +100,7 @@
       "mode": "subagent",
       "model": "juspay-grid/glm-latest",
       "prompt": "{file:./.opencode/agents/explorer.md}",
-      "steps": 40,
+      "steps": 500,
       "temperature": 0.1,
       "permission": {
         "edit": "deny",
@@ -160,3 +160,4 @@
     "reserved": 12000
   }
 }
+
