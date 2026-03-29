@@ -179,6 +179,26 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
     }))
 }
 
+/// Returns snapshot metadata if a `.snapshot-manifest.json` exists in the working directory.
+/// This file is written by `scripts/run-with-snapshot.sh` after restoring a snapshot.
+pub async fn snapshot_info() -> Json<serde_json::Value> {
+    let manifest_path = std::path::Path::new(".snapshot-manifest.json");
+    if manifest_path.exists() {
+        match std::fs::read_to_string(manifest_path) {
+            Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+                Ok(manifest) => Json(serde_json::json!({
+                    "loaded": true,
+                    "manifest": manifest,
+                })),
+                Err(_) => Json(serde_json::json!({ "loaded": false, "error": "invalid manifest" })),
+            },
+            Err(_) => Json(serde_json::json!({ "loaded": false })),
+        }
+    } else {
+        Json(serde_json::json!({ "loaded": false }))
+    }
+}
+
 pub async fn metrics_handler(State(state): State<AppState>) -> Response {
     let encoder = TextEncoder::new();
     let metric_families = state.metrics.registry.gather();

@@ -233,6 +233,8 @@ services:
       rustbrain-net:
         aliases:
           - api
+    volumes:
+      - ./.snapshot-manifest.json:/app/.snapshot-manifest.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -240,8 +242,9 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      # Ollama is optional — not required for snapshot mode (search, graph, types work without it)
+      # ollama:
+      #   condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s

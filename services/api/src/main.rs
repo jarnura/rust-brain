@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         // Health & metrics
         .route("/health", get(handlers::health::health))
         .route("/metrics", get(handlers::health::metrics_handler))
+        .route("/api/snapshot", get(handlers::health::snapshot_info))
         // Playground (static file serving)
         .route("/playground", get(playground_redirect))
         .nest_service("/playground/", ServeDir::new("static").append_index_html_on_directories(true))

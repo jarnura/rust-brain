@@ -7,3 +7,8 @@
 .vscode/
 target/
 target-repo/
+
+# Snapshot distribution
+.snapshots/
+dist/
+.snapshot-manifest.json
