@@ -45,6 +45,7 @@ class ChatPanel {
         this._streaming      = false;
         this._currentAssistantEl = null;
         this._currentTokens  = '';
+        this._doneTimeout    = null;
         this._renderPending  = false;
         this._sessionId      = null;
         this._connected      = false;
@@ -350,6 +351,19 @@ class ChatPanel {
     _onToken({ token, text }) {
         this._currentTokens += (token || text || '');
 
+        // Cancel pending finalization — more tokens are arriving
+        if (this._doneTimeout) {
+            clearTimeout(this._doneTimeout);
+            this._doneTimeout = null;
+        }
+
+        // Auto-create assistant bubble if tokens arrive after a done event
+        // (happens when agents spawn sub-agents: session goes idle → busy again)
+        if (!this._currentAssistantEl) {
+            this._currentAssistantEl = this._createAssistantBubble();
+            this._setStreaming(true);
+        }
+
         if (!this._renderPending) {
             this._renderPending = true;
             requestAnimationFrame(() => {
@@ -386,6 +400,12 @@ class ChatPanel {
         // Multi-step responses (tool call → text) emit multiple completes.
         const content = this._currentTokens || message || response || '';
 
+        // Auto-create assistant bubble if complete arrives without one
+        if (!this._currentAssistantEl && content) {
+            this._currentAssistantEl = this._createAssistantBubble();
+            this._setStreaming(true);
+        }
+
         if (this._currentAssistantEl && content) {
             const bubble = this._currentAssistantEl.querySelector('.chat-bubble');
             bubble.innerHTML = renderMarkdown(content);
@@ -412,8 +432,18 @@ class ChatPanel {
         if (source && this._currentAssistantEl) {
             this._setSourceBadge(this._currentAssistantEl, source);
         }
-        // Session went idle — generation is fully complete
-        this._finalizeStreaming();
+
+        // For multi-step agent conversations, the session may go idle briefly
+        // between steps (agent → sub-agent → agent). Debounce finalization so
+        // that if new tokens arrive within 1s, we continue streaming instead
+        // of prematurely closing the bubble.
+        if (this._doneTimeout) clearTimeout(this._doneTimeout);
+        this._doneTimeout = setTimeout(() => {
+            this._doneTimeout = null;
+            // Only finalize if we haven't received new tokens since the done event
+            if (!this._streaming) return; // already finalized
+            this._finalizeStreaming();
+        }, 1000);
     }
 
     _onError({ message, error }) {
@@ -599,6 +629,10 @@ class ChatPanel {
     }
 
     _finalizeStreaming() {
+        if (this._doneTimeout) {
+            clearTimeout(this._doneTimeout);
+            this._doneTimeout = null;
+        }
         this._setStreaming(false);
         this._currentAssistantEl = null;
         this._currentTokens = '';
