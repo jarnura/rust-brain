@@ -20,6 +20,14 @@ fi
 # Load environment
 source .env
 
+# macOS: auto-apply GPU-free Docker override (Docker Desktop has no NVIDIA support)
+if [ "$(uname -s)" = "Darwin" ] && [ ! -f docker-compose.override.yml ]; then
+  if [ -f docker-compose.macos.yml ]; then
+    cp docker-compose.macos.yml docker-compose.override.yml
+    echo "✓ Applied macOS override (no NVIDIA GPU)"
+  fi
+fi
+
 echo "=== Phase 1: Starting Core Databases ==="
 docker-compose up -d postgres neo4j qdrant ollama
 

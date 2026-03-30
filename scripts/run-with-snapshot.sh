@@ -197,6 +197,25 @@ if [ ! -f .env ]; then
   fi
 fi
 
+# macOS: auto-apply GPU-free Docker override (Docker Desktop has no NVIDIA support)
+if [ "$(uname -s)" = "Darwin" ] && [ ! -f docker-compose.override.yml ]; then
+  if [ -f docker-compose.macos.yml ]; then
+    cp docker-compose.macos.yml docker-compose.override.yml
+    echo -e "  ${GREEN}✓${NC} Applied macOS override (no NVIDIA GPU)"
+  else
+    # Create minimal override inline
+    cat > docker-compose.override.yml <<'OVERRIDE'
+services:
+  ollama:
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+OVERRIDE
+    echo -e "  ${GREEN}✓${NC} Created macOS override (no NVIDIA GPU)"
+  fi
+fi
+
 # shellcheck disable=SC1091
 source .env
 

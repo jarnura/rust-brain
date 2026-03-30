@@ -123,6 +123,14 @@ else
     exit 1
 fi
 
+# macOS: auto-apply GPU-free Docker override
+if [ "$(uname -s)" = "Darwin" ] && [ ! -f "$PROJECT_ROOT/docker-compose.override.yml" ]; then
+  if [ -f "$PROJECT_ROOT/docker-compose.macos.yml" ]; then
+    cp "$PROJECT_ROOT/docker-compose.macos.yml" "$PROJECT_ROOT/docker-compose.override.yml"
+    echo "Applied macOS override (no NVIDIA GPU)"
+  fi
+fi
+
 # Build the ingestion image if needed
 echo "Checking ingestion image..."
 $COMPOSE_CMD -f "$PROJECT_ROOT/docker-compose.yml" build ingestion
