@@ -371,14 +371,36 @@ echo -e "${CYAN}=== Phase 7: Bundling ===${NC}"
 
 OUTPUT_FILE="${OUTPUT_DIR}/rustbrain-snapshot-${SNAPSHOT_NAME}.tar.zst"
 
+# Remove existing file (zstd refuses to overwrite stdin-piped output)
+rm -f "$OUTPUT_FILE"
+
 tar -cf - -C "$WORK_DIR" . | zstd -3 -T0 -o "$OUTPUT_FILE"
 
 TOTAL_SIZE=$(du -h "$OUTPUT_FILE" | cut -f1)
+TOTAL_BYTES=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || stat -f%z "$OUTPUT_FILE" 2>/dev/null || echo "0")
 
 # Generate checksum file
 sha256sum "$OUTPUT_FILE" > "${OUTPUT_FILE}.sha256"
 
 echo -e "  ${GREEN}✓${NC} Bundle: ${TOTAL_SIZE}"
+
+# Auto-split if > 1.9 GB (GitHub Release limit is 2 GB per asset)
+GH_LIMIT=$((1900 * 1024 * 1024))  # 1.9 GB in bytes
+UPLOAD_FILES="$OUTPUT_FILE"
+
+if [ "$TOTAL_BYTES" -gt "$GH_LIMIT" ]; then
+  echo ""
+  echo -e "${CYAN}=== Splitting for GitHub Releases (>${TOTAL_SIZE} > 1.9 GB limit) ===${NC}"
+  rm -f "${OUTPUT_FILE}.part-"*
+  split -b 1900m "$OUTPUT_FILE" "${OUTPUT_FILE}.part-"
+  PART_COUNT=$(ls -1 "${OUTPUT_FILE}.part-"* | wc -l)
+  sha256sum "${OUTPUT_FILE}.part-"* > "${OUTPUT_FILE}.parts.sha256"
+  UPLOAD_FILES=$(ls -1 "${OUTPUT_FILE}.part-"*)
+  echo -e "  ${GREEN}✓${NC} Split into ${PART_COUNT} parts:"
+  for p in ${OUTPUT_FILE}.part-*; do
+    echo "    $(basename "$p")  $(du -h "$p" | cut -f1)"
+  done
+fi
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
@@ -392,8 +414,19 @@ printf "║  %-58s ║\n" "Embeddings: $((CODE_POINTS + DOC_POINTS))"
 echo "║                                                              ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
-echo "Share with teammates:"
-echo "  1. Upload to GitHub Releases or shared storage"
-echo "  2. They run:"
-echo "     ./scripts/run-with-snapshot.sh --snapshot-url=<URL>"
+echo "Publish to GitHub Releases:"
+if [ "$TOTAL_BYTES" -gt "$GH_LIMIT" ]; then
+  echo "  gh release create snapshot-latest \\"
+  for p in ${OUTPUT_FILE}.part-*; do
+    echo "    $(basename "$p") \\"
+  done
+  echo "    --title 'Snapshot: ${SNAPSHOT_NAME}'"
+else
+  echo "  gh release create snapshot-latest \\"
+  echo "    ${OUTPUT_FILE} \\"
+  echo "    --title 'Snapshot: ${SNAPSHOT_NAME}'"
+fi
+echo ""
+echo "Users restore with:"
+echo "  ./scripts/run-with-snapshot.sh"
 echo ""

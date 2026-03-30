@@ -243,18 +243,45 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
     if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
       echo -e "  Using: ${BOLD}gh release download${NC} (repo: ${GITHUB_REPO}, tag: ${RELEASE_TAG})"
       echo ""
+
+      # Try single file first, then split parts
       if gh release download "$RELEASE_TAG" \
            --repo "$GITHUB_REPO" \
            --pattern "$SNAPSHOT_ASSET" \
-           --pattern "${SNAPSHOT_ASSET}.sha256" \
            --dir "$SNAPSHOT_DIR" \
-           --clobber 2>&1; then
-        # gh downloads with the original filename
+           --clobber 2>/dev/null; then
         if [ -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" ]; then
           mv "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" "$SNAPSHOT_FILE"
           DOWNLOAD_OK=true
         fi
       fi
+
+      # Try split parts (for snapshots > 2 GB uploaded as .part-aa, .part-ab, ...)
+      if [ "$DOWNLOAD_OK" = false ]; then
+        echo -e "  Single file not found, trying split parts..."
+        if gh release download "$RELEASE_TAG" \
+             --repo "$GITHUB_REPO" \
+             --pattern "${SNAPSHOT_ASSET}.part-*" \
+             --dir "$SNAPSHOT_DIR" \
+             --clobber 2>/dev/null; then
+          PART_FILES=$(ls -1 "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* 2>/dev/null | sort)
+          if [ -n "$PART_FILES" ]; then
+            PART_COUNT=$(echo "$PART_FILES" | wc -l)
+            echo -e "  Downloaded ${PART_COUNT} parts, concatenating..."
+            cat ${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-* > "$SNAPSHOT_FILE"
+            rm -f ${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-*
+            DOWNLOAD_OK=true
+          fi
+        fi
+      fi
+
+      # Also grab checksum file
+      gh release download "$RELEASE_TAG" \
+           --repo "$GITHUB_REPO" \
+           --pattern "${SNAPSHOT_ASSET}.sha256" \
+           --pattern "${SNAPSHOT_ASSET}.parts.sha256" \
+           --dir "$SNAPSHOT_DIR" \
+           --clobber 2>/dev/null || true
     fi
 
     # Method 2: curl (works for public repos or custom URLs)
@@ -292,7 +319,6 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
     CHECKSUM_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.sha256"
     if [ -f "$CHECKSUM_FILE" ]; then
       echo -e "${CYAN}=== Verifying checksum ===${NC}"
-      # The .sha256 file contains the original path — fix it to match our local filename
       EXPECTED_SHA=$(awk '{print $1}' "$CHECKSUM_FILE")
       ACTUAL_SHA=$(sha256sum "$SNAPSHOT_FILE" | awk '{print $1}')
       if [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]; then
