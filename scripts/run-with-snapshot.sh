@@ -260,18 +260,70 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
     echo -e "  ${GREEN}✓${NC} Copied $(du -h "$SNAPSHOT_FILE" | cut -f1)"
 
   elif [ ! -f "$SNAPSHOT_FILE" ] || [ "$FORCE_REFRESH" = true ]; then
-    # Download — prefer gh CLI (handles private repos), fall back to curl
-    echo -e "${CYAN}=== Downloading snapshot ===${NC}"
+    echo -e "${CYAN}=== Downloading snapshot (~3 GB) ===${NC}"
+    echo ""
 
     DOWNLOAD_OK=false
+    BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
 
-    # Method 1: gh release download (works with private repos via gh auth)
-    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-      echo -e "  Using: ${BOLD}gh release download${NC} (repo: ${GITHUB_REPO}, tag: ${RELEASE_TAG})"
+    # Method 1: curl with progress bar (preferred — works everywhere, shows progress)
+    echo -e "  Downloading split parts with progress bar..."
+    echo ""
+    PARTS_DOWNLOADED=0
+
+    for SUFFIX in aa ab ac ad ae; do
+      PART_URL="${BASE_URL}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
+      PART_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
+
+      echo -e "  ${BOLD}part-${SUFFIX}${NC}:"
+      if curl -fL --progress-bar --retry 3 --retry-delay 5 \
+          --connect-timeout 30 --max-time 1800 \
+          -o "${PART_FILE}" \
+          "$PART_URL" && [ -s "${PART_FILE}" ]; then
+        PSIZE=$(du -h "${PART_FILE}" | cut -f1)
+        echo -e "  ${GREEN}✓${NC} part-${SUFFIX}: ${PSIZE}"
+        PARTS_DOWNLOADED=$((PARTS_DOWNLOADED + 1))
+      else
+        rm -f "${PART_FILE}"
+        break  # No more parts
+      fi
       echo ""
+    done
 
-      # Try split parts first (current release format), then single file (legacy)
-      echo -e "  Downloading split parts..."
+    if [ "$PARTS_DOWNLOADED" -gt 0 ]; then
+      echo -e "  Concatenating ${PARTS_DOWNLOADED} parts..."
+      cat "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* > "$SNAPSHOT_FILE"
+      rm -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"*
+      DOWNLOAD_OK=true
+    fi
+
+    # Method 2: try single file URL (legacy snapshots < 2 GB)
+    if [ "$DOWNLOAD_OK" = false ]; then
+      echo -e "  No split parts found, trying single file..."
+      echo -e "  URL: ${SNAPSHOT_URL}"
+      echo ""
+      if curl -fL --progress-bar --retry 3 --retry-delay 5 \
+          --connect-timeout 30 --max-time 3600 \
+          -o "${SNAPSHOT_FILE}.tmp" \
+          "$SNAPSHOT_URL" && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
+        TMPSIZE=$(stat -c%s "${SNAPSHOT_FILE}.tmp" 2>/dev/null || stat -f%z "${SNAPSHOT_FILE}.tmp" 2>/dev/null || echo "0")
+        if [ "$TMPSIZE" -gt 1048576 ]; then
+          mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
+          DOWNLOAD_OK=true
+        else
+          echo -e "  ${YELLOW}⚠${NC} Downloaded file too small (${TMPSIZE} bytes) — not a valid snapshot"
+          rm -f "${SNAPSHOT_FILE}.tmp"
+        fi
+      else
+        rm -f "${SNAPSHOT_FILE}.tmp"
+      fi
+    fi
+
+    # Method 3: gh CLI fallback (for private repos where curl gets 404)
+    if [ "$DOWNLOAD_OK" = false ] && command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+      echo -e "  Trying ${BOLD}gh release download${NC} (private repo fallback)..."
+      echo -e "  ${YELLOW}Note: gh CLI may not show progress for large files${NC}"
+      echo ""
       if gh release download "$RELEASE_TAG" \
            --repo "$GITHUB_REPO" \
            --pattern "${SNAPSHOT_ASSET}.part-*" \
@@ -287,82 +339,15 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
         fi
       fi
 
-      # Fallback: try single file (legacy snapshots < 2 GB)
       if [ "$DOWNLOAD_OK" = false ]; then
-        echo -e "  No split parts, trying single file..."
-        if gh release download "$RELEASE_TAG" \
+        gh release download "$RELEASE_TAG" \
              --repo "$GITHUB_REPO" \
              --pattern "$SNAPSHOT_ASSET" \
              --dir "$SNAPSHOT_DIR" \
-             --clobber 2>/dev/null; then
-          if [ -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" ]; then
-            mv "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" "$SNAPSHOT_FILE"
-            DOWNLOAD_OK=true
-          fi
-        fi
-      fi
-
-      # Also grab checksum file
-      gh release download "$RELEASE_TAG" \
-           --repo "$GITHUB_REPO" \
-           --pattern "${SNAPSHOT_ASSET}.sha256" \
-           --pattern "${SNAPSHOT_ASSET}.parts.sha256" \
-           --dir "$SNAPSHOT_DIR" \
-           --clobber 2>/dev/null || true
-    fi
-
-    # Method 2: curl (works for public repos without gh CLI)
-    if [ "$DOWNLOAD_OK" = false ]; then
-      BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
-
-      # Try split parts first (current release format)
-      echo -e "  Using: ${BOLD}curl${NC} (downloading split parts)"
-      echo ""
-      PARTS_DOWNLOADED=0
-
-      for SUFFIX in aa ab ac ad ae; do
-        PART_URL="${BASE_URL}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
-        PART_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
-
-        echo -e "  Downloading part-${SUFFIX} (~1.9 GB)..."
-        if curl -fL --progress-bar --retry 3 --retry-delay 5 \
-            --connect-timeout 30 --max-time 1800 \
-            -o "${PART_FILE}" \
-            "$PART_URL" && [ -s "${PART_FILE}" ]; then
-          PSIZE=$(du -h "${PART_FILE}" | cut -f1)
-          echo -e "  ${GREEN}✓${NC} part-${SUFFIX}: ${PSIZE}"
-          PARTS_DOWNLOADED=$((PARTS_DOWNLOADED + 1))
-        else
-          rm -f "${PART_FILE}"
-          break  # No more parts (404 or timeout)
-        fi
-      done
-
-      if [ "$PARTS_DOWNLOADED" -gt 0 ]; then
-        echo -e "  Concatenating ${PARTS_DOWNLOADED} parts..."
-        cat "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* > "$SNAPSHOT_FILE"
-        rm -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"*
-        DOWNLOAD_OK=true
-      fi
-
-      # Fallback: try single file (legacy snapshots)
-      if [ "$DOWNLOAD_OK" = false ]; then
-        echo -e "  No split parts found, trying single file..."
-        echo -e "  URL: ${SNAPSHOT_URL}"
-        if curl -fL --progress-bar --retry 3 --retry-delay 5 \
-            --connect-timeout 30 --max-time 3600 \
-            -o "${SNAPSHOT_FILE}.tmp" \
-            "$SNAPSHOT_URL" && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
-          TMPSIZE=$(stat -c%s "${SNAPSHOT_FILE}.tmp" 2>/dev/null || stat -f%z "${SNAPSHOT_FILE}.tmp" 2>/dev/null || echo "0")
-          if [ "$TMPSIZE" -gt 1048576 ]; then
-            mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
-            DOWNLOAD_OK=true
-          else
-            echo -e "  ${YELLOW}⚠${NC} Downloaded file too small (${TMPSIZE} bytes) — not a valid snapshot"
-            rm -f "${SNAPSHOT_FILE}.tmp"
-          fi
-        else
-          rm -f "${SNAPSHOT_FILE}.tmp"
+             --clobber 2>/dev/null || true
+        if [ -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" ]; then
+          mv "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" "$SNAPSHOT_FILE"
+          DOWNLOAD_OK=true
         fi
       fi
     fi
