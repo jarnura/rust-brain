@@ -89,7 +89,7 @@ class FunctionDetailPanel {
 
     try {
       const fnData = await apiClient.getFunction(fqn).catch(() => null);
-      this._data = { fn: fnData || {}, callers: fnData };
+      this._data = { fn: fnData || {}, callers: fnData?.callers || [] };
       this._render();
     } catch (err) {
       this._bodyEl.innerHTML = `<p class="detail-panel__error">Failed to load: ${this._esc(err.message)}</p>`;
@@ -190,9 +190,7 @@ class FunctionDetailPanel {
   }
 
   _callers(callers) {
-    const list = Array.isArray(callers?.callers) ? callers.callers
-               : Array.isArray(callers)           ? callers
-               : [];
+    const list = Array.isArray(callers) ? callers : [];
     if (list.length === 0) return '<p class="fd__empty">No callers found.</p>';
     return `<ul class="fd__ref-list">${list.map(c => this._refItem(c)).join('')}</ul>`;
   }

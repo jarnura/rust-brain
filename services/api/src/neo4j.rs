@@ -150,6 +150,83 @@ pub async fn get_callers_from_neo4j(
     Ok(callers)
 }
 
+/// Get callers for an impl block by aggregating callers of all its child methods.
+///
+/// `method_prefix` is pre-computed as `module::Type::` so that all Function
+/// nodes matching that prefix are the impl's methods.
+pub async fn get_callers_for_impl_with_prefix(
+    state: &AppState,
+    method_prefix: &str,
+    depth: usize,
+) -> Result<Vec<CallerNode>, AppError> {
+    let depth = depth.min(5).max(1);
+
+    let cypher = format!(
+        r#"
+        MATCH (method:Function)
+        WHERE method.fqn STARTS WITH $prefix
+        WITH method
+        MATCH (caller:Function)-[:CALLS*1..{}]->(method)
+        WHERE NOT caller.fqn STARTS WITH $prefix
+        RETURN DISTINCT caller.fqn as fqn, caller.name as name,
+               caller.file_path as file_path, caller.start_line as line
+        ORDER BY fqn
+        LIMIT 50
+        "#,
+        depth
+    );
+
+    let params = serde_json::json!({"prefix": method_prefix});
+    let results = execute_neo4j_query(state, &cypher, params).await?;
+
+    let callers = results
+        .into_iter()
+        .filter_map(|r| {
+            Some(CallerNode {
+                fqn: r.get("fqn")?.as_str()?.to_string(),
+                name: r.get("name")?.as_str()?.to_string(),
+                file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                line: r.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
+                depth: 1,
+            })
+        })
+        .collect();
+
+    Ok(callers)
+}
+
+/// Get callees for an impl block by aggregating callees of all its child methods.
+pub async fn get_callees_for_impl_with_prefix(
+    state: &AppState,
+    method_prefix: &str,
+) -> Result<Vec<CalleeInfo>, AppError> {
+    let cypher = r#"
+        MATCH (method:Function)
+        WHERE method.fqn STARTS WITH $prefix
+        WITH method
+        MATCH (method)-[:CALLS]->(callee:Function)
+        WHERE NOT callee.fqn STARTS WITH $prefix
+        RETURN DISTINCT callee.fqn as fqn, callee.name as name
+        ORDER BY name
+        LIMIT 100
+    "#;
+
+    let params = serde_json::json!({"prefix": method_prefix});
+    let results = execute_neo4j_query(state, cypher, params).await?;
+
+    let callees = results
+        .into_iter()
+        .filter_map(|r| {
+            Some(CalleeInfo {
+                fqn: r.get("fqn")?.as_str()?.to_string(),
+                name: r.get("name")?.as_str()?.to_string(),
+            })
+        })
+        .collect();
+
+    Ok(callees)
+}
+
 pub async fn get_callees_from_neo4j(
     state: &AppState,
     fqn: &str,
