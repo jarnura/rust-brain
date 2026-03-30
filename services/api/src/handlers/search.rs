@@ -1,4 +1,14 @@
 //! Search and semantic search handlers.
+//!
+//! Provides `POST /tools/search_semantic` (vector similarity via Qdrant with
+//! Postgres keyword fallback) and `POST /tools/aggregate_search` (cross-database
+//! enrichment: Qdrant + Postgres + Neo4j).
+//!
+//! # Notes
+//!
+//! As of commit `deb108b`, `search_semantic` gracefully falls back to a
+//! Postgres keyword search when Ollama is unavailable, instead of returning
+//! a hard error.
 
 use axum::{
     extract::State,
@@ -16,42 +26,65 @@ use super::{CallerInfo, CalleeInfo, default_limit, default_true};
 // Request/Response Types
 // =============================================================================
 
+/// Request body for `POST /tools/search_semantic`.
 #[derive(Debug, Deserialize)]
 pub struct SearchSemanticRequest {
+    /// Natural-language search query
     pub query: String,
+    /// Maximum number of results (default: 10)
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Minimum similarity score (0.0–1.0) to include a result
     #[serde(default)]
     pub score_threshold: Option<f32>,
+    /// Restrict results to a specific crate (not yet wired)
     #[serde(default)]
     pub crate_filter: Option<String>,
 }
 
+/// Response for `POST /tools/search_semantic`.
 #[derive(Debug, Serialize)]
 pub struct SearchSemanticResponse {
+    /// Matching code items ranked by similarity
     pub results: Vec<SearchResult>,
+    /// Echo of the original query (suffixed with fallback notice if applicable)
     pub query: String,
+    /// Number of results returned
     pub total: usize,
 }
 
+/// A single search hit from Qdrant vector search or keyword fallback.
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
+    /// Fully qualified name
     pub fqn: String,
+    /// Short name
     pub name: String,
+    /// Item kind (`"function"`, `"struct"`, etc.)
     pub kind: String,
+    /// Source file path
     pub file_path: String,
+    /// Start line (1-indexed)
     pub start_line: u32,
+    /// End line (1-indexed)
     pub end_line: u32,
+    /// Similarity score (0.0–1.0 for vector search, decreasing pseudo-score for keyword)
     pub score: f32,
+    /// Signature or code snippet
     pub snippet: Option<String>,
+    /// Doc comment if available
     pub docstring: Option<String>,
 }
 
+/// Request body for `POST /tools/aggregate_search`.
 #[derive(Debug, Deserialize)]
 pub struct AggregateSearchRequest {
+    /// Natural-language search query
     pub query: String,
+    /// Maximum number of results (default: 10)
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Minimum similarity score
     #[serde(default)]
     pub score_threshold: Option<f32>,
     /// Include caller/callee graph context for each result
@@ -62,10 +95,14 @@ pub struct AggregateSearchRequest {
     pub include_source: bool,
 }
 
+/// Response for `POST /tools/aggregate_search`.
 #[derive(Debug, Serialize)]
 pub struct AggregateSearchResponse {
+    /// Echo of the original query
     pub query: String,
+    /// Number of results returned
     pub total: usize,
+    /// Results enriched with Postgres metadata and Neo4j graph context
     pub results: Vec<AggregatedResult>,
 }
 
@@ -141,6 +178,21 @@ struct PgEnrichmentWithBody {
 // Handlers
 // =============================================================================
 
+/// Searches for code items using natural-language similarity.
+///
+/// Generates an embedding via Ollama, then performs a vector search against
+/// Qdrant. If Ollama is unavailable, falls back to Postgres `ILIKE` keyword
+/// matching with a pseudo-score.
+///
+/// # Errors
+///
+/// Returns [`AppError::Qdrant`] if the vector search request fails.
+/// Returns [`AppError::Database`] if the keyword fallback query fails.
+///
+/// # Notes
+///
+/// As of commit `deb108b`, this handler falls back to keyword search when
+/// Ollama is down, instead of returning a hard `AppError::Ollama`.
 pub async fn search_semantic(
     State(state): State<AppState>,
     Json(req): Json<SearchSemanticRequest>,
@@ -259,7 +311,18 @@ async fn keyword_search_fallback(
     }))
 }
 
-/// Cross-database aggregation: Qdrant (semantic) + Postgres (metadata) + Neo4j (graph)
+/// Cross-database aggregation: Qdrant (semantic) + Postgres (metadata) + Neo4j (graph).
+///
+/// 1. Embeds the query via Ollama
+/// 2. Performs a vector search in Qdrant
+/// 3. Enriches each result with Postgres metadata (visibility, signature, source)
+/// 4. Optionally fetches call-graph context from Neo4j
+///
+/// # Errors
+///
+/// Returns [`AppError::Ollama`] if embedding generation fails.
+/// Returns [`AppError::Qdrant`] if the vector search fails.
+/// Postgres and Neo4j enrichment errors are silently ignored per-result.
 pub async fn aggregate_search(
     State(state): State<AppState>,
     Json(req): Json<AggregateSearchRequest>,
@@ -365,6 +428,11 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
     Ok(embedding)
 }
 
+/// Parses a Qdrant search response into a list of [`SearchResult`]s.
+///
+/// Extracts entries from the `result` array, reading `payload` fields for
+/// metadata and `score` for similarity. Items missing required fields
+/// (`fqn`, `name`, `score`) are silently skipped.
 pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResult> {
     search_result
         .get("result")

@@ -1,4 +1,22 @@
 //! Error types for the rust-brain API server.
+//!
+//! [`AppError`] is the canonical error type returned by all handler functions.
+//! It implements [`IntoResponse`] so Axum can convert it directly into an HTTP
+//! response with the appropriate status code and a JSON body matching
+//! [`ApiError`].
+//!
+//! # Status Code Mapping
+//!
+//! | Variant | HTTP Status | JSON `code` |
+//! |---------|-------------|-------------|
+//! | `Database` | 500 | `DATABASE_ERROR` |
+//! | `Neo4j` | 500 | `NEO4J_ERROR` |
+//! | `Qdrant` | 500 | `QDRANT_ERROR` |
+//! | `Ollama` | 500 | `OLLAMA_ERROR` |
+//! | `OpenCode` | 500 | `OPENCODE_ERROR` |
+//! | `NotFound` | 404 | `NOT_FOUND` |
+//! | `BadRequest` | 400 | `BAD_REQUEST` |
+//! | `Internal` | 500 | `INTERNAL_ERROR` |
 
 use axum::{
     http::StatusCode,
@@ -8,21 +26,40 @@ use axum::{
 use serde::Serialize;
 use std::fmt;
 
+/// JSON body returned for all error responses.
+///
+/// Every error response contains a human-readable `error` message and a
+/// machine-readable `code` string (see module-level table).
 #[derive(Debug, Serialize)]
 pub struct ApiError {
+    /// Human-readable error description
     pub error: String,
+    /// Machine-readable error code (e.g., `"NOT_FOUND"`, `"DATABASE_ERROR"`)
     pub code: String,
 }
 
+/// Application error type used by all API handlers.
+///
+/// Each variant wraps a descriptive message string. The [`IntoResponse`]
+/// implementation maps variants to HTTP status codes and serializes the
+/// response as [`ApiError`] JSON.
 #[derive(Debug)]
 pub enum AppError {
+    /// PostgreSQL operation failed
     Database(String),
+    /// Neo4j graph database operation failed
     Neo4j(String),
+    /// Qdrant vector store operation failed
     Qdrant(String),
+    /// Ollama embedding/chat model operation failed
     Ollama(String),
+    /// OpenCode session management operation failed
     OpenCode(String),
+    /// Requested resource does not exist (HTTP 404)
     NotFound(String),
+    /// Client sent an invalid request (HTTP 400)
     BadRequest(String),
+    /// Unclassified server error (HTTP 500)
     Internal(String),
 }
 

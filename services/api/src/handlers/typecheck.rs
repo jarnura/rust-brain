@@ -18,55 +18,81 @@ use super::default_limit;
 // Request/Response Types
 // =============================================================================
 
+/// Query parameters for `GET /tools/find_calls_with_type`.
 #[derive(Debug, Deserialize)]
 pub struct FindCallsWithTypeQuery {
-    /// Name of the type to search for in concrete_type_args
+    /// Name of the type to search for in `concrete_type_args`
     pub type_name: String,
-    /// Optional callee name filter (e.g., "parse" to find parse::<T>())
+    /// Optional callee name filter (e.g., `"parse"` to find `parse::<T>()`)
     pub callee_name: Option<String>,
+    /// Maximum results (default: 10, capped to 100)
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
+/// Response for `GET /tools/find_calls_with_type`.
 #[derive(Debug, Serialize)]
 pub struct CallsWithTypeResponse {
+    /// Echo of the queried type name
     pub type_name: String,
+    /// Matching call sites
     pub calls: Vec<CallSiteInfo>,
 }
 
+/// A call site where a concrete type argument was resolved.
 #[derive(Debug, Serialize)]
 pub struct CallSiteInfo {
+    /// FQN of the calling function
     pub caller_fqn: String,
+    /// FQN of the called (generic) function
     pub callee_fqn: String,
+    /// Source file containing the call
     pub file_path: String,
+    /// Line number of the call
     pub line_number: u32,
+    /// Resolved concrete type arguments (e.g., `["String"]` for `parse::<String>()`)
     pub concrete_type_args: Vec<String>,
+    /// Whether the call is fully monomorphized
     pub is_monomorphized: bool,
+    /// Resolution quality (`"analyzed"` or `"heuristic"`)
     pub quality: String,
 }
 
+/// Query parameters for `GET /tools/find_trait_impls_for_type`.
 #[derive(Debug, Deserialize)]
 pub struct FindTraitImplsForTypeQuery {
-    /// Name of the type to search for in self_type
+    /// Name of the type to search for in `self_type`
     pub type_name: String,
+    /// Maximum results (default: 10, capped to 100)
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
+/// Response for `GET /tools/find_trait_impls_for_type`.
 #[derive(Debug, Serialize)]
 pub struct TraitImplsForTypeResponse {
+    /// Echo of the queried type name
     pub type_name: String,
+    /// Trait implementations for this type
     pub implementations: Vec<TraitImplInfo>,
 }
 
+/// A discovered trait implementation.
 #[derive(Debug, Serialize)]
 pub struct TraitImplInfo {
+    /// FQN of the trait being implemented
     pub trait_fqn: String,
+    /// The implementing type name
     pub self_type: String,
+    /// FQN of the impl block
     pub impl_fqn: String,
+    /// Source file containing the impl
     pub file_path: String,
+    /// Line number of the impl block
     pub line_number: u32,
+    /// Generic parameters on the impl
     pub generic_params: Vec<String>,
+    /// Resolution quality (`"analyzed"` or `"heuristic"`)
     pub quality: String,
 }
 

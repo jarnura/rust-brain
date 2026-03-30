@@ -1,4 +1,10 @@
 //! Neo4j graph query handlers.
+//!
+//! Provides endpoints for graph-based code intelligence:
+//! - `GET /tools/get_trait_impls` — find implementations of a trait
+//! - `GET /tools/find_usages_of_type` — find usages of a type
+//! - `GET /tools/get_module_tree` — hierarchical module structure
+//! - `POST /tools/query_graph` — arbitrary read-only Cypher execution
 
 use axum::{
     extract::{Query, State},
@@ -17,88 +23,133 @@ use super::default_limit;
 // Request/Response Types
 // =============================================================================
 
+/// Query parameters for `GET /tools/get_trait_impls`.
 #[derive(Debug, Deserialize)]
 pub struct GetTraitImplsQuery {
+    /// Trait name or FQN to search for
     pub trait_name: String,
+    /// Maximum results (default: 10)
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
+/// Response for `GET /tools/get_trait_impls`.
 #[derive(Debug, Serialize)]
 pub struct TraitImplsResponse {
+    /// Echo of the queried trait name
     pub trait_name: String,
+    /// Matching implementations
     pub implementations: Vec<TraitImpl>,
 }
 
+/// A single trait implementation found in the graph.
 #[derive(Debug, Serialize)]
 pub struct TraitImpl {
+    /// FQN of the impl block
     pub impl_fqn: String,
+    /// Name of the implementing type
     pub type_name: String,
+    /// Source file path
     pub file_path: String,
+    /// Start line of the impl block
     pub start_line: u32,
 }
 
+/// Query parameters for `GET /tools/find_usages_of_type`.
 #[derive(Debug, Deserialize)]
 pub struct FindUsagesOfTypeQuery {
+    /// Type name or FQN to search for
     pub type_name: String,
+    /// Maximum results (default: 10)
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
+/// Response for `GET /tools/find_usages_of_type`.
 #[derive(Debug, Serialize)]
 pub struct UsagesResponse {
+    /// Echo of the queried type name
     pub type_name: String,
+    /// Items that use this type
     pub usages: Vec<TypeUsage>,
 }
 
+/// A code item that uses a specific type.
 #[derive(Debug, Serialize)]
 pub struct TypeUsage {
+    /// FQN of the item using the type
     pub fqn: String,
+    /// Short name
     pub name: String,
+    /// Item kind (e.g., `"Function"`, `"Struct"`)
     pub kind: String,
+    /// Source file path
     pub file_path: String,
+    /// Line number
     pub line: u32,
 }
 
+/// Query parameters for `GET /tools/get_module_tree`.
 #[derive(Debug, Deserialize)]
 pub struct GetModuleTreeQuery {
+    /// Name of the crate to build the module tree for
     pub crate_name: String,
 }
 
+/// Response for `GET /tools/get_module_tree`.
 #[derive(Debug, Serialize)]
 pub struct ModuleTreeResponse {
+    /// Echo of the queried crate name
     pub crate_name: String,
+    /// Root node of the module hierarchy
     pub root: ModuleNode,
 }
 
+/// A node in the hierarchical module tree.
 #[derive(Debug, Serialize)]
 pub struct ModuleNode {
+    /// Module short name
     pub name: String,
+    /// Fully qualified module path
     pub path: String,
+    /// Child modules
     pub children: Vec<ModuleNode>,
+    /// Non-module items contained in this module
     pub items: Vec<ModuleItem>,
 }
 
+/// A non-module item within a module node.
 #[derive(Debug, Serialize)]
 pub struct ModuleItem {
+    /// Item short name
     pub name: String,
+    /// Item kind (e.g., `"Function"`, `"Struct"`)
     pub kind: String,
+    /// Visibility (e.g., `"pub"`, `"private"`)
     pub visibility: String,
 }
 
+/// Request body for `POST /tools/query_graph`.
 #[derive(Debug, Deserialize)]
 pub struct QueryGraphRequest {
+    /// Cypher query string (must be read-only)
     pub query: String,
+    /// Named parameters to bind into the query
     #[serde(default)]
     pub parameters: HashMap<String, serde_json::Value>,
+    /// Maximum results (default: 10)
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
+/// Response for `POST /tools/query_graph`.
 #[derive(Debug, Serialize)]
 pub struct GraphQueryResponse {
+    /// Raw JSON rows from Neo4j
     pub results: Vec<serde_json::Value>,
+    /// Echo of the executed query
     pub query: String,
+    /// Number of rows returned
     pub row_count: usize,
 }
 
@@ -106,6 +157,13 @@ pub struct GraphQueryResponse {
 // Handlers
 // =============================================================================
 
+/// Finds all implementations of a given trait via Neo4j `IMPLEMENTS` relationships.
+///
+/// Matches by trait name, FQN substring, or exact FQN.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn get_trait_impls(
     State(state): State<AppState>,
     Query(query): Query<GetTraitImplsQuery>,
@@ -153,6 +211,13 @@ pub async fn get_trait_impls(
     }))
 }
 
+/// Finds all items that reference a given type via Neo4j `USES_TYPE` relationships.
+///
+/// Matches by type name, exact FQN, or FQN suffix (`::TypeName`).
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn find_usages_of_type(
     State(state): State<AppState>,
     Query(query): Query<FindUsagesOfTypeQuery>,
@@ -197,6 +262,15 @@ pub async fn find_usages_of_type(
     }))
 }
 
+/// Builds a hierarchical module tree for a crate from Neo4j.
+///
+/// Queries `Module` nodes, `CONTAINS` relationships, and non-module items.
+/// Assembles a recursive tree with a synthetic crate-root node.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails. Returns an
+/// empty tree (root with no children) if no modules are found.
 pub async fn get_module_tree(
     State(state): State<AppState>,
     Query(query): Query<GetModuleTreeQuery>,
@@ -346,6 +420,15 @@ pub async fn get_module_tree(
     }))
 }
 
+/// Executes an arbitrary read-only Cypher query against Neo4j.
+///
+/// The query is validated to reject write operations (`CREATE`, `DELETE`,
+/// `SET`, `REMOVE`, `MERGE`) before execution.
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] if the query contains write keywords.
+/// Returns [`AppError::Neo4j`] if execution fails.
 pub async fn query_graph(
     State(state): State<AppState>,
     Json(req): Json<QueryGraphRequest>,

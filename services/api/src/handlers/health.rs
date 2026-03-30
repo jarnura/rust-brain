@@ -1,4 +1,8 @@
 //! Health check and metrics endpoints.
+//!
+//! - `GET /health` — checks all dependencies and returns aggregate status
+//! - `GET /metrics` — Prometheus-format metrics
+//! - `GET /api/snapshot` — snapshot manifest metadata
 
 use axum::{
     extract::State,
@@ -16,23 +20,42 @@ use crate::errors::AppError;
 use crate::neo4j::check_neo4j;
 use crate::state::AppState;
 
+/// JSON body returned by `GET /health`.
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
+    /// `"healthy"` if all dependencies are up, `"degraded"` otherwise
     pub status: String,
+    /// ISO 8601 timestamp of this check
     pub timestamp: String,
+    /// Crate version from `Cargo.toml`
     pub version: String,
+    /// Per-dependency health status
     pub dependencies: HashMap<String, DependencyStatus>,
 }
 
+/// Health status of a single external dependency.
 #[derive(Debug, Serialize)]
 pub struct DependencyStatus {
+    /// `"healthy"` or `"unhealthy"`
     pub status: String,
+    /// Round-trip latency in milliseconds (if reachable)
     pub latency_ms: Option<u64>,
+    /// Error message (if unhealthy)
     pub error: Option<String>,
+    /// Qdrant-specific: number of indexed points
     #[serde(skip_serializing_if = "Option::is_none")]
     pub points_count: Option<u64>,
 }
 
+/// Checks all external dependencies and returns aggregate health status.
+///
+/// Dependencies checked: Postgres, Qdrant, Ollama, Neo4j, OpenCode.
+/// Status is `"healthy"` only if **all** are reachable; otherwise `"degraded"`.
+///
+/// # Errors
+///
+/// This handler does not return errors — individual dependency failures are
+/// reported within the response body.
 pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
     let mut dependencies = HashMap::new();
 
@@ -199,6 +222,9 @@ pub async fn snapshot_info() -> Json<serde_json::Value> {
     }
 }
 
+/// Returns Prometheus metrics in text exposition format (`GET /metrics`).
+///
+/// Returns HTTP 500 if metric encoding fails.
 pub async fn metrics_handler(State(state): State<AppState>) -> Response {
     let encoder = TextEncoder::new();
     let metric_families = state.metrics.registry.gather();

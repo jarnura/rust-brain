@@ -1,4 +1,8 @@
-//! Code item CRUD handlers.
+//! Code item lookup and call-graph traversal handlers.
+//!
+//! Provides `GET /tools/get_function` and `GET /tools/get_callers` endpoints
+//! for retrieving detailed item metadata from Postgres and call-graph context
+//! from Neo4j.
 
 use axum::{
     extract::{Query, State},
@@ -19,40 +23,64 @@ use super::{CallerInfo, CalleeInfo, CallerNode, default_depth};
 // Request/Response Types
 // =============================================================================
 
+/// Query parameters for `GET /tools/get_function`.
 #[derive(Debug, Deserialize)]
 pub struct GetFunctionQuery {
+    /// Fully qualified name of the item to retrieve
     pub fqn: String,
 }
 
+/// Detailed information about a code item, including source and call graph.
 #[derive(Debug, Serialize)]
 pub struct FunctionDetail {
+    /// Fully qualified name
     pub fqn: String,
+    /// Short name
     pub name: String,
+    /// Item kind (`"function"`, `"struct"`, `"impl"`, etc.)
     pub kind: String,
+    /// Visibility (`"pub"`, `"pub(crate)"`, etc.)
     pub visibility: Option<String>,
+    /// Full type signature
     pub signature: Option<String>,
+    /// Doc comment extracted from source
     pub docstring: Option<String>,
+    /// Source file path relative to crate root
     pub file_path: String,
+    /// Start line in the source file (1-indexed)
     pub start_line: u32,
+    /// End line in the source file (1-indexed)
     pub end_line: u32,
+    /// Module path (e.g., `"crate::module::submodule"`)
     pub module_path: Option<String>,
+    /// Crate name this item belongs to
     pub crate_name: Option<String>,
+    /// Full source body (may be truncated for large items)
     pub body_source: Option<String>,
+    /// Functions that call this item
     pub callers: Vec<CallerInfo>,
+    /// Functions called by this item
     pub callees: Vec<CalleeInfo>,
 }
 
+/// Query parameters for `GET /tools/get_callers`.
 #[derive(Debug, Deserialize)]
 pub struct GetCallersQuery {
+    /// Fully qualified name of the target function
     pub fqn: String,
+    /// Maximum traversal depth (default: 1, max: 10)
     #[serde(default = "default_depth")]
     pub depth: usize,
 }
 
+/// Response for `GET /tools/get_callers`.
 #[derive(Debug, Serialize)]
 pub struct CallersResponse {
+    /// The queried FQN
     pub fqn: String,
+    /// Functions that call the target (up to `depth` hops)
     pub callers: Vec<CallerNode>,
+    /// The depth that was actually used
     pub depth: usize,
 }
 
@@ -60,6 +88,22 @@ pub struct CallersResponse {
 // Handlers
 // =============================================================================
 
+/// Retrieves detailed information about a code item by its fully qualified name.
+///
+/// Looks up the item in Postgres for metadata and source, then queries Neo4j
+/// for callers and callees. For `impl` blocks, callers and callees are
+/// aggregated from all child methods.
+///
+/// # Errors
+///
+/// Returns [`AppError::Database`] if the Postgres query fails.
+/// Returns [`AppError::NotFound`] if no item matches the given FQN.
+///
+/// # Notes
+///
+/// As of commit `4d573c9`, this handler aggregates callers/callees from child
+/// methods when the queried item is an `impl` block, rather than returning
+/// an empty caller list.
 pub async fn get_function(
     State(state): State<AppState>,
     Query(query): Query<GetFunctionQuery>,
@@ -162,6 +206,16 @@ pub async fn get_function(
     }))
 }
 
+/// Finds all functions that call the target function, up to `depth` hops.
+///
+/// Traverses `CALLS` relationships in Neo4j. The `depth` parameter is
+/// clamped to a maximum of 10 on the API side (and further to 5 inside
+/// the Neo4j query layer).
+///
+/// # Errors
+///
+/// Returns [`AppError::BadRequest`] if `depth > 10`.
+/// Returns [`AppError::Neo4j`] if the graph query fails.
 pub async fn get_callers(
     State(state): State<AppState>,
     Query(query): Query<GetCallersQuery>,

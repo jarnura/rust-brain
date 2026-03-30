@@ -1,9 +1,18 @@
 //! Neo4j helper functions for the rust-brain API server.
+//!
+//! Provides low-level Cypher execution ([`execute_neo4j_query`]) and
+//! higher-level call-graph traversal functions used by the handler layer.
+//! All functions return [`AppError::Neo4j`] on failure.
 
 use crate::errors::AppError;
 use crate::handlers::{CallerNode, CalleeInfo};
 use crate::state::AppState;
 
+/// Verifies the Neo4j connection by executing `RETURN 1`.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the query fails or the connection is refused.
 pub async fn check_neo4j(state: &AppState) -> Result<(), AppError> {
     let mut result = state.neo4j_graph
         .execute(neo4rs::query("RETURN 1 as test"))
@@ -16,9 +25,15 @@ pub async fn check_neo4j(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Execute a Cypher query via Neo4j Bolt protocol and return results as JSON values.
+/// Executes a Cypher query via Neo4j Bolt protocol and returns results as JSON.
 ///
-/// Each row is returned as a JSON object with column names as keys.
+/// Each row is returned as a `serde_json::Value` object with column names as
+/// keys. Parameters in `params` are bound to the query by key name; `Null`
+/// values are skipped.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if query execution or row fetching fails.
 pub async fn execute_neo4j_query(
     state: &AppState,
     query: &str,
@@ -62,7 +77,9 @@ pub async fn execute_neo4j_query(
     Ok(rows)
 }
 
-/// Convert a neo4rs Row to a serde_json::Value.
+/// Converts a [`neo4rs::Row`] into a JSON object by treating it as a [`neo4rs::BoltMap`].
+///
+/// Returns `null` if the row cannot be interpreted as a map.
 pub fn row_to_json(row: &neo4rs::Row) -> serde_json::Value {
     if let Ok(node) = row.to::<neo4rs::BoltMap>() {
         bolt_map_to_json(&node)
@@ -71,7 +88,7 @@ pub fn row_to_json(row: &neo4rs::Row) -> serde_json::Value {
     }
 }
 
-/// Convert a BoltMap to a JSON object
+/// Converts a [`neo4rs::BoltMap`] into a JSON object, recursively converting values.
 pub fn bolt_map_to_json(map: &neo4rs::BoltMap) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     for (key, value) in &map.value {
@@ -80,7 +97,11 @@ pub fn bolt_map_to_json(map: &neo4rs::BoltMap) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-/// Convert a BoltType to a JSON value
+/// Converts a [`neo4rs::BoltType`] into a JSON value.
+///
+/// Handles strings, integers, floats, booleans, nulls, lists, maps, and nodes.
+/// Node properties are extracted into a flat object with an extra `_labels` array.
+/// Unrecognized bolt types are formatted with `Debug`.
 pub fn bolt_type_to_json(value: &neo4rs::BoltType) -> serde_json::Value {
     match value {
         neo4rs::BoltType::String(s) => serde_json::Value::String(s.to_string()),
@@ -110,6 +131,14 @@ pub fn bolt_type_to_json(value: &neo4rs::BoltType) -> serde_json::Value {
     }
 }
 
+/// Finds functions that call the function identified by `fqn`.
+///
+/// Traverses `CALLS` relationships up to `depth` hops (clamped to 1..5).
+/// Results are limited to 50 and ordered by FQN.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn get_callers_from_neo4j(
     state: &AppState,
     fqn: &str,
@@ -150,10 +179,20 @@ pub async fn get_callers_from_neo4j(
     Ok(callers)
 }
 
-/// Get callers for an impl block by aggregating callers of all its child methods.
+/// Finds callers for an impl block by aggregating callers of all its child methods.
 ///
 /// `method_prefix` is pre-computed as `module::Type::` so that all Function
-/// nodes matching that prefix are the impl's methods.
+/// nodes matching that prefix are the impl's methods. Callers whose FQN
+/// also starts with the prefix (i.e., sibling methods) are excluded.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails.
+///
+/// # Notes
+///
+/// As of commit `4d573c9`, this function was added to support showing
+/// callers in the detail panel for impl blocks.
 pub async fn get_callers_for_impl_with_prefix(
     state: &AppState,
     method_prefix: &str,
@@ -195,7 +234,13 @@ pub async fn get_callers_for_impl_with_prefix(
     Ok(callers)
 }
 
-/// Get callees for an impl block by aggregating callees of all its child methods.
+/// Finds callees for an impl block by aggregating callees of all its child methods.
+///
+/// Excludes callees whose FQN starts with `method_prefix` (sibling methods).
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn get_callees_for_impl_with_prefix(
     state: &AppState,
     method_prefix: &str,
@@ -227,6 +272,14 @@ pub async fn get_callees_for_impl_with_prefix(
     Ok(callees)
 }
 
+/// Finds functions called by the function identified by `fqn`.
+///
+/// Follows direct `CALLS` relationships (depth 1) and returns results
+/// ordered by name.
+///
+/// # Errors
+///
+/// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn get_callees_from_neo4j(
     state: &AppState,
     fqn: &str,

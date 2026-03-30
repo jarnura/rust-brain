@@ -1,27 +1,59 @@
-//! Shared configuration types for rust-brain services
+//! Shared configuration types for rust-brain services.
+//!
+//! Provides [`DatabaseConfig`] for multi-store connection credentials and
+//! [`EmbeddingModelConfig`] for embedding pipeline settings. Both are
+//! serializable and used by the ingestion and API services.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use rustbrain_common::config::{DatabaseConfig, EmbeddingModelConfig};
+//!
+//! let db = DatabaseConfig::from_env();
+//! let emb = EmbeddingModelConfig::default();
+//! assert_eq!(emb.dimensions, 768);
+//! ```
 
 use serde::{Deserialize, Serialize};
 
-/// Database connection configuration
+/// Connection credentials for all storage backends.
+///
+/// Holds URLs and authentication for PostgreSQL, Neo4j, Qdrant, and Ollama.
+/// Construct via [`DatabaseConfig::from_env`] or deserialize from a config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
-    /// PostgreSQL connection URL
+    /// PostgreSQL connection URL (e.g., `postgresql://user:pass@host:5432/db`)
     pub postgres_url: String,
-    /// Neo4j Bolt URI (e.g., bolt://neo4j:7687)
+    /// Neo4j Bolt URI (e.g., `bolt://neo4j:7687`)
     pub neo4j_uri: String,
     /// Neo4j username
     pub neo4j_user: String,
     /// Neo4j password
     pub neo4j_password: String,
-    /// Qdrant REST API URL (e.g., http://qdrant:6333)
+    /// Qdrant REST API URL (e.g., `http://qdrant:6333`)
     pub qdrant_url: String,
-    /// Ollama API URL (e.g., http://ollama:11434)
+    /// Ollama API URL (e.g., `http://ollama:11434`)
     pub ollama_url: String,
 }
 
 impl DatabaseConfig {
-    /// Load from environment variables.
-    /// Panics with a clear message if required credentials are missing.
+    /// Loads connection credentials from environment variables.
+    ///
+    /// Variables with defaults fall back silently; required variables cause a
+    /// panic with a descriptive message.
+    ///
+    /// | Variable | Required | Default |
+    /// |---|---|---|
+    /// | `DATABASE_URL` | **yes** | — |
+    /// | `NEO4J_URI` | no | `bolt://neo4j:7687` |
+    /// | `NEO4J_USER` | no | `neo4j` |
+    /// | `NEO4J_PASSWORD` | **yes** | — |
+    /// | `QDRANT_HOST` | no | `http://qdrant:6333` |
+    /// | `OLLAMA_HOST` | no | `http://ollama:11434` |
+    ///
+    /// # Panics
+    ///
+    /// Panics if `DATABASE_URL` or `NEO4J_PASSWORD` is not set.
     pub fn from_env() -> Self {
         Self {
             postgres_url: std::env::var("DATABASE_URL")
@@ -40,7 +72,10 @@ impl DatabaseConfig {
     }
 }
 
-/// Embedding configuration
+/// Configuration for the Ollama embedding model and Qdrant collections.
+///
+/// The [`Default`] implementation provides sensible values matching the
+/// standard deployment (`nomic-embed-text`, 768 dimensions).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingModelConfig {
     /// Model name for Ollama

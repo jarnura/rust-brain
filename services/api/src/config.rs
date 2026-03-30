@@ -1,6 +1,25 @@
 //! Configuration for the rust-brain API server.
+//!
+//! All settings are loaded from environment variables via [`Config::from_env`].
+//! See that method's documentation for the full variable table and defaults.
 
-/// Redact password from database/connection URLs for safe logging
+/// Replaces the password portion of a connection URL with `***` for safe logging.
+///
+/// Looks for the last `@` in the URL, then the last `:` before it, and masks
+/// everything between the colon and the `@`. URLs without an `@` (no
+/// credentials) are returned unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use rustbrain_api::config::redact_url;
+///
+/// assert_eq!(
+///     redact_url("postgresql://user:secret@host:5432/db"),
+///     "postgresql://user:***@host:5432/db"
+/// );
+/// assert_eq!(redact_url("http://localhost:8080"), "http://localhost:8080");
+/// ```
 pub fn redact_url(url: &str) -> String {
     if let Some(at_pos) = url.rfind('@') {
         if let Some(colon_pos) = url[..at_pos].rfind(':') {
@@ -15,25 +34,65 @@ pub fn redact_url(url: &str) -> String {
     }
 }
 
+/// API server configuration loaded from environment variables.
+///
+/// Covers database connections, embedding settings, the chat model, the
+/// listening port, and OpenCode integration credentials.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// PostgreSQL connection URL
     pub database_url: String,
+    /// Neo4j Bolt URI
     pub neo4j_uri: String,
+    /// Neo4j username
     pub neo4j_user: String,
+    /// Neo4j password
     pub neo4j_password: String,
+    /// Qdrant REST API base URL
     pub qdrant_host: String,
+    /// Ollama API base URL
     pub ollama_host: String,
+    /// Ollama embedding model name
     pub embedding_model: String,
+    /// Expected vector dimensions for the embedding model
     pub embedding_dimensions: usize,
+    /// Qdrant collection name for code embeddings
     pub collection_name: String,
+    /// Ollama chat model name (used by playground chat)
     pub chat_model: String,
+    /// TCP port the API server listens on
     pub port: u16,
+    /// OpenCode server base URL
     pub opencode_host: String,
+    /// Optional HTTP Basic Auth username for OpenCode
     pub opencode_auth_user: Option<String>,
+    /// Optional HTTP Basic Auth password for OpenCode
     pub opencode_auth_pass: Option<String>,
 }
 
 impl Config {
+    /// Loads configuration from environment variables.
+    ///
+    /// | Variable | Required | Default |
+    /// |---|---|---|
+    /// | `DATABASE_URL` | **yes** | — |
+    /// | `NEO4J_URI` | no | `bolt://neo4j:7687` |
+    /// | `NEO4J_USER` | no | `neo4j` |
+    /// | `NEO4J_PASSWORD` | **yes** | — |
+    /// | `QDRANT_HOST` | no | `http://qdrant:6333` |
+    /// | `OLLAMA_HOST` | no | `http://ollama:11434` |
+    /// | `EMBEDDING_MODEL` | no | `nomic-embed-text` |
+    /// | `EMBEDDING_DIMENSIONS` | no | `768` |
+    /// | `QDRANT_COLLECTION` | no | `code_embeddings` |
+    /// | `CHAT_MODEL` | no | `codellama:7b` |
+    /// | `API_PORT` | no | `8080` |
+    /// | `OPENCODE_HOST` | no | `http://opencode:4096` |
+    /// | `OPENCODE_AUTH_USER` | no | _(none)_ |
+    /// | `OPENCODE_AUTH_PASS` | no | _(none)_ |
+    ///
+    /// # Panics
+    ///
+    /// Panics if `DATABASE_URL` or `NEO4J_PASSWORD` is not set.
     pub fn from_env() -> Self {
         Self {
             database_url: std::env::var("DATABASE_URL")

@@ -1,4 +1,7 @@
 //! Ingestion progress endpoint.
+//!
+//! Serves `GET /api/ingestion/progress` which returns the status of the
+//! most recent ingestion run from the `ingestion_runs` Postgres table.
 
 use axum::{extract::State, Json};
 use chrono::{DateTime, Utc};
@@ -8,22 +11,34 @@ use serde_json::Value;
 use crate::errors::AppError;
 use crate::state::AppState;
 
+/// Progress of a single pipeline stage (e.g., expand, parse, embed).
 #[derive(Debug, Serialize)]
 pub struct StageProgress {
+    /// Stage name (e.g., `"expand"`, `"parse"`, `"embed"`)
     pub name: String,
+    /// Stage status (`"success"`, `"running"`, `"failed"`)
     pub status: String,
+    /// Number of items processed by this stage
     pub items_processed: i64,
 }
 
+/// Overall ingestion run progress returned by `GET /api/ingestion/progress`.
 #[derive(Debug, Serialize)]
 pub struct IngestionProgress {
+    /// Run status (`"running"`, `"completed"`, `"failed"`)
     pub status: String,
+    /// When the run started
     pub started_at: DateTime<Utc>,
+    /// When the run completed (omitted if still running)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<DateTime<Utc>>,
+    /// Number of crates processed
     pub crates_processed: i32,
+    /// Total number of items extracted across all crates
     pub items_extracted: i32,
+    /// Per-stage progress
     pub stages: Vec<StageProgress>,
+    /// Errors encountered during the run (omitted if empty)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<Value>,
 }

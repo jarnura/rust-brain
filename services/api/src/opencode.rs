@@ -1,4 +1,12 @@
 //! OpenCode API client for session and message management.
+//!
+//! [`OpenCodeClient`] wraps the OpenCode REST API, providing typed methods for
+//! creating sessions, sending messages, and managing chat state. It is used by
+//! the playground chat handlers to delegate LLM interactions to the OpenCode
+//! container.
+//!
+//! All network methods return [`anyhow::Result`] and propagate HTTP and
+//! deserialization errors with context.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,51 +16,77 @@ use std::time::Duration;
 // Types
 // =============================================================================
 
+/// An OpenCode chat session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
+    /// Unique session identifier (e.g., `"ses_abc123"`)
     pub id: String,
+    /// URL-friendly slug
     pub slug: Option<String>,
+    /// Human-readable title
     #[serde(default)]
     pub title: String,
+    /// Parent project identifier
     pub project_id: Option<String>,
+    /// Working directory for the session
     pub directory: Option<String>,
+    /// Protocol version
     pub version: Option<String>,
+    /// Diff summary (lines added/deleted, files changed)
     pub summary: Option<SessionSummary>,
+    /// Creation and last-update timestamps
     pub time: SessionTime,
 }
 
+/// Diff statistics for a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
+    /// Lines added
     pub additions: Option<i64>,
+    /// Lines deleted
     pub deletions: Option<i64>,
+    /// Files changed
     pub files: Option<i64>,
 }
 
+/// Unix-epoch timestamps for session lifecycle events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTime {
+    /// When the session was created (Unix seconds)
     pub created: i64,
+    /// When the session was last updated (Unix seconds)
     pub updated: i64,
 }
 
+/// A single chat message (user or assistant).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// Unique message identifier
     pub id: String,
+    /// `"user"` or `"assistant"`
     pub role: String,
+    /// Ordered content parts (text, tool calls, step markers)
     pub parts: Vec<MessagePart>,
+    /// Optional timestamp
     #[serde(default)]
     pub time: Option<MessageTime>,
 }
 
+/// Timestamp for a message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageTime {
+    /// When the message was created (Unix milliseconds)
     pub created: Option<i64>,
 }
 
 /// Response from OpenCode's message list endpoint.
+///
 /// Shape: `[{info: {...}, parts: [...]}, ...]`
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageListEntry {
+    /// Message metadata (id, role, timestamps)
     pub info: MessageInfo,
+    /// Ordered content parts
     pub parts: Vec<MessagePart>,
 }
 
@@ -67,25 +101,34 @@ impl From<MessageListEntry> for Message {
     }
 }
 
-/// Response from OpenCode's send_message endpoint.
+/// Response from OpenCode's `POST /session/{id}/message` endpoint.
+///
 /// Shape: `{"info": {...}, "parts": [...]}`
 #[derive(Debug, Clone, Deserialize)]
 pub struct SendMessageResponse {
+    /// Message metadata
     pub info: MessageInfo,
+    /// Ordered content parts
     pub parts: Vec<MessagePart>,
 }
 
+/// Shared metadata fields present in both list and send responses.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
+    /// Unique message identifier
     pub id: String,
+    /// `"user"` or `"assistant"` (absent for some internal messages)
     pub role: Option<String>,
+    /// Session this message belongs to
     #[serde(rename = "sessionID")]
     pub session_id: Option<String>,
+    /// Optional timestamp
     #[serde(default)]
     pub time: Option<MessageTime>,
 }
 
 impl SendMessageResponse {
+    /// Converts this response into a [`Message`], defaulting role to `"assistant"`.
     pub fn into_message(self) -> Message {
         Message {
             id: self.info.id,
@@ -96,15 +139,22 @@ impl SendMessageResponse {
     }
 }
 
+/// A single content part within a [`Message`].
+///
+/// Messages are composed of an ordered list of parts. The `type` field in
+/// JSON selects the variant (internally tagged, kebab-case).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum MessagePart {
+    /// Plain text content
     Text {
         text: String,
     },
+    /// Chain-of-thought reasoning (hidden from user display)
     Reasoning {
         text: String,
     },
+    /// A tool invocation with optional arguments and result
     #[serde(rename = "tool-invocation")]
     ToolInvocation {
         #[serde(rename = "toolName", default)]
@@ -114,16 +164,19 @@ pub enum MessagePart {
         #[serde(default)]
         result: Option<serde_json::Value>,
     },
+    /// Marks the beginning of an agent step
     #[serde(rename = "step-start")]
     StepStart {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Marks the end of an agent step
     #[serde(rename = "step-finish")]
     StepFinish {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// Catch-all for unrecognized part types
     #[serde(other)]
     Unknown,
 }
@@ -143,6 +196,10 @@ struct SendMessagePart {
 // Client
 // =============================================================================
 
+/// HTTP client for the OpenCode session management API.
+///
+/// Wraps `reqwest::Client` with a 10-minute timeout (to accommodate long
+/// LLM response times) and optional HTTP Basic Auth credentials.
 #[derive(Debug, Clone)]
 pub struct OpenCodeClient {
     client: reqwest::Client,
@@ -152,6 +209,15 @@ pub struct OpenCodeClient {
 }
 
 impl OpenCodeClient {
+    /// Creates a new client targeting the given OpenCode base URL.
+    ///
+    /// If `username` and `password` are provided, every request will include
+    /// an `Authorization: Basic ...` header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `reqwest::Client` cannot be constructed (e.g.,
+    /// TLS backend unavailable).
     pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))  // 10 minutes for long LLM responses
@@ -165,6 +231,7 @@ impl OpenCodeClient {
         }
     }
 
+    /// Returns the configured base URL (e.g., `http://opencode:4096`).
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -179,6 +246,14 @@ impl OpenCodeClient {
         }
     }
 
+    /// Checks whether the OpenCode server is reachable.
+    ///
+    /// Returns `true` if `GET /health` returns a 2xx status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request itself fails (connection refused,
+    /// timeout, DNS resolution failure).
     pub async fn health_check(&self) -> Result<bool> {
         let resp = self
             .request(reqwest::Method::GET, "/health")
@@ -188,6 +263,11 @@ impl OpenCodeClient {
         Ok(resp.status().is_success())
     }
 
+    /// Creates a new chat session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status, or JSON parse failure.
     pub async fn create_session(&self, title: Option<&str>) -> Result<Session> {
         let body = serde_json::json!({ "title": title.unwrap_or("New Session") });
         let resp = self
@@ -202,6 +282,11 @@ impl OpenCodeClient {
             .context("create_session parse failed")
     }
 
+    /// Lists all existing sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status, or JSON parse failure.
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         let resp = self
             .request(reqwest::Method::GET, "/session")
@@ -214,6 +299,12 @@ impl OpenCodeClient {
             .context("list_sessions parse failed")
     }
 
+    /// Retrieves a session by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status (including 404 if
+    /// the session does not exist), or JSON parse failure.
     pub async fn get_session(&self, session_id: &str) -> Result<Session> {
         let path = format!("/session/{}", session_id);
         let resp = self
@@ -227,6 +318,11 @@ impl OpenCodeClient {
             .context("get_session parse failed")
     }
 
+    /// Deletes a session and all its messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure or non-2xx status.
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let path = format!("/session/{}", session_id);
         self.request(reqwest::Method::DELETE, &path)
@@ -237,6 +333,14 @@ impl OpenCodeClient {
         Ok(())
     }
 
+    /// Sends a text message and waits for the full assistant response.
+    ///
+    /// This is a blocking call that waits for the LLM to finish generating
+    /// (up to the 10-minute client timeout).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status, or JSON parse failure.
     pub async fn send_message(&self, session_id: &str, content: &str) -> Result<Message> {
         let path = format!("/session/{}/message", session_id);
         let body = SendMessageRequest {
@@ -259,6 +363,15 @@ impl OpenCodeClient {
         Ok(send_resp.into_message())
     }
 
+    /// Sends a text message without waiting for the response.
+    ///
+    /// Returns the message ID immediately. The assistant response arrives
+    /// via the SSE event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status, JSON parse
+    /// failure, or if the response is missing the `id` field.
     pub async fn send_message_async(&self, session_id: &str, content: &str) -> Result<String> {
         // OpenCode uses the same endpoint for async - it returns immediately with the message ID
         let path = format!("/session/{}/message", session_id);
@@ -287,6 +400,11 @@ impl OpenCodeClient {
             .map(|s| s.to_string())
     }
 
+    /// Aborts any in-progress generation for the given session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure or non-2xx status.
     pub async fn abort_session(&self, session_id: &str) -> Result<()> {
         let path = format!("/session/{}/abort", session_id);
         self.request(reqwest::Method::POST, &path)
@@ -297,6 +415,14 @@ impl OpenCodeClient {
         Ok(())
     }
 
+    /// Forks a session, optionally from a specific message.
+    ///
+    /// Creates a new session containing messages up to `message_id` (or all
+    /// messages if `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status, or JSON parse failure.
     pub async fn fork_session(
         &self,
         session_id: &str,
@@ -316,6 +442,11 @@ impl OpenCodeClient {
             .context("fork_session parse failed")
     }
 
+    /// Retrieves all messages for a session, ordered chronologically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on network failure, non-2xx status, or JSON parse failure.
     pub async fn get_messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let path = format!("/session/{}/message", session_id);
         let resp = self

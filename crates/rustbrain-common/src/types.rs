@@ -1,11 +1,20 @@
-//! Core type definitions shared across rust-brain services
+//! Core type definitions shared across rust-brain services.
 //!
 //! These types represent code elements extracted during ingestion
-//! and queried through the API.
+//! and queried through the API. Key types include:
+//!
+//! - [`ItemType`] — classifies extracted code items
+//! - [`Visibility`] — Rust visibility levels
+//! - [`GenericParam`] / [`WhereClause`] — generic parameter metadata
+//! - [`ResolutionQuality`] — confidence level of type analysis
+//! - [`StoreReference`] — cross-store consistency tracking
 
 use serde::{Deserialize, Serialize};
 
-/// Generic parameter representation
+/// A generic parameter extracted from a Rust item signature.
+///
+/// Represents type parameters (`T`), lifetime parameters (`'a`), and
+/// const generic parameters.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GenericParam {
     /// Parameter name (e.g., "T", "'a")
@@ -18,7 +27,7 @@ pub struct GenericParam {
     pub default: Option<String>,
 }
 
-/// Where clause predicate
+/// A single predicate from a `where` clause (e.g., `T: Clone + Send`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WhereClause {
     /// The type being constrained (e.g., "T", "Self::Item")
@@ -27,7 +36,10 @@ pub struct WhereClause {
     pub bounds: Vec<String>,
 }
 
-/// Visibility level
+/// Rust visibility level for a code item.
+///
+/// Maps to the `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, and
+/// private (no modifier) visibility specifiers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Visibility {
     /// pub
@@ -43,6 +55,10 @@ pub enum Visibility {
 }
 
 impl Visibility {
+    /// Returns a short string key for this visibility level.
+    ///
+    /// Used for database storage and serialization. Returns `"pub"`,
+    /// `"pub_crate"`, `"pub_super"`, the path for `PubIn`, or `"private"`.
     pub fn as_str(&self) -> &str {
         match self {
             Visibility::Public => "pub",
@@ -66,26 +82,45 @@ impl std::fmt::Display for Visibility {
     }
 }
 
-/// Item type enumeration
+/// Classification of a Rust code item.
+///
+/// Serialized as snake_case strings (e.g., `"function"`, `"type_alias"`).
+/// The [`Unknown`](ItemType::Unknown) variant captures item kinds not yet
+/// handled by the parser.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemType {
+    /// `fn` or method
     Function,
+    /// `struct`
     Struct,
+    /// `enum`
     Enum,
+    /// `trait`
     Trait,
+    /// `impl` block (inherent or trait)
     Impl,
+    /// `type` alias
     TypeAlias,
+    /// `const` item
     Const,
+    /// `static` item
     Static,
+    /// `macro_rules!` or proc-macro
     Macro,
+    /// `mod` declaration
     Module,
+    /// `use` import
     Use,
+    /// `extern` block
     ExternBlock,
+    /// Unrecognized item kind (stores the raw kind string)
     Unknown(String),
 }
 
 impl ItemType {
+    /// Returns the snake_case string representation used in the database
+    /// and JSON serialization.
     pub fn as_str(&self) -> &str {
         match self {
             ItemType::Function => "function",
@@ -111,15 +146,20 @@ impl std::fmt::Display for ItemType {
     }
 }
 
-/// Resolution quality indicator for type analysis
+/// Confidence indicator for type resolution results.
+///
+/// Attached to call-site and trait-implementation records to signal
+/// how the type information was obtained.
+///
+/// Implements [`FromStr`](std::str::FromStr) for parsing from database strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionQuality {
-    /// Parsed with syn - high confidence
+    /// Parsed with `syn` — high confidence
     Analyzed,
-    /// Extracted with regex heuristics - lower confidence
+    /// Extracted with regex heuristics — lower confidence
     Heuristic,
-    /// Unknown quality
+    /// Quality could not be determined
     Unknown,
 }
 
@@ -193,6 +233,13 @@ impl StoreReference {
 impl std::str::FromStr for ResolutionQuality {
     type Err = String;
 
+    /// Parses a resolution quality from a lowercase string.
+    ///
+    /// Accepts `"analyzed"`, `"heuristic"`, or `"unknown"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string for any unrecognized value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "analyzed" => Ok(ResolutionQuality::Analyzed),
