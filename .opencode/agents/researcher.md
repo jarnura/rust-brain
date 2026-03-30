@@ -3,7 +3,7 @@ description: Knowledge retrieval specialist. Queries vector DB, graph DB, and re
 mode: subagent
 model: juspay-grid/glm-latest
 temperature: 0.2
-steps: 30
+steps: 2000
 permission:
   edit: deny
   bash:

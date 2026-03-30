@@ -3,28 +3,28 @@ description: Codebase and filesystem navigator. Reads source files, traces code 
 mode: subagent
 model: juspay-grid/glm-latest
 temperature: 0.1
-steps: 40
+steps: 500
 permission:
   edit: deny
   bash:
     "*": deny
+    "cd *": allow
     "ls *": allow
     "ls": allow
-    "find * -type f*": allow
-    "find * -name*": allow
+    "find *": allow
+    "fd *": allow
     "cat *": allow
     "head *": allow
     "tail *": allow
     "grep *": allow
     "rg *": allow
-    "fd *": allow
     "wc *": allow
     "tree *": allow
     "tree": allow
     "stat *": allow
     "git status": allow
-    "git log --oneline*": allow
-    "git diff --stat*": allow
+    "git log *": allow
+    "git diff *": allow
     "git branch*": allow
     "cargo metadata*": allow
     "cargo tree*": allow
