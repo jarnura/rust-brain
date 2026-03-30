@@ -12,3 +12,10 @@ target-repo/
 .snapshots/
 dist/
 .snapshot-manifest.json
+
+# Temporary task/pipeline files
+tasks-*.json
+tasks-*.md
+pipeline-*.json
+test-results/
+services/api/static/test.html
