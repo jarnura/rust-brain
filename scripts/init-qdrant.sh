@@ -5,7 +5,7 @@
 set -euo pipefail
 
 QDRANT_HOST="${QDRANT_HOST:-http://localhost:6333}"
-EMBEDDING_DIMENSIONS="${EMBEDDING_DIMENSIONS:-768}"
+EMBEDDING_DIMENSIONS="${EMBEDDING_DIMENSIONS:-2560}"
 
 echo "=== Initializing Qdrant Collections ==="
 echo "Qdrant Host: $QDRANT_HOST"
