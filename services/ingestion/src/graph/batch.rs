@@ -279,6 +279,11 @@ impl BatchInsert {
             return Ok(());
         }
 
+        // Relationship types where target nodes may not exist and should be
+        // created as placeholders. For these, use MERGE on the target instead
+        // of MATCH (which silently drops rows when the node doesn't exist).
+        let merge_target_types = ["HAS_FIELD", "HAS_VARIANT", "USES_TYPE", "FOR", "EXTENDS"];
+
         // Group by (rel_type, from_label, to_label) so the Cypher MATCH can include labels
         let mut grouped: HashMap<(String, String, String), Vec<&RelationshipData>> = HashMap::new();
         for rel in relationships {
@@ -293,14 +298,28 @@ impl BatchInsert {
         }
 
         for ((rel_type, from_label, to_label), group_rels) in grouped {
-            let query_str = format!(
-                "UNWIND $rels AS rel_data \
-                 MATCH (from:{} {{id: rel_data.from_id}}) \
-                 MATCH (to:{} {{id: rel_data.to_id}}) \
-                 MERGE (from)-[r:{}]->(to) \
-                 SET r += rel_data.props",
-                from_label, to_label, rel_type
-            );
+            let query_str = if merge_target_types.contains(&rel_type.as_str()) {
+                // MERGE target: create placeholder node if it doesn't exist
+                format!(
+                    "UNWIND $rels AS rel_data \
+                     MATCH (from:{} {{id: rel_data.from_id}}) \
+                     MERGE (to:{} {{id: rel_data.to_id}}) \
+                     ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
+                     MERGE (from)-[r:{}]->(to) \
+                     SET r += rel_data.props",
+                    from_label, to_label, rel_type
+                )
+            } else {
+                // MATCH both: only create relationship if both nodes exist
+                format!(
+                    "UNWIND $rels AS rel_data \
+                     MATCH (from:{} {{id: rel_data.from_id}}) \
+                     MATCH (to:{} {{id: rel_data.to_id}}) \
+                     MERGE (from)-[r:{}]->(to) \
+                     SET r += rel_data.props",
+                    from_label, to_label, rel_type
+                )
+            };
 
             let rel_params: Vec<HashMap<String, BoltType>> = group_rels
                 .iter()
@@ -594,15 +613,34 @@ impl BatchProcessor {
                 .push(rel);
         }
 
+        // Relationship types where target nodes may not exist and should be
+        // created as placeholders. For these, use MERGE on the target instead
+        // of MATCH (which silently drops rows when the node doesn't exist).
+        let merge_target_types = ["HAS_FIELD", "HAS_VARIANT", "USES_TYPE", "FOR", "EXTENDS"];
+
         for ((rel_type, from_label, to_label), group_rels) in grouped {
-            let query_str = format!(
-                "UNWIND $rels AS rel_data \
-                 MATCH (from:{} {{id: rel_data.from_id}}) \
-                 MATCH (to:{} {{id: rel_data.to_id}}) \
-                 MERGE (from)-[r:{}]->(to) \
-                 SET r += rel_data.props",
-                from_label, to_label, rel_type
-            );
+            let query_str = if merge_target_types.contains(&rel_type.as_str()) {
+                // MERGE target: create placeholder node if it doesn't exist
+                format!(
+                    "UNWIND $rels AS rel_data \
+                     MATCH (from:{} {{id: rel_data.from_id}}) \
+                     MERGE (to:{} {{id: rel_data.to_id}}) \
+                     ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
+                     MERGE (from)-[r:{}]->(to) \
+                     SET r += rel_data.props",
+                    from_label, to_label, rel_type
+                )
+            } else {
+                // MATCH both: only create relationship if both nodes exist
+                format!(
+                    "UNWIND $rels AS rel_data \
+                     MATCH (from:{} {{id: rel_data.from_id}}) \
+                     MATCH (to:{} {{id: rel_data.to_id}}) \
+                     MERGE (from)-[r:{}]->(to) \
+                     SET r += rel_data.props",
+                    from_label, to_label, rel_type
+                )
+            };
 
             let rel_params: Vec<HashMap<String, BoltType>> = group_rels
                 .iter()
