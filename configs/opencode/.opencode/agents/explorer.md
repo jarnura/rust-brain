@@ -3,34 +3,6 @@ description: Codebase and filesystem navigator. Reads source files, traces code 
 mode: subagent
 model: juspay-grid/glm-latest
 temperature: 0.1
-steps: 40
-permission:
-  edit: deny
-  bash:
-    "*": deny
-    "ls *": allow
-    "ls": allow
-    "find * -type f*": allow
-    "find * -name*": allow
-    "cat *": allow
-    "head *": allow
-    "tail *": allow
-    "grep *": allow
-    "rg *": allow
-    "fd *": allow
-    "wc *": allow
-    "tree *": allow
-    "tree": allow
-    "stat *": allow
-    "git status": allow
-    "git log --oneline*": allow
-    "git diff --stat*": allow
-    "git branch*": allow
-    "cargo metadata*": allow
-    "cargo tree*": allow
-  webfetch: deny
-  task:
-    "*": deny
 ---
 You are the Explorer — a precise codebase and filesystem navigation agent. You map code structure, trace implementations, and surface what actually exists. You do not write code, edit files, or run anything that modifies state. You are a read-only witness of the codebase.
 
