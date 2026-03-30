@@ -475,12 +475,30 @@ if [ "$NEED_RESTORE" = true ]; then
   echo -e "${CYAN}=== Restoring PostgreSQL ===${NC}"
 
   if [ -f "${SNAPSHOT_DIR}/postgres.pgdump" ]; then
-    docker cp "${SNAPSHOT_DIR}/postgres.pgdump" rustbrain-postgres:/tmp/postgres.pgdump
+    # Resolve container name (handles hash-prefixed names)
+    PG_CONTAINER=$(docker ps --format "{{.Names}}" | grep "rustbrain-postgres" | head -1)
+    PG_CONTAINER="${PG_CONTAINER:-rustbrain-postgres}"
+
+    docker cp "${SNAPSHOT_DIR}/postgres.pgdump" "${PG_CONTAINER}:/tmp/postgres.pgdump"
     docker compose exec -T postgres pg_restore \
       -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
       --no-owner --no-privileges --clean --if-exists \
       /tmp/postgres.pgdump 2>/dev/null || true
     docker compose exec -T postgres rm -f /tmp/postgres.pgdump
+
+    # Restore source_files from lite CSV (expanded_source excluded from pgdump)
+    if [ -f "${SNAPSHOT_DIR}/source_files_lite.csv" ]; then
+      docker cp "${SNAPSHOT_DIR}/source_files_lite.csv" "${PG_CONTAINER}:/tmp/source_files_lite.csv"
+      docker compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+        -c "COPY source_files(id, crate_name, module_path, file_path, original_source,
+            expanded_source, git_hash, content_hash, git_blame, last_indexed_at,
+            created_at, updated_at, repository_id)
+            FROM '/tmp/source_files_lite.csv' CSV HEADER" 2>/dev/null || true
+      docker compose exec -T postgres rm -f /tmp/source_files_lite.csv
+      SF_COUNT=$(docker compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+        -tAc "SELECT count(*) FROM source_files" 2>/dev/null | tr -d '[:space:]' || echo "?")
+      echo -e "  ${GREEN}✓${NC} source_files restored (${SF_COUNT} files, expanded_source=NULL)"
+    fi
 
     ITEM_COUNT=$(docker compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
       -tAc "SELECT count(*) FROM extracted_items" 2>/dev/null | tr -d '[:space:]' || echo "?")

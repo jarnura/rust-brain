@@ -56,10 +56,15 @@ OUTPUT:
     dist/rustbrain-snapshot-<name>.tar.zst.sha256
 
 WHAT'S INCLUDED:
-    1. PostgreSQL dump (pg_dump --format=custom)
-    2. Neo4j database dump (neo4j-admin database dump) — requires ~3s downtime
-    3. Qdrant collection snapshots (code_embeddings + doc_embeddings)
-    4. manifest.json with metadata, checksums, and stats
+    1. PostgreSQL dump (pg_dump --format=custom, excludes source_files data)
+    2. source_files_lite.csv (source_files without expanded_source — saves ~3 GB)
+    3. Neo4j database dump (neo4j-admin database dump) — requires ~3s downtime
+    4. Qdrant collection snapshots (code_embeddings + doc_embeddings)
+    5. manifest.json with metadata, checksums, and stats
+
+SIZE OPTIMIZATION:
+    expanded_source (~8.6 GB raw) is excluded — it's regeneratable via
+    'cargo expand'. This shrinks the snapshot from ~5.5 GB to ~1.5-2 GB.
 EOF
   exit 0
 fi
@@ -121,16 +126,33 @@ mkdir -p "$WORK_DIR/qdrant" "$OUTPUT_DIR"
 
 echo ""
 echo -e "${CYAN}=== Phase 1: PostgreSQL dump ===${NC}"
+echo "  Excluding expanded_source (regeneratable, saves ~3 GB)"
 
+# Strategy: pg_dump everything EXCEPT source_files data, then export
+# source_files separately with expanded_source nullified.
+# This shrinks the dump from ~3.3 GB to ~70 MB.
 docker compose exec -T postgres pg_dump \
   -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
   --format=custom --compress=6 \
   --no-owner --no-privileges \
+  --exclude-table-data='source_files' \
   > "${WORK_DIR}/postgres.pgdump"
 
+# Export source_files with expanded_source set to NULL (saves ~8.6 GB)
+docker compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+  -c "COPY (
+    SELECT id, crate_name, module_path, file_path, original_source,
+           NULL AS expanded_source,
+           git_hash, content_hash, git_blame, last_indexed_at,
+           created_at, updated_at, repository_id
+    FROM source_files
+  ) TO STDOUT CSV HEADER" > "${WORK_DIR}/source_files_lite.csv"
+
 PG_SIZE=$(du -h "${WORK_DIR}/postgres.pgdump" | cut -f1)
+SF_SIZE=$(du -h "${WORK_DIR}/source_files_lite.csv" | cut -f1)
 PG_SHA=$(sha256sum "${WORK_DIR}/postgres.pgdump" | cut -d' ' -f1)
-echo -e "  ${GREEN}✓${NC} PostgreSQL: ${PG_SIZE}"
+echo -e "  ${GREEN}✓${NC} PostgreSQL schema+data: ${PG_SIZE}"
+echo -e "  ${GREEN}✓${NC} source_files (lite): ${SF_SIZE}"
 
 echo ""
 echo -e "${CYAN}=== Phase 2: Neo4j dump (brief downtime) ===${NC}"
@@ -245,6 +267,9 @@ fi
 
 PG_DUMP_SIZE=$(stat -c%s "${WORK_DIR}/postgres.pgdump" 2>/dev/null \
   || stat -f%z "${WORK_DIR}/postgres.pgdump" 2>/dev/null || echo "0")
+SF_LITE_SIZE=$(stat -c%s "${WORK_DIR}/source_files_lite.csv" 2>/dev/null \
+  || stat -f%z "${WORK_DIR}/source_files_lite.csv" 2>/dev/null || echo "0")
+SF_LITE_SHA=$(sha256sum "${WORK_DIR}/source_files_lite.csv" | cut -d' ' -f1)
 NEO_DUMP_SIZE=$(stat -c%s "${WORK_DIR}/neo4j.dump" 2>/dev/null \
   || stat -f%z "${WORK_DIR}/neo4j.dump" 2>/dev/null || echo "0")
 
@@ -275,7 +300,15 @@ cat > "${WORK_DIR}/manifest.json" <<MANIFEST
       "format": "pg_dump_custom",
       "size_bytes": ${PG_DUMP_SIZE},
       "sha256": "${PG_SHA}",
-      "pg_version": "16"
+      "pg_version": "16",
+      "note": "Excludes source_files data (loaded separately from source_files_lite.csv)"
+    },
+    "source_files_lite": {
+      "file": "source_files_lite.csv",
+      "format": "csv_with_header",
+      "size_bytes": ${SF_LITE_SIZE},
+      "sha256": "${SF_LITE_SHA}",
+      "note": "source_files with expanded_source=NULL (regenerate via cargo expand)"
     },
     "neo4j": {
       "file": "neo4j.dump",
