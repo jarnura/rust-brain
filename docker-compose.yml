@@ -335,6 +335,7 @@ services:
       - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
       - ./configs/opencode/.opencode:/home/opencode/.config/opencode/.opencode:ro
       - ./:/home/opencode/projects/rust-brain:ro
+      - ${TARGET_REPO_PATH:-.}:/workspace/target-repo:ro  # Ingested project (e.g. hyperswitch)
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4096/ || exit 1"]
       interval: 15s

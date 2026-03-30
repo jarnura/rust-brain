@@ -377,6 +377,28 @@ To add a new tool:
 
 ## OpenCode IDE Configuration
 
+### Target Repository Configuration
+
+OpenCode needs to know which project to analyze. Set the `TARGET_REPO_PATH` environment variable to point to your Rust crate:
+
+```bash
+# In .env file
+TARGET_REPO_PATH=/path/to/your/rust/crate
+
+# Example for hyperswitch
+TARGET_REPO_PATH=/home/user/projects/hyperswitch
+```
+
+This mounts your target project into the OpenCode container at `/workspace/target-repo`, allowing agents to:
+- Navigate the source code filesystem
+- Read files referenced by MCP tool results
+- Understand project structure
+
+**Note:** After changing `TARGET_REPO_PATH`, restart the OpenCode container:
+```bash
+docker compose restart opencode
+```
+
 ### Starting OpenCode
 
 OpenCode runs in Docker Compose:

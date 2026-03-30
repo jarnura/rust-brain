@@ -193,6 +193,13 @@ docker-compose run --rm ingestion \
   --crate-name my-crate
 ```
 
+**Tip:** The same `TARGET_REPO_PATH` is used by OpenCode to mount your project for agent analysis. Set it in `.env` for persistence:
+
+```bash
+# Add to .env
+echo "TARGET_REPO_PATH=/path/to/your/rust/crate" >> .env
+```
+
 ### What Happens During Ingestion
 
 ```
