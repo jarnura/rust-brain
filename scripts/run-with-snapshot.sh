@@ -591,11 +591,29 @@ if [ "$NEED_RESTORE" = true ]; then
     # Cold restore: stop neo4j, load dump, restart
     docker compose stop neo4j
 
-    docker run --rm \
-      -v rustbrain_neo4j_data:/data \
+    # Resolve the actual Neo4j volume name (handles different project name prefixes)
+    NEO4J_VOL=$(docker volume ls --format '{{.Name}}' | grep neo4j_data | head -1)
+    if [ -z "$NEO4J_VOL" ]; then
+      NEO4J_VOL="rustbrain_neo4j_data"
+      echo -e "  ${YELLOW}⚠${NC} Could not find neo4j volume, using default: ${NEO4J_VOL}"
+    fi
+    echo -e "  Loading dump into volume: ${NEO4J_VOL}"
+
+    # neo4j-admin database load (try --overwrite-destination first, fall back to --overwrite)
+    if ! docker run --rm \
+      -v "${NEO4J_VOL}:/data" \
       -v "${SNAPSHOT_DIR}:/snapshot:ro" \
       neo4j:5-community \
-      neo4j-admin database load neo4j --from-path=/snapshot/ --overwrite 2>/dev/null
+      neo4j-admin database load neo4j --from-path=/snapshot/ --overwrite-destination 2>&1; then
+
+      echo -e "  ${YELLOW}⚠${NC} Retrying with --overwrite flag..."
+      docker run --rm \
+        -v "${NEO4J_VOL}:/data" \
+        -v "${SNAPSHOT_DIR}:/snapshot:ro" \
+        neo4j:5-community \
+        neo4j-admin database load neo4j --from-path=/snapshot/ --overwrite 2>&1 || \
+        echo -e "  ${RED}✗ Neo4j restore failed${NC}"
+    fi
 
     docker compose up -d neo4j
 
