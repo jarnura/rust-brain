@@ -166,15 +166,31 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 
 ## Agent Tool API
 
+### Code Intelligence (9 endpoints)
+
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /tools/search_semantic` | Natural language code search |
+| `POST /tools/aggregate_search` | Cross-database aggregated search |
 | `GET /tools/get_function?fqn=` | Full function details with source |
 | `GET /tools/get_callers?fqn=` | Direct and transitive callers |
 | `GET /tools/get_trait_impls?trait_name=` | All implementations of a trait |
 | `GET /tools/find_usages_of_type?type_name=` | Where a type is used |
 | `GET /tools/get_module_tree?crate=` | Module hierarchy |
 | `POST /tools/query_graph` | Raw Cypher queries |
+| `GET /tools/find_calls_with_type?type_name=` | Call sites with specific type argument (turbofish) |
+| `GET /tools/find_trait_impls_for_type?type_name=` | All trait implementations for a given type |
+
+### Chat (6 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /tools/chat` | Send chat message |
+| `GET /tools/chat/stream` | SSE streaming chat |
+| `POST /tools/chat/send` | Send message to stream |
+| `POST /tools/chat/sessions` | Create session |
+| `GET /tools/chat/sessions` | List sessions |
+| `DELETE /tools/chat/sessions/:id` | Delete session |
 
 ## Key Files
 
@@ -187,25 +203,12 @@ PROJECT_STATE.md         ← Current project state
 
 ## Playground
 
-The unified playground UI provides interactive exploration of Rust codebases with multiple views:
+The playground UI at **http://localhost:8088/playground** provides 4 pages for interactive exploration:
 
-- **Dashboard**: Overview of ingestion status, metrics, recent searches
-- **Search**: Semantic code search with full-text fallback
-- **Call Graph**: Interactive dependency graph visualization
-- **Chat**: AI-powered code exploration with streaming responses
-- **Cypher**: Raw Neo4j query interface for graph analysis
-- **Types**: Browse types, structs, enums, and their implementations
-- **Traits**: Trait definitions, implementations, and bounds
-- **Modules**: Module hierarchy and export structure
-- **Audit**: Code quality metrics, dependency analysis
-- **Gaps**: Missing implementations, trait coverage analysis
-
-**Keyboard Shortcuts:**
-- `Cmd+K` / `Ctrl+K` — Command palette
-- `Cmd+1` to `Cmd+9` — Jump to panel (1=Dashboard, 2=Search, etc.)
-- `Cmd+/` — Toggle chat sidebar
-- `Cmd+B` — Toggle detail panel
-- `Escape` — Close overlays
+- **Dashboard** (`index.html`): Real-time service health, ingestion stats, quick actions
+- **Query Playground** (`playground.html`): 7 query types (semantic, function, callers, trait impls, type usages, module tree, Cypher) with JSON/table view toggle
+- **Audit Trail** (`audit.html`): Known issues and system audit information
+- **Gap Analysis** (`gaps.html`): Feature completeness tracking
 
 See [docs/playground.md](./docs/playground.md) for detailed documentation.
 

@@ -40,28 +40,31 @@ Adopt a **hub-and-spoke architecture** where:
 ```
 Browser/IDE                  Backend Services
     │
-    ├─[8088]─────────>  Playground UI
-    │                   (static HTML + REST)
+    ├─[8088]─────────>  Playground UI + Tool API
+    │                   (static HTML + REST, 22 endpoints)
     │
     ├─[4096]─────────>  OpenCode IDE
     │                   (browser-based editor)
     │
     ├─[3001]─────────>  MCP SSE Server
-    │ (WebSocket)       (async tool transport)
+    │                   (SSE tool transport)
     │
-    ├─[4000]─────────>  LiteLLM Proxy
-    │                   (model router)
+    │                   LiteLLM Proxy (EXTERNAL)
+    │                   (hosted at LITELLM_BASE_URL)
     │
     └─[8088/tools]──>   Tool API (REST)
                          ├─ /tools/search_semantic
                          ├─ /tools/get_function
-                         ├─ /tools/get_callgraph
-                         └─ ... (9 total endpoints)
+                         ├─ /tools/get_callers
+                         ├─ /tools/chat (+ sessions CRUD)
+                         └─ ... (22 total endpoints)
                               │
-                              └─[8082]─────────>  Pgweb (Postgres UI)
+                              └─[8085]─────────>  Pgweb (Postgres UI)
                               └─[7474]─────────>  Neo4j Browser
                               └─[6333]─────────>  Qdrant Dashboard
 ```
+
+> **Note:** LiteLLM is **not** a local Docker container. It is hosted externally (configured via `LITELLM_BASE_URL` in `.env`). OpenCode connects to it for model routing.
 
 ### Service Dependencies
 
@@ -110,17 +113,16 @@ OPENCODE_PORT=4096
 OPENCODE_HOST=http://opencode:4096
 OPENCODE_SERVER_PASSWORD=your_server_password_here
 
-# === LiteLLM Proxy ===
-LITELLM_MASTER_KEY=your_litellm_master_key
-LITELLM_PORT=4000
+# === LiteLLM Proxy (EXTERNAL — not a local Docker container) ===
+LITELLM_BASE_URL=https://grid.ai.juspay.net
+LITELLM_API_KEY=your-api-key-here
 
 # === AI Models ===
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...  # Optional fallback
 
-# Model routing (see below for format)
-CHAT_MODEL=anthropic/claude-sonnet-4-20250514
-CODE_ANALYSIS_MODEL=anthropic/claude-haiku-4-5
+# Model routing
+CHAT_MODEL=glm-latest
 
 # === MCP Server ===
 MCP_SSE_PORT=3001

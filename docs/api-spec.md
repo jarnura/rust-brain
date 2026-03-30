@@ -6,16 +6,49 @@ REST API for the rust-brain code intelligence platform. All endpoints are served
 
 ## Endpoints Overview
 
+### Code Intelligence Tools
+
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `POST` | `/tools/search_semantic` | Natural language code search |
+| `POST` | `/tools/aggregate_search` | Cross-database aggregated search (Qdrant + Postgres + Neo4j) |
 | `GET` | `/tools/get_function` | Full function details with source |
 | `GET` | `/tools/get_callers` | Direct and transitive callers |
 | `GET` | `/tools/get_trait_impls` | All implementations of a trait |
 | `GET` | `/tools/find_usages_of_type` | Where a type is used |
 | `GET` | `/tools/get_module_tree` | Module hierarchy |
 | `POST` | `/tools/query_graph` | Raw Cypher queries |
+| `GET` | `/tools/find_calls_with_type` | Call sites with specific type argument (turbofish) |
+| `GET` | `/tools/find_trait_impls_for_type` | All trait implementations for a given type |
+
+### Chat
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/tools/chat` | Send chat message (synchronous) |
+| `GET` | `/tools/chat/stream` | SSE streaming chat responses |
+| `POST` | `/tools/chat/send` | Send message to existing stream |
+
+### Chat Sessions
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/tools/chat/sessions` | Create a new chat session |
+| `GET` | `/tools/chat/sessions` | List all chat sessions |
+| `GET` | `/tools/chat/sessions/:id` | Get a specific session |
+| `DELETE` | `/tools/chat/sessions/:id` | Delete a session |
+| `POST` | `/tools/chat/sessions/:id/fork` | Fork a session |
+| `POST` | `/tools/chat/sessions/:id/abort` | Abort an active session |
+
+### System
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
 | `GET` | `/health` | Service health check |
+| `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/api/snapshot` | Snapshot metadata |
+| `GET` | `/api/ingestion/progress` | Ingestion pipeline progress |
+| `GET` | `/playground/*` | Playground static files |
 
 ---
 
@@ -500,6 +533,125 @@ curl http://localhost:8088/health
 | Code | Description |
 |------|-------------|
 | `503` | Service unhealthy (check `dependencies` for details) |
+
+---
+
+## GET /tools/find_calls_with_type
+
+Find all call sites where a specific type is used as a type argument (turbofish syntax).
+
+### Request
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `type_name` | string | Yes | - | Name of the type to search for (e.g., `String`, `Vec`, `i32`) |
+| `callee_name` | string | No | - | Optional callee function name filter (e.g., `parse`, `collect`) |
+| `limit` | integer | No | 20 | Maximum results to return |
+
+### cURL Example
+
+```bash
+curl "http://localhost:8088/tools/find_calls_with_type?type_name=String&callee_name=parse&limit=10"
+```
+
+---
+
+## GET /tools/find_trait_impls_for_type
+
+Find all trait implementations for a specific type (by self_type). Unlike `get_trait_impls` which finds implementations **by trait name**, this finds implementations **by the implementing type**.
+
+### Request
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `type_name` | string | Yes | - | Name of the type to search for (e.g., `PaymentRequest`, `MyStruct`) |
+| `limit` | integer | No | 20 | Maximum results to return |
+
+### cURL Example
+
+```bash
+curl "http://localhost:8088/tools/find_trait_impls_for_type?type_name=PaymentRequest&limit=20"
+```
+
+---
+
+## POST /tools/aggregate_search
+
+Cross-database aggregated search that combines results from Qdrant (semantic), Postgres (metadata), and Neo4j (relationships) into a single rich response.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "query": "function that handles payment processing",
+  "limit": 10
+}
+```
+
+---
+
+## POST /tools/chat
+
+Send a chat message for AI-powered code exploration. Supports tool invocations against the knowledge base.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "message": "What does the process_payment function do?",
+  "session_id": "optional-session-uuid"
+}
+```
+
+---
+
+## GET /tools/chat/stream
+
+SSE (Server-Sent Events) endpoint for streaming chat responses. Connect via EventSource to receive real-time tool invocations and response text.
+
+---
+
+## GET /api/snapshot
+
+Returns metadata about the currently loaded snapshot (if any).
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/api/snapshot
+```
+
+---
+
+## GET /api/ingestion/progress
+
+Returns the current ingestion pipeline progress and status.
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/api/ingestion/progress
+```
+
+---
+
+## GET /metrics
+
+Prometheus-compatible metrics endpoint.
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/metrics
+```
 
 ---
 

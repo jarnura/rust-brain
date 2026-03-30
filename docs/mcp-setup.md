@@ -296,7 +296,9 @@ Configure the MCP server via environment variables in `.env`:
 | `NEO4J_PASSWORD` | - | Neo4j password |
 | `QDRANT_HOST` | `http://qdrant:6333` | Qdrant REST API URL |
 | `OLLAMA_HOST` | `http://ollama:11434` | Ollama API URL |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
+| `EMBEDDING_MODEL` | `qwen3-embedding:4b` | Embedding model name |
+| `EMBEDDING_DIMENSIONS` | `2560` | Embedding vector dimensions |
+| `MCP_SSE_PORT` | `3001` | MCP SSE server port |
 
 ## Tool Usage Examples
 

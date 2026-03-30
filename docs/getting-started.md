@@ -408,6 +408,7 @@ bash scripts/start.sh
 ## Next Steps
 
 - Read the [API Specification](./api-spec.md) for all available endpoints
-- Learn about [Ingestion](./ingestion.md) in detail
+- Learn about [Ingestion](./INGESTION_GUIDE.md) in detail
 - Explore the [Architecture](./architecture.md) to understand how it works
+- Set up [MCP integration](./mcp-setup.md) for Claude Code or other MCP clients
 - Check [Future Scope](./future-scope.md) for planned features

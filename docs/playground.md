@@ -4,12 +4,14 @@ The unified playground UI provides interactive exploration of Rust codebases wit
 
 ## Overview
 
-The playground is a browser-based IDE featuring:
-- **10 specialized views** for different aspects of code analysis
-- **Streaming chat** with real-time tool invocations
-- **Interactive visualizations** (call graphs, dependency trees, type hierarchies)
-- **Keyboard-driven navigation** for power users
-- **Responsive three-panel layout** (sidebar, main, detail)
+The playground is a browser-based interface featuring:
+- **4 pages**: Dashboard (`index.html`), Query Playground (`playground.html`), Audit Trail (`audit.html`), and Gap Analysis (`gaps.html`)
+- **7 query types**: Semantic search, function lookup, callers, trait impls, type usages, module tree, and raw Cypher
+- **Real-time status monitoring** of all backend services (API, Postgres, Neo4j, Qdrant, Ollama, Prometheus, Grafana)
+- **JSON/Table view toggle** for query results
+- **Query history** with export capabilities
+
+> **Note:** The playground is built with vanilla JavaScript (ES modules), Tailwind CSS (CDN), and highlight.js for syntax highlighting. It is served as static files from the API service at `/playground/*`.
 
 ## Features
 
@@ -388,20 +390,26 @@ All tool invocations in the Chat view are rendered with:
 ## Architecture
 
 ### Frontend Stack
-- **Framework**: Vanilla JS (ES modules)
-- **UI Framework**: Custom CSS grid + flexbox
-- **Visualization**: D3.js v7 (call graphs), highlight.js (syntax)
-- **Markdown**: marked.js
+- **Framework**: Vanilla JS (ES modules) — no build step required
+- **Styling**: Tailwind CSS via CDN
+- **Syntax Highlighting**: highlight.js
+- **Icons**: Lucide icons via CDN
 
 ### Backend Integration
-- **REST API**: `/playground`, `/tools/*`, `/chat`
-- **Streaming**: SSE for chat and streaming results
-- **MCP**: Tool definitions fetched from `/mcp/tools`
+- **REST API**: `/tools/*` endpoints for all code intelligence queries
+- **Streaming**: SSE for chat responses (`/tools/chat/stream`)
+- **Static Serving**: Playground HTML/JS/CSS served from API at `/playground/*`
 
-### State Management
-- **Session**: localStorage + IndexedDB for persistence
-- **Cache**: LRU cache for recent searches and call graphs
-- **Realtime**: WebSocket for live collaboration (future)
+### File Structure
+```
+playground/
+├── index.html          # Dashboard — service status, stats, quick actions
+├── playground.html     # Query interface — 7 query types with results
+├── audit.html          # Audit trail — known issues table
+├── gaps.html           # Gap analysis — feature completeness
+├── js/app.js           # Shared JavaScript (API calls, rendering)
+└── css/style.css       # Shared styles
+```
 
 ---
 

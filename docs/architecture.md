@@ -27,7 +27,7 @@ graph TB
 
     subgraph "AI/ML Layer"
         OLL[Ollama]
-        EMB[nomic-embed-text]
+        EMB[qwen3-embedding:4b]
         LLM[CodeLlama]
     end
 
@@ -85,7 +85,7 @@ graph TB
 | Service | Image | Purpose |
 |---------|-------|---------|
 | **Ollama** | `ollama/ollama:latest` | Local LLM inference for embeddings and code understanding |
-| **nomic-embed-text** | Model | 768-dim embeddings for semantic code search |
+| **qwen3-embedding:4b** | Model | 2560-dim embeddings for semantic code search |
 | **CodeLlama:7b** | Model | Code understanding and generation |
 
 ### Observability Layer
@@ -284,7 +284,7 @@ graph LR
 | `file_path` | keyword | Source file |
 | `has_generics` | bool | Has type parameters |
 
-Vector config: 768 dimensions, Cosine distance
+Vector config: 2560 dimensions (qwen3-embedding:4b), Cosine distance
 
 #### `doc_embeddings`
 | Payload Field | Type | Description |
@@ -354,9 +354,14 @@ Vector config: 768 dimensions, Cosine distance
 
 | Service | Memory Limit | Notes |
 |---------|--------------|-------|
-| Postgres | 2 GB | Tunable based on dataset |
-| Neo4j | 4 GB | Heap + pagecache configured |
-| Qdrant | 4 GB | Vector index storage |
-| Ollama | 8 GB | Model loading + inference |
+| Postgres | 6 GB | Tunable based on dataset |
+| Neo4j | 12 GB | Heap + pagecache configured |
+| Qdrant | 12 GB | Vector index storage |
+| Ollama | 16 GB | Model loading + inference (GPU recommended) |
+| API | 1 GB | Tool API service |
+| MCP SSE | 256 MB | MCP streaming transport |
+| OpenCode | 512 MB | IDE integration |
+| Grafana | 512 MB | Dashboards |
+| Ingestion | 32 GB | Pipeline (runs on demand via profile) |
 
-**Total minimum:** ~18 GB RAM for full stack
+**Total minimum:** ~48 GB RAM for full stack (less without ingestion and observability)

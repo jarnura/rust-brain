@@ -27,8 +27,10 @@ We will use **Ollama for all AI/ML workloads**, running entirely locally.
 
 | Purpose | Model | Dimensions | Size |
 |---------|-------|------------|------|
-| Embeddings | `nomic-embed-text` | 768 | ~274 MB |
+| Embeddings | `qwen3-embedding:4b` | 2560 | ~2.5 GB |
 | Code understanding | `codellama:7b` | — | ~3.8 GB |
+
+> **Update (2026-03):** The embedding model was upgraded from `nomic-embed-text` (768-dim) to `qwen3-embedding:4b` (2560-dim) for better code semantic search quality. See `.env.example` for the current default.
 
 ### Why Ollama
 
@@ -247,15 +249,15 @@ curl http://localhost:11434/api/generate \
 
 ## Model Selection Rationale
 
-### nomic-embed-text for Embeddings
+### qwen3-embedding:4b for Embeddings (current default)
 
 | Criteria | Rating | Notes |
 |----------|--------|-------|
-| Code quality | ★★★★☆ | Trained on code, good semantic understanding |
-| Size | ★★★★★ | Only 274 MB |
-| Speed | ★★★★☆ | Fast inference |
-| Dimensions | ★★★★☆ | 768 dims is efficient for Qdrant |
-| Context | ★★★☆☆ | 8K context window |
+| Code quality | ★★★★★ | Higher-dimensional vectors capture more semantic nuance |
+| Size | ★★★★☆ | ~2.5 GB (GPU recommended) |
+| Speed | ★★★★☆ | ~180 items/sec on RTX 4070 Ti SUPER |
+| Dimensions | ★★★★★ | 2560 dims — richer representations than 768 |
+| Context | ★★★★☆ | Handles code signatures + docs well |
 
 ### CodeLlama:7b for Code Understanding
 

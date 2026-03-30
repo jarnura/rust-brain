@@ -17,7 +17,7 @@ Operational guide for starting, stopping, monitoring, and troubleshooting the ru
 ### Full Startup
 
 ```bash
-cd /home/jarnura/projects/hyperswitch/rust-brain
+cd /path/to/rust-brain
 
 # Ensure .env exists
 cp .env.example .env  # Only needed first time
@@ -165,7 +165,7 @@ curl -s http://localhost:11434/api/tags | jq '.'
 
 # Test embedding
 curl -s http://localhost:11434/api/embed \
-  -d '{"model": "nomic-embed-text", "input": "test"}' | jq '.embeddings[0] | length'
+  -d '{"model": "qwen3-embedding:4b", "input": "test"}' | jq '.embeddings[0] | length'
 ```
 
 #### Prometheus
@@ -408,7 +408,7 @@ docker-compose logs postgres
    sleep 30
    ```
 
-### 6. Prometheus Targets Down
+### 10. Prometheus Targets Down
 
 **Symptoms:**
 - Grafana dashboards show "No data"
@@ -495,7 +495,9 @@ docker-compose up -d grafana
 | Prometheus | 9090 | HTTP | Metrics & UI |
 | Grafana | 3000 | HTTP | Dashboards |
 | Node Exporter | 9100 | HTTP | Host metrics |
-| Tool API | 8088 | HTTP | Agent endpoints (Phase 3) |
+| Tool API | 8088 | HTTP | REST API + Playground |
+| MCP SSE | 3001 | HTTP/SSE | MCP streaming transport |
+| OpenCode | 4096 | HTTP | IDE integration |
 
 ### Changing Ports
 
@@ -622,7 +624,5 @@ curl -X POST http://localhost:6333/collections/code_embeddings/snapshots
 
 # Download snapshot
 curl http://localhost:6333/collections/code_embeddings/snapshots > qdrant_snapshot.tar
-```
-snapshots > qdrant_snapshot.tar
 ```
 

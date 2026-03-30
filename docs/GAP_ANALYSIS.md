@@ -45,20 +45,20 @@ Where traditional databases give **applications** fast algorithmic access to dat
                                │ REST API calls
                     ┌──────────▼──────────────────┐
                     │      Tool API (Axum)         │
-                    │   9 endpoints, port 8080     │
+                    │   22 endpoints, port 8080    │
                     └──┬──────────┬──────────┬────┘
                        │          │          │
               ┌────────▼───┐ ┌───▼────┐ ┌───▼────────┐
               │  Postgres  │ │ Neo4j  │ │   Qdrant   │
               │  (raw data)│ │(graph) │ │ (vectors)  │
-              │  sqlx 0.8  │ │neo4rs  │ │ 768-dim    │
+              │  sqlx 0.8  │ │neo4rs  │ │ 2560-dim   │
               └────────────┘ └────────┘ └────────────┘
                                             ▲
                     ┌───────────────────────┘
                     │ embedding generation
               ┌─────▼──────┐
               │   Ollama   │
-              │ nomic-embed│
+              │ qwen3-emb  │
               │ codellama  │
               └────────────┘
 ```
@@ -77,10 +77,11 @@ Rust Crate → cargo expand → tree-sitter + syn parse → typecheck →
 
 ---
 
-#### Gap 1: Ingestion Service Does Not Compile (BLOCKING)
+#### Gap 1: ~~Ingestion Service Does Not Compile~~ (RESOLVED)
 
-**Severity:** CRITICAL
+**Severity:** ~~CRITICAL~~ → RESOLVED
 **Files:** All of `services/ingestion/src/`
+**Resolution:** Dependency versions updated. Project compiles with `sqlx 0.8`, `neo4rs 0.7`. Workspace Cargo.toml now exists with `crates/rustbrain-common`, `services/ingestion`, and `services/api` as members.
 
 Three known API compatibility issues prevent compilation:
 
@@ -150,12 +151,13 @@ Three known API compatibility issues prevent compilation:
 
 ---
 
-#### Gap 3: No Workspace Cargo.toml — No Shared Types
+#### Gap 3: ~~No Workspace Cargo.toml — No Shared Types~~ (RESOLVED)
 
-**Severity:** HIGH
-**Files:** `services/api/Cargo.toml`, `services/ingestion/Cargo.toml`
+**Severity:** ~~HIGH~~ → RESOLVED
+**Files:** `Cargo.toml` (root workspace), `crates/rustbrain-common/`
+**Resolution:** Workspace Cargo.toml now exists with members: `crates/rustbrain-common`, `services/ingestion`, `services/api`. The `rustbrain-common` crate provides shared types, errors, config, and logging.
 
-The two services are completely independent crates with no shared types. This means:
+~~The two services are completely independent crates with no shared types. This means:~~
 
 - The API service reimplements types that the ingestion service already defines (e.g., `ParsedItem`, `ItemType`, graph relationship types)
 - No shared data contracts — if the ingestion schema changes, the API won't know
@@ -176,12 +178,13 @@ Cargo.toml (workspace)
 
 ---
 
-#### Gap 4: API Service Has No Neo4j Client
+#### Gap 4: ~~API Service Has No Neo4j Client~~ (RESOLVED)
 
-**Severity:** HIGH
+**Severity:** ~~HIGH~~ → RESOLVED
 **Files:** `services/api/src/main.rs`, `services/api/Cargo.toml`
+**Resolution:** `neo4rs = "0.7"` is now a dependency in `services/api/Cargo.toml`. The API connects directly to Neo4j via Bolt protocol. Graph endpoints (`get_callers`, `get_trait_impls`, `query_graph`, `get_module_tree`, `find_usages_of_type`) are fully implemented.
 
-The API service Cargo.toml does **not** include `neo4rs` as a dependency. The API endpoints for graph traversal (`get_callers`, `get_trait_impls`, `query_graph`) use `reqwest` HTTP calls, but there's no actual Neo4j connection in `AppState`:
+~~The API service Cargo.toml does **not** include `neo4rs` as a dependency.~~ The API endpoints for graph traversal (`get_callers`, `get_trait_impls`, `query_graph`) use `reqwest` HTTP calls, but there's no actual Neo4j connection in `AppState`:
 
 ```rust
 struct AppState {
@@ -495,21 +498,16 @@ When the LLM receives results, it has no way to assess confidence:
 
 ---
 
-#### Gap 18: No MCP (Model Context Protocol) Integration
+#### Gap 18: ~~No MCP (Model Context Protocol) Integration~~ (RESOLVED)
 
-**Severity:** DESIGN
+**Severity:** ~~DESIGN~~ → RESOLVED
 **Impact:** Modern LLM integration
+**Resolution:** MCP server implemented in `services/mcp/`. Supports both stdio and SSE transports. Exposes 9 tools with JSON Schema definitions. Docker Compose includes both `mcp` (stdio) and `mcp-sse` (SSE on port 3001) services. Compatible with Claude Code, Claude Desktop, Cline, and OpenCode.
 
-The API uses REST endpoints designed as "tools" for LLM function calling. However, the emerging standard for LLM-to-tool communication is MCP. Without MCP:
-- Each LLM client must manually configure tool schemas
-- No standard discovery mechanism
-- No streaming support for large results
-
-**Fix:**
-- Implement an MCP server that wraps the existing tool API
-- Expose tools with proper JSON Schema descriptions
-- Support streaming responses for large result sets
-- Register as an MCP resource provider for code context
+~~The API uses REST endpoints designed as "tools" for LLM function calling. However, the emerging standard for LLM-to-tool communication is MCP. Without MCP:~~
+- ~~Each LLM client must manually configure tool schemas~~
+- ~~No standard discovery mechanism~~
+- ~~No streaming support for large results~~
 
 ---
 
@@ -557,10 +555,10 @@ While Prometheus/Grafana are set up, the metrics are basic:
 
 | # | Gap | Severity | Effort | Impact |
 |---|---|---|---|---|
-| 1 | Ingestion doesn't compile | CRITICAL | Low | Blocking |
+| 1 | ~~Ingestion doesn't compile~~ | ~~CRITICAL~~ RESOLVED | ~~Low~~ | ~~Blocking~~ |
 | 2 | Test coverage gaps (API, typecheck, DualParser, embedding clients) | HIGH | Medium | Quality |
-| 3 | No workspace / shared types | HIGH | Medium | Maintainability |
-| 4 | API missing Neo4j client | HIGH | Low | Functionality |
+| 3 | ~~No workspace / shared types~~ | ~~HIGH~~ RESOLVED | ~~Medium~~ | ~~Maintainability~~ |
+| 4 | ~~API missing Neo4j client~~ | ~~HIGH~~ RESOLVED | ~~Low~~ | ~~Functionality~~ |
 | 5 | No cross-DB aggregation | HIGH | Medium | Core value |
 | 6 | No incremental ingestion | HIGH | High | Scalability |
 | 7 | Incomplete call site detection | HIGH | High | Accuracy |
@@ -574,7 +572,7 @@ While Prometheus/Grafana are set up, the metrics are basic:
 | 15 | No context window mgmt | DESIGN | Medium | LLM usability |
 | 16 | No cross-crate analysis | DESIGN | High | Real-world use |
 | 17 | No confidence scoring | DESIGN | Low | Trustworthiness |
-| 18 | No MCP integration | DESIGN | Medium | Modern LLM compat |
+| 18 | ~~No MCP integration~~ | ~~DESIGN~~ RESOLVED | ~~Medium~~ | ~~Modern LLM compat~~ |
 | 19 | No data lifecycle / GC | MEDIUM | Medium | Operations |
 | 20 | Observability gaps | MEDIUM | Low | Operations |
 
@@ -614,11 +612,17 @@ While Prometheus/Grafana are set up, the metrics are basic:
 
 ## Conclusion
 
-Your analogy is sound. rust-brain is architecturally well-designed — the triple-storage pattern (Graph + Vector + Relational) is the right approach for giving LLMs "database-like" access to code intelligence. The infrastructure (Docker Compose, monitoring, observability) is production-grade.
+rust-brain is architecturally well-designed — the triple-storage pattern (Graph + Vector + Relational) is the right approach for giving LLMs "database-like" access to code intelligence. The infrastructure (Docker Compose, monitoring, observability) is production-grade.
 
-The critical gaps are:
-1. **The engine doesn't start** (compilation failures — Gap 1)
-2. **Key modules lack test coverage** (typecheck resolver, DualParser fallback, API handlers, embedding clients — Gap 2). Core parsing and graph modules now have solid unit tests (27+ tests across 8 modules), but the highest-risk code paths — type resolution, parser fallback, and API correctness — remain untested.
-3. **The core query orchestration is missing** (cross-DB aggregation is the killer feature — Gap 5)
+### Resolved Since Initial Analysis (4 gaps)
+1. **Gap 1** — Compilation fixed; project builds with current dependency versions
+2. **Gap 3** — Workspace Cargo.toml created with `rustbrain-common` shared crate
+3. **Gap 4** — Neo4j client (`neo4rs 0.7`) added to API service; graph endpoints fully operational
+4. **Gap 18** — MCP server implemented (`services/mcp/`) with stdio + SSE transports, 9 tools
 
-Once these are addressed, the path to "a database engine where LLMs can accurately read code very fast and process it" is clear. The query planner (Gap 14) is the most exciting future piece — it would complete the analogy by adding the "query optimizer" that makes a database engine truly intelligent about access paths.
+### Remaining Critical Gaps
+1. **Test coverage** (Gap 2) — Core parsing and graph modules have 27+ unit tests, but typecheck resolver, DualParser fallback, API handlers, and embedding clients remain untested.
+2. **Cross-DB aggregation** (Gap 5) — `POST /tools/aggregate_search` endpoint now exists but full cross-database orchestration (Qdrant → Postgres → Neo4j → aggregated response) needs validation.
+3. **TypecheckStage bug** (see `docs/issues/ISSUE-001`) — `call_sites` and `trait_implementations` tables remain empty due to state clear bug in ParseStage.
+
+The query planner (Gap 14) is the most exciting future piece — it would complete the analogy by adding the "query optimizer" that makes a database engine truly intelligent about access paths.
