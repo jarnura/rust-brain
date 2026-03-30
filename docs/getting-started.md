@@ -37,6 +37,19 @@ free -h
 # Ensure at least 16GB total RAM
 ```
 
+## macOS Setup
+
+If running on macOS (no NVIDIA GPU), apply the macOS override **before** starting services:
+
+```bash
+# Remove GPU config that Docker Desktop on macOS doesn't support
+cp docker-compose.macos.yml docker-compose.override.yml
+```
+
+Docker Compose automatically merges `docker-compose.override.yml` with the main file, stripping the NVIDIA GPU reservation from the Ollama service. Ollama will run on CPU instead.
+
+> **Note:** On macOS, the `zstd` command is required for snapshot extraction. Install via `brew install zstd` if not present.
+
 ## Step-by-Step Setup
 
 ### 1. Clone and Configure
@@ -47,6 +60,9 @@ cd /path/to/hyperswitch/rust-brain
 
 # Create environment file from template
 cp .env.example .env
+
+# macOS only: apply GPU-free override
+cp docker-compose.macos.yml docker-compose.override.yml
 ```
 
 ### 2. Review Configuration

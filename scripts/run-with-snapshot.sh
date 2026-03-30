@@ -323,7 +323,9 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
         "${SNAPSHOT_DIR}/neo4j.dump"
   rm -rf "${SNAPSHOT_DIR}/qdrant"
 
-  tar -I zstd -xf "$SNAPSHOT_FILE" -C "$SNAPSHOT_DIR"
+  # Use pipe instead of -I flag for cross-platform compat (BSD tar on macOS
+  # doesn't support -I; GNU tar does but the pipe works everywhere)
+  zstd -d -c "$SNAPSHOT_FILE" | tar -xf - -C "$SNAPSHOT_DIR"
   echo -e "  ${GREEN}✓${NC} Extracted"
 
   # Read manifest
