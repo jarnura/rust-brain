@@ -251,32 +251,33 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
       echo -e "  Using: ${BOLD}gh release download${NC} (repo: ${GITHUB_REPO}, tag: ${RELEASE_TAG})"
       echo ""
 
-      # Try single file first, then split parts
+      # Try split parts first (current release format), then single file (legacy)
+      echo -e "  Downloading split parts..."
       if gh release download "$RELEASE_TAG" \
            --repo "$GITHUB_REPO" \
-           --pattern "$SNAPSHOT_ASSET" \
+           --pattern "${SNAPSHOT_ASSET}.part-*" \
            --dir "$SNAPSHOT_DIR" \
-           --clobber 2>/dev/null; then
-        if [ -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" ]; then
-          mv "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" "$SNAPSHOT_FILE"
+           --clobber 2>&1; then
+        PART_FILES=$(ls -1 "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* 2>/dev/null | sort)
+        if [ -n "$PART_FILES" ]; then
+          PART_COUNT=$(echo "$PART_FILES" | wc -l | tr -d ' ')
+          echo -e "  Downloaded ${PART_COUNT} parts, concatenating..."
+          cat ${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-* > "$SNAPSHOT_FILE"
+          rm -f ${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-*
           DOWNLOAD_OK=true
         fi
       fi
 
-      # Try split parts (for snapshots > 2 GB uploaded as .part-aa, .part-ab, ...)
+      # Fallback: try single file (legacy snapshots < 2 GB)
       if [ "$DOWNLOAD_OK" = false ]; then
-        echo -e "  Single file not found, trying split parts..."
+        echo -e "  No split parts, trying single file..."
         if gh release download "$RELEASE_TAG" \
              --repo "$GITHUB_REPO" \
-             --pattern "${SNAPSHOT_ASSET}.part-*" \
+             --pattern "$SNAPSHOT_ASSET" \
              --dir "$SNAPSHOT_DIR" \
              --clobber 2>/dev/null; then
-          PART_FILES=$(ls -1 "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* 2>/dev/null | sort)
-          if [ -n "$PART_FILES" ]; then
-            PART_COUNT=$(echo "$PART_FILES" | wc -l)
-            echo -e "  Downloaded ${PART_COUNT} parts, concatenating..."
-            cat ${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-* > "$SNAPSHOT_FILE"
-            rm -f ${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-*
+          if [ -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" ]; then
+            mv "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}" "$SNAPSHOT_FILE"
             DOWNLOAD_OK=true
           fi
         fi
@@ -291,56 +292,58 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
            --clobber 2>/dev/null || true
     fi
 
-    # Method 2: curl (works for public repos or custom URLs)
+    # Method 2: curl (works for public repos without gh CLI)
     if [ "$DOWNLOAD_OK" = false ]; then
-      echo -e "  Using: ${BOLD}curl${NC}"
+      BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
 
-      # Try single file first
-      echo -e "  URL: ${SNAPSHOT_URL}"
+      # Try split parts first (current release format)
+      echo -e "  Using: ${BOLD}curl${NC} (downloading split parts)"
       echo ""
-      if curl -fL --progress-bar --retry 3 --retry-delay 5 \
-          -o "${SNAPSHOT_FILE}.tmp" \
-          "$SNAPSHOT_URL" 2>/dev/null && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
-        # Verify it's not an HTML error page (must be > 1 MB to be a real snapshot)
-        TMPSIZE=$(stat -c%s "${SNAPSHOT_FILE}.tmp" 2>/dev/null || stat -f%z "${SNAPSHOT_FILE}.tmp" 2>/dev/null || echo "0")
-        if [ "$TMPSIZE" -gt 1048576 ]; then
-          mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
-          DOWNLOAD_OK=true
+      PARTS_DOWNLOADED=0
+
+      for SUFFIX in aa ab ac ad ae; do
+        PART_URL="${BASE_URL}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
+        PART_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
+
+        echo -e "  Downloading part-${SUFFIX} (~1.9 GB)..."
+        if curl -fL --progress-bar --retry 3 --retry-delay 5 \
+            --connect-timeout 30 --max-time 1800 \
+            -o "${PART_FILE}" \
+            "$PART_URL" && [ -s "${PART_FILE}" ]; then
+          PSIZE=$(du -h "${PART_FILE}" | cut -f1)
+          echo -e "  ${GREEN}✓${NC} part-${SUFFIX}: ${PSIZE}"
+          PARTS_DOWNLOADED=$((PARTS_DOWNLOADED + 1))
         else
-          echo -e "  ${YELLOW}⚠${NC} Single file too small (${TMPSIZE} bytes), trying split parts..."
-          rm -f "${SNAPSHOT_FILE}.tmp"
+          rm -f "${PART_FILE}"
+          break  # No more parts (404 or timeout)
         fi
-      else
-        rm -f "${SNAPSHOT_FILE}.tmp"
+      done
+
+      if [ "$PARTS_DOWNLOADED" -gt 0 ]; then
+        echo -e "  Concatenating ${PARTS_DOWNLOADED} parts..."
+        cat "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* > "$SNAPSHOT_FILE"
+        rm -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"*
+        DOWNLOAD_OK=true
       fi
 
-      # Try split parts via curl (for releases > 2 GB)
+      # Fallback: try single file (legacy snapshots)
       if [ "$DOWNLOAD_OK" = false ]; then
-        BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
-        PARTS_DOWNLOADED=0
-
-        for SUFFIX in aa ab ac ad ae; do
-          PART_URL="${BASE_URL}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
-          PART_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
-
-          echo -e "  Downloading part-${SUFFIX}..."
-          if curl -fL --progress-bar --retry 3 --retry-delay 5 \
-              -o "${PART_FILE}" \
-              "$PART_URL" 2>/dev/null && [ -s "${PART_FILE}" ]; then
-            PSIZE=$(du -h "${PART_FILE}" | cut -f1)
-            echo -e "  ${GREEN}✓${NC} part-${SUFFIX}: ${PSIZE}"
-            PARTS_DOWNLOADED=$((PARTS_DOWNLOADED + 1))
+        echo -e "  No split parts found, trying single file..."
+        echo -e "  URL: ${SNAPSHOT_URL}"
+        if curl -fL --progress-bar --retry 3 --retry-delay 5 \
+            --connect-timeout 30 --max-time 3600 \
+            -o "${SNAPSHOT_FILE}.tmp" \
+            "$SNAPSHOT_URL" && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
+          TMPSIZE=$(stat -c%s "${SNAPSHOT_FILE}.tmp" 2>/dev/null || stat -f%z "${SNAPSHOT_FILE}.tmp" 2>/dev/null || echo "0")
+          if [ "$TMPSIZE" -gt 1048576 ]; then
+            mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
+            DOWNLOAD_OK=true
           else
-            rm -f "${PART_FILE}"
-            break  # No more parts
+            echo -e "  ${YELLOW}⚠${NC} Downloaded file too small (${TMPSIZE} bytes) — not a valid snapshot"
+            rm -f "${SNAPSHOT_FILE}.tmp"
           fi
-        done
-
-        if [ "$PARTS_DOWNLOADED" -gt 0 ]; then
-          echo -e "  Concatenating ${PARTS_DOWNLOADED} parts..."
-          cat "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* > "$SNAPSHOT_FILE"
-          rm -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"*
-          DOWNLOAD_OK=true
+        else
+          rm -f "${SNAPSHOT_FILE}.tmp"
         fi
       fi
     fi
