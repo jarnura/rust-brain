@@ -739,6 +739,31 @@ done
 OPENCODE_PORT_VAL="${OPENCODE_PORT:-4096}"
 if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${LITELLM_API_KEY:-}" ]; then
   echo ""
+
+  # Check if TARGET_REPO_PATH is set for the Explorer agent's filesystem access
+  if [ -z "${TARGET_REPO_PATH:-}" ] || [ ! -d "${TARGET_REPO_PATH:-}" ]; then
+    echo -e "${CYAN}=== Target Repository Setup ===${NC}"
+    echo ""
+    echo "  The Explorer agent can read source files directly if you have the"
+    echo "  ingested project (e.g., hyperswitch) cloned locally."
+    echo ""
+    echo "  To enable filesystem access, set TARGET_REPO_PATH in .env:"
+    echo ""
+    echo "    echo 'TARGET_REPO_PATH=/path/to/hyperswitch' >> .env"
+    echo ""
+    echo "  Without it, the Explorer will use MCP tools only (still functional,"
+    echo "  but cannot grep/rg across source files)."
+    echo ""
+    if [ -z "${TARGET_REPO_PATH:-}" ]; then
+      echo -e "  ${YELLOW}⚠${NC} TARGET_REPO_PATH not set — Explorer runs in MCP-only mode"
+    else
+      echo -e "  ${YELLOW}⚠${NC} TARGET_REPO_PATH=${TARGET_REPO_PATH} — directory not found"
+    fi
+    echo ""
+  else
+    echo -e "  ${GREEN}✓${NC} Target repo: ${TARGET_REPO_PATH}"
+  fi
+
   echo -e "${CYAN}=== Starting OpenCode (AI assistant) ===${NC}"
   docker compose up -d opencode 2>/dev/null || true
 

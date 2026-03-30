@@ -163,6 +163,23 @@ This takes 5-10 minutes and gives you a fully populated system with:
 
 After restoring, open the playground at the API service URL to browse the code graph.
 
+**Optional: Enable Explorer filesystem access**
+
+If you have the ingested project cloned locally, the Explorer agent can grep/rg across source files directly (in addition to using the knowledge base):
+
+```bash
+# Clone the project if you don't have it
+git clone https://github.com/juspay/hyperswitch.git ~/projects/hyperswitch
+
+# Tell rust-brain where it is
+echo 'TARGET_REPO_PATH=~/projects/hyperswitch' >> .env
+
+# Restart opencode to pick up the mount
+docker compose restart opencode
+```
+
+Without `TARGET_REPO_PATH`, the Explorer still works via MCP tools (knowledge base queries) — it just can't do raw `grep` across source files.
+
 ---
 
 ## Ingestion from Source (Alternative)
