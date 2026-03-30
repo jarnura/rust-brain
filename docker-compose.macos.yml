@@ -1,21 +1,20 @@
 # =============================================================================
-# macOS Override — Use when running on macOS (no NVIDIA GPU support)
+# macOS / No-GPU Override
 # =============================================================================
 #
-# Docker Desktop for macOS does not support NVIDIA GPU passthrough.
-# This file removes the GPU reservation from the Ollama service.
+# Docker Desktop for macOS (and Linux without NVIDIA) does not support
+# GPU passthrough. The !reset tag completely replaces the deploy key,
+# removing the nvidia device reservation from the main docker-compose.yml.
 #
 # Usage:
 #   cp docker-compose.macos.yml docker-compose.override.yml
 #
-# Docker Compose automatically merges docker-compose.override.yml
-# with the main docker-compose.yml.
+# Auto-applied by run-with-snapshot.sh and ingest.sh on macOS (uname -s = Darwin).
 # =============================================================================
 
 services:
   ollama:
-    deploy:
+    deploy: !reset
       resources:
         limits:
           memory: 16G
-        # No GPU reservations — macOS uses CPU-only Ollama

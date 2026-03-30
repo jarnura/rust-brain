@@ -203,11 +203,11 @@ if [ "$(uname -s)" = "Darwin" ] && [ ! -f docker-compose.override.yml ]; then
     cp docker-compose.macos.yml docker-compose.override.yml
     echo -e "  ${GREEN}✓${NC} Applied macOS override (no NVIDIA GPU)"
   else
-    # Create minimal override inline
+    # Create minimal override inline — !reset removes the nvidia deploy block entirely
     cat > docker-compose.override.yml <<'OVERRIDE'
 services:
   ollama:
-    deploy:
+    deploy: !reset
       resources:
         limits:
           memory: 16G
