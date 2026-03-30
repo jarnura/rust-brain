@@ -165,7 +165,14 @@ pub async fn chat_stream_handler(
                                     "message.updated" => {
                                         let info = &props["info"];
                                         if let (Some(id), Some(role)) = (info["id"].as_str(), info["role"].as_str()) {
+                                            let is_new = !message_roles.contains_key(id);
                                             message_roles.insert(id.to_string(), role.to_string());
+                                            // Clear accumulated text when a new assistant message starts
+                                            // so stale content from previous messages doesn't bleed through.
+                                            if is_new && role == "assistant" {
+                                                accumulated_text.clear();
+                                                part_types.clear();
+                                            }
                                         }
                                     }
 

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChatPanel Streaming Tests</title>
+  <style>
+    body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
+    .pass { color: #0f0; }
+    .fail { color: #f00; font-weight: bold; }
+    .section { color: #0af; margin-top: 1em; }
+    #results { white-space: pre-wrap; }
+    #chat-test-container { display: none; }
+  </style>
+</head>
+<body>
+  <h2>ChatPanel Streaming State Tests</h2>
+  <div id="chat-test-container"></div>
+  <div id="results"></div>
+
+  <script type="module">
+    // ── Minimal stubs for modules the ChatPanel imports ──────────────
+
+    // Stub marked.js (ChatPanel uses renderMarkdown which calls marked.parse)
+    window.hljs = { highlightElement() {}, configure() {} };
+
+    // Import real modules
+    import { bus } from '../lib/event-bus.js';
+    import { state } from '../lib/state.js';
+    import { ChatPanel } from '../components/chat.js';
+
+    // ── Test harness ────────────────────────────────────────────────
+
+    const results = document.getElementById('results');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+      const el = document.createElement('div');
+      el.className = cls;
+      el.textContent = msg;
+      results.appendChild(el);
+    }
+
+    function assert(condition, label) {
+      if (condition) {
+        passed++;
+        log(`  PASS: ${label}`, 'pass');
+      } else {
+        failed++;
+        log(`  FAIL: ${label}`, 'fail');
+      }
+    }
+
+    function section(name) {
+      log(`\n[${name}]`, 'section');
+    }
+
+    // ── Mock API client ─────────────────────────────────────────────
+
+    const mockApi = {
+      sendChatAsync: async () => ({ message_id: 'msg_test' }),
+      createSession: async ({ title } = {}) => ({
+        id: 'ses_test_001',
+        title: title || 'Test Session',
+        slug: 'test',
+      }),
+      listSessions: async () => ([{
+        id: 'ses_test_001',
+        title: 'Test Session',
+        slug: 'test',
+      }]),
+      getSession: async (id) => ({
+        session: { id, title: 'Test Session', slug: 'test' },
+        messages: [],
+      }),
+      abortSession: async () => {},
+    };
+
+    // ── Mock SSE client ─────────────────────────────────────────────
+
+    const mockSse = {
+      _connected: false,
+      connect(sessionId) { this._connected = true; },
+      disconnect() { this._connected = false; },
+    };
+
+    // ── Helper: create a fresh ChatPanel ────────────────────────────
+
+    function createPanel() {
+      const container = document.getElementById('chat-test-container');
+      container.innerHTML = '';
+      // Clear any existing bus listeners from previous panels
+      bus._listeners.clear();
+
+      const panel = new ChatPanel({
+        container,
+        bus,
+        apiClient: mockApi,
+        sseClient: mockSse,
+        state,
+      });
+      return panel;
+    }
+
+    // Wait for async init to settle
+    function wait(ms = 50) {
+      return new Promise(r => setTimeout(r, ms));
+    }
+
+    // ── TESTS ───────────────────────────────────────────────────────
+
+    async function runTests() {
+      // ============================================================
+      section('Test 1: _doneTimeout from previous turn does NOT fire during next turn');
+      // ============================================================
+      {
+        const panel = createPanel();
+        await wait(100);
+
+        // Simulate: user sends message 1
+        panel._sessionId = 'ses_test_001';
+        panel._setStreaming(false);
+        panel._currentTokens = '';
+        panel._currentAssistantEl = null;
+
+        // Simulate sending message 1 manually (bypass DOM input)
+        panel._setStreaming(true);
+        panel._currentTokens = '';
+        panel._currentAssistantEl = panel._createAssistantBubble();
+
+        // Tokens arrive for msg 1
+        bus.emit('chat:token', { token: 'Hello' });
+        bus.emit('chat:token', { token: ' world' });
+        await wait(10);
+
+        assert(panel._currentTokens === 'Hello world', 'msg1 tokens accumulated correctly');
+
+        // Done event fires (session goes idle)
+        bus.emit('chat:done', { source: 'opencode' });
+        assert(panel._doneTimeout !== null, 'done timeout is set after done event');
+
+        // User sends message 2 BEFORE the 1s timeout fires
+        // Simulate _sendMessage clearing the timeout
+        if (panel._doneTimeout) {
+          clearTimeout(panel._doneTimeout);
+          panel._doneTimeout = null;
+        }
+        panel._setStreaming(true);
+        panel._currentTokens = '';
+        panel._currentAssistantEl = panel._createAssistantBubble();
+
+        // Tokens arrive for msg 2
+        bus.emit('chat:token', { token: 'New ' });
+        bus.emit('chat:token', { token: 'response' });
+        await wait(10);
+
+        assert(panel._currentTokens === 'New response', 'msg2 tokens are clean (no bleed from msg1)');
+        assert(panel._streaming === true, 'still streaming after msg2 tokens');
+        assert(panel._doneTimeout === null, 'no stale done timeout pending');
+
+        panel.destroy();
+      }
+
+      // ============================================================
+      section('Test 2: _currentTokens resets when new bubble created for sub-agent');
+      // ============================================================
+      {
+        const panel = createPanel();
+        await wait(100);
+
+        panel._sessionId = 'ses_test_001';
+        panel._setStreaming(true);
+        panel._currentTokens = '';
+        panel._currentAssistantEl = panel._createAssistantBubble();
+
+        // Primary agent sends tokens
+        bus.emit('chat:token', { token: 'Primary ' });
+        bus.emit('chat:token', { token: 'response' });
+        await wait(10);
+
+        assert(panel._currentTokens === 'Primary response', 'primary agent tokens accumulated');
+
+        // Session goes idle → done event
+        bus.emit('chat:done', {});
+        await wait(10);
+
+        // Finalize happens after 1s debounce — manually finalize to simulate
+        panel._finalizeStreaming();
+        assert(panel._currentAssistantEl === null, 'assistant el cleared after finalize');
+        assert(panel._currentTokens === '', 'tokens cleared after finalize');
+
+        // Sub-agent starts sending tokens (new bubble auto-created)
+        bus.emit('chat:token', { token: 'Sub-agent ' });
+        await wait(10);
+
+        assert(panel._currentAssistantEl !== null, 'new bubble created for sub-agent');
+        assert(panel._currentTokens === 'Sub-agent ', 'sub-agent tokens start fresh (no primary bleed)');
+        assert(!panel._currentTokens.includes('Primary'), 'no primary text in sub-agent buffer');
+
+        panel.destroy();
+      }
+
+      // ============================================================
+      section('Test 3: _currentTokens resets when sub-agent starts WITHOUT finalize');
+      // ============================================================
+      {
+        const panel = createPanel();
+        await wait(100);
+
+        panel._sessionId = 'ses_test_001';
+        panel._setStreaming(true);
+        panel._currentTokens = '';
+        panel._currentAssistantEl = panel._createAssistantBubble();
+
+        // Primary agent sends tokens
+        bus.emit('chat:token', { token: 'Step1 text' });
+        await wait(10);
+
+        const step1Content = panel._currentTokens;
+        assert(step1Content === 'Step1 text', 'step 1 tokens accumulated');
+
+        // Manually null out assistant el (simulating the gap between steps)
+        // This happens when done fires and debounce completes
+        panel._currentAssistantEl = null;
+        // But DON'T clear _currentTokens (simulating the bug scenario)
+
+        // Sub-agent token arrives — should reset buffer
+        bus.emit('chat:token', { token: 'Step2' });
+        await wait(10);
+
+        assert(panel._currentTokens === 'Step2', 'step 2 tokens start fresh after bubble re-creation');
+        assert(panel._currentAssistantEl !== null, 'new bubble was created');
+
+        panel.destroy();
+      }
+
+      // ============================================================
+      section('Test 4: _onComplete prefers event message over stale buffer');
+      // ============================================================
+      {
+        const panel = createPanel();
+        await wait(100);
+
+        panel._sessionId = 'ses_test_001';
+        panel._setStreaming(true);
+        panel._currentTokens = 'stale accumulated stuff';
+        panel._currentAssistantEl = panel._createAssistantBubble();
+
+        // Complete event arrives with authoritative message
+        bus.emit('chat:complete', {
+          message: 'Clean authoritative response',
+          source: 'opencode',
+        });
+        await wait(10);
+
+        const bubble = panel._currentAssistantEl.querySelector('.chat-bubble');
+        assert(
+          !bubble.innerHTML.includes('stale'),
+          'bubble does NOT contain stale buffer content'
+        );
+        assert(
+          bubble.innerHTML.includes('Clean authoritative response'),
+          'bubble contains authoritative message from event'
+        );
+        assert(
+          panel._currentTokens === 'Clean authoritative response',
+          'buffer synced to authoritative content'
+        );
+
+        panel.destroy();
+      }
+
+      // ============================================================
+      section('Test 5: Multi-turn rapid-fire does not corrupt state');
+      // ============================================================
+      {
+        const panel = createPanel();
+        await wait(100);
+
+        panel._sessionId = 'ses_test_001';
+
+        for (let turn = 1; turn <= 5; turn++) {
+          // Cancel any pending timeout (as _sendMessage now does)
+          if (panel._doneTimeout) {
+            clearTimeout(panel._doneTimeout);
+            panel._doneTimeout = null;
+          }
+
+          panel._setStreaming(true);
+          panel._currentTokens = '';
+          panel._currentAssistantEl = panel._createAssistantBubble();
+
+          // Simulate tokens
+          bus.emit('chat:token', { token: `Turn${turn} ` });
+          bus.emit('chat:token', { token: 'content' });
+          await wait(10);
+
+          // Done
+          bus.emit('chat:done', {});
+          // Don't wait for debounce — next turn starts immediately
+        }
+
+        // After 5 rapid turns, the last buffer should only have turn 5
+        assert(
+          panel._currentTokens === 'Turn5 content',
+          `after 5 rapid turns, buffer has only turn 5 content (got: "${panel._currentTokens}")`
+        );
+
+        panel.destroy();
+      }
+
+      // ============================================================
+      // Summary
+      // ============================================================
+      log('');
+      log(`═══════════════════════════════════════`);
+      log(`  Results: ${passed} passed, ${failed} failed`);
+      log(`═══════════════════════════════════════`);
+
+      if (failed === 0) {
+        log('  ALL TESTS PASSED', 'pass');
+      } else {
+        log(`  ${failed} TEST(S) FAILED`, 'fail');
+      }
+
+      // Expose for Playwright to read
+      window.__TEST_RESULTS__ = { passed, failed };
+    }
+
+    runTests().catch(err => {
+      log(`FATAL: ${err.message}\n${err.stack}`, 'fail');
+      window.__TEST_RESULTS__ = { passed: 0, failed: 1, error: err.message };
+    });
+  </script>
+</body>
+</html>

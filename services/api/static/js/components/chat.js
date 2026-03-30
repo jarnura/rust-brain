@@ -322,6 +322,13 @@ class ChatPanel {
         const raw = this._els.input.value.trim();
         if (!raw || this._streaming) return;
 
+        // Cancel any pending done-timeout from the previous turn so it
+        // cannot fire mid-stream and call _finalizeStreaming() on this turn.
+        if (this._doneTimeout) {
+            clearTimeout(this._doneTimeout);
+            this._doneTimeout = null;
+        }
+
         // Lock immediately to prevent double-submit
         this._setStreaming(true);
 
@@ -349,7 +356,7 @@ class ChatPanel {
     // ── Streaming Handlers ─────────────────────────────────────────────────
 
     _onToken({ token, text }) {
-        this._currentTokens += (token || text || '');
+        const delta = token || text || '';
 
         // Cancel pending finalization — more tokens are arriving
         if (this._doneTimeout) {
@@ -360,9 +367,18 @@ class ChatPanel {
         // Auto-create assistant bubble if tokens arrive after a done event
         // (happens when agents spawn sub-agents: session goes idle → busy again)
         if (!this._currentAssistantEl) {
+            // Save previous step's content to its message record before starting new bubble
+            if (this._currentTokens) {
+                const lastAssistantMsg = [...this._messages].reverse()
+                    .find(m => m.role === 'assistant');
+                if (lastAssistantMsg) lastAssistantMsg.content = this._currentTokens;
+            }
+            this._currentTokens = '';  // Reset buffer for new sub-step
             this._currentAssistantEl = this._createAssistantBubble();
             this._setStreaming(true);
         }
+
+        this._currentTokens += delta;
 
         if (!this._renderPending) {
             this._renderPending = true;
@@ -396,9 +412,10 @@ class ChatPanel {
     }
 
     _onComplete({ message, response, source }) {
-        // Update bubble with accumulated tokens or event content — but don't finalize yet.
-        // Multi-step responses (tool call → text) emit multiple completes.
-        const content = this._currentTokens || message || response || '';
+        // Update bubble with the best available content.
+        // Prefer the event's message/response (authoritative from backend) when
+        // available; fall back to the token buffer for delta-only streams.
+        const content = message || response || this._currentTokens || '';
 
         // Auto-create assistant bubble if complete arrives without one
         if (!this._currentAssistantEl && content) {
@@ -410,6 +427,8 @@ class ChatPanel {
             const bubble = this._currentAssistantEl.querySelector('.chat-bubble');
             bubble.innerHTML = renderMarkdown(content);
             this._highlightCode(bubble);
+            // Sync buffer so subsequent deltas build on the authoritative content
+            this._currentTokens = content;
         }
 
         // Update source badge if provided
