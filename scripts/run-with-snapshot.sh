@@ -735,6 +735,32 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
+# Start OpenCode if API keys are configured (optional AI coding assistant)
+OPENCODE_PORT_VAL="${OPENCODE_PORT:-4096}"
+if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${LITELLM_API_KEY:-}" ]; then
+  echo ""
+  echo -e "${CYAN}=== Starting OpenCode (AI assistant) ===${NC}"
+  docker compose up -d opencode 2>/dev/null || true
+
+  echo -n "  OpenCode "
+  for i in $(seq 1 30); do
+    if curl -sf "http://localhost:${OPENCODE_PORT_VAL}/" &>/dev/null; then
+      echo -e "${GREEN}✓${NC}"
+      OPENCODE_STARTED=true
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo -e "${YELLOW}TIMEOUT (non-fatal)${NC}"
+      break
+    fi
+    echo -n "."
+    sleep 2
+  done
+else
+  echo ""
+  echo -e "  ${YELLOW}⚠${NC} OpenCode skipped (no ANTHROPIC_API_KEY, OPENAI_API_KEY, or LITELLM_API_KEY in .env)"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DONE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -748,6 +774,9 @@ echo -e "${BOLD}╠════════════════════�
 echo -e "${BOLD}║                                                              ║${NC}"
 printf "${BOLD}║${NC}  Playground UI:  ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${API_PORT_VAL}/"
 printf "${BOLD}║${NC}  MCP-SSE:        ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${MCP_PORT_VAL}/sse"
+if [ "${OPENCODE_STARTED:-}" = true ]; then
+printf "${BOLD}║${NC}  OpenCode:       ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${OPENCODE_PORT_VAL}/"
+fi
 printf "${BOLD}║${NC}  API Health:     ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${API_PORT_VAL}/health"
 printf "${BOLD}║${NC}  Neo4j Browser:  ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${NEO4J_HTTP_PORT:-7474}"
 echo -e "${BOLD}║                                                              ║${NC}"
