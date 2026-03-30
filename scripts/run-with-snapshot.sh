@@ -65,6 +65,7 @@ USAGE:
 
 OPTIONS:
     --force-refresh             Re-download and restore even if snapshot exists
+                                (required when upgrading to a new snapshot version)
     --snapshot-url=URL          Custom snapshot download URL
     --local=/path/to/snap.zst  Use a local snapshot file (skip download)
     --help, -h                 Show this help
@@ -73,13 +74,19 @@ PREREQUISITES:
     - Docker (>= 24.0) with Compose V2 plugin
     - ~8GB free RAM, ~4GB free disk
     - Ports 5432, 7474, 7687, 6333, 8088, 3001 available
+    - zstd (brew install zstd on macOS, apt install zstd on Linux)
 
 WHAT THIS DOES:
-    1. Downloads the pre-built snapshot (~300-600MB)
+    1. Downloads the pre-built snapshot (~3 GB, split into 2 parts)
     2. Starts PostgreSQL, Neo4j, and Qdrant containers
     3. Restores all three databases from the snapshot
     4. Starts the API server and MCP-SSE server
     5. No Ollama, no ingestion, no GPU needed
+
+UPGRADING:
+    When a new snapshot is released, run with --force-refresh:
+        ./scripts/run-with-snapshot.sh --force-refresh
+    Without this flag, the script reuses the cached local snapshot.
 
 AFTER STARTUP:
     - Playground UI:  http://localhost:8088/

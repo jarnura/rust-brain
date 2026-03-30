@@ -139,7 +139,35 @@ Tool API             ✓ OK
 | Pgweb | http://localhost:8085 | Auto-connected |
 | Prometheus | http://localhost:9090 | None |
 
-## First Ingestion Example
+## Quick Start with Snapshot (Recommended)
+
+Skip the full ingestion pipeline and restore a pre-built snapshot with 219K items from [hyperswitch](https://github.com/juspay/hyperswitch):
+
+```bash
+# First time — downloads ~3 GB, restores all 3 databases
+./scripts/run-with-snapshot.sh
+```
+
+This takes 5-10 minutes and gives you a fully populated system with:
+- 219K code items in PostgreSQL
+- 302K nodes + 590K relationships in Neo4j
+- 219K vector embeddings in Qdrant
+
+**Upgrading to a new snapshot version:**
+```bash
+# Re-downloads and restores, replacing the existing data
+./scripts/run-with-snapshot.sh --force-refresh
+```
+
+> Use `--force-refresh` whenever a new snapshot is released. Without it, the script skips download if a previous snapshot file exists locally.
+
+After restoring, open the playground at the API service URL to browse the code graph.
+
+---
+
+## Ingestion from Source (Alternative)
+
+Use this if you want to ingest your own crate instead of using the snapshot.
 
 ### Prepare a Rust Crate
 
