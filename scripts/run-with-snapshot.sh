@@ -294,17 +294,54 @@ if [ "$FORCE_REFRESH" = true ] || [ ! -f "$SNAPSHOT_MARKER" ]; then
     # Method 2: curl (works for public repos or custom URLs)
     if [ "$DOWNLOAD_OK" = false ]; then
       echo -e "  Using: ${BOLD}curl${NC}"
+
+      # Try single file first
       echo -e "  URL: ${SNAPSHOT_URL}"
       echo ""
-
-      if curl -L --progress-bar --retry 3 --retry-delay 5 \
+      if curl -fL --progress-bar --retry 3 --retry-delay 5 \
           -o "${SNAPSHOT_FILE}.tmp" \
-          -C - \
-          "$SNAPSHOT_URL" && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
-        mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
-        DOWNLOAD_OK=true
+          "$SNAPSHOT_URL" 2>/dev/null && [ -s "${SNAPSHOT_FILE}.tmp" ]; then
+        # Verify it's not an HTML error page (must be > 1 MB to be a real snapshot)
+        TMPSIZE=$(stat -c%s "${SNAPSHOT_FILE}.tmp" 2>/dev/null || stat -f%z "${SNAPSHOT_FILE}.tmp" 2>/dev/null || echo "0")
+        if [ "$TMPSIZE" -gt 1048576 ]; then
+          mv "${SNAPSHOT_FILE}.tmp" "$SNAPSHOT_FILE"
+          DOWNLOAD_OK=true
+        else
+          echo -e "  ${YELLOW}⚠${NC} Single file too small (${TMPSIZE} bytes), trying split parts..."
+          rm -f "${SNAPSHOT_FILE}.tmp"
+        fi
       else
         rm -f "${SNAPSHOT_FILE}.tmp"
+      fi
+
+      # Try split parts via curl (for releases > 2 GB)
+      if [ "$DOWNLOAD_OK" = false ]; then
+        BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}"
+        PARTS_DOWNLOADED=0
+
+        for SUFFIX in aa ab ac ad ae; do
+          PART_URL="${BASE_URL}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
+          PART_FILE="${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-${SUFFIX}"
+
+          echo -e "  Downloading part-${SUFFIX}..."
+          if curl -fL --progress-bar --retry 3 --retry-delay 5 \
+              -o "${PART_FILE}" \
+              "$PART_URL" 2>/dev/null && [ -s "${PART_FILE}" ]; then
+            PSIZE=$(du -h "${PART_FILE}" | cut -f1)
+            echo -e "  ${GREEN}✓${NC} part-${SUFFIX}: ${PSIZE}"
+            PARTS_DOWNLOADED=$((PARTS_DOWNLOADED + 1))
+          else
+            rm -f "${PART_FILE}"
+            break  # No more parts
+          fi
+        done
+
+        if [ "$PARTS_DOWNLOADED" -gt 0 ]; then
+          echo -e "  Concatenating ${PARTS_DOWNLOADED} parts..."
+          cat "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"* > "$SNAPSHOT_FILE"
+          rm -f "${SNAPSHOT_DIR}/${SNAPSHOT_ASSET}.part-"*
+          DOWNLOAD_OK=true
+        fi
       fi
     fi
 
