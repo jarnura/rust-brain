@@ -797,7 +797,7 @@ echo -e "${BOLD}║           ${GREEN}RUST-BRAIN — READY${NC}${BOLD}          
 echo -e "${BOLD}║                                                              ║${NC}"
 echo -e "${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${BOLD}║                                                              ║${NC}"
-printf "${BOLD}║${NC}  Playground UI:  ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${API_PORT_VAL}/"
+printf "${BOLD}║${NC}  Playground UI:  ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${API_PORT_VAL}/playground"
 printf "${BOLD}║${NC}  MCP-SSE:        ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${MCP_PORT_VAL}/sse"
 if [ "${OPENCODE_STARTED:-}" = true ]; then
 printf "${BOLD}║${NC}  OpenCode:       ${CYAN}http://localhost:%-24s${NC}${BOLD}║${NC}\n" "${OPENCODE_PORT_VAL}/"
