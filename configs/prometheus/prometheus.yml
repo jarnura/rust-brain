@@ -42,21 +42,9 @@ scrape_configs:
       - targets: ['postgres-exporter:9187']
     scrape_interval: 30s
 
-  - job_name: 'neo4j'
-    static_configs:
-      - targets: ['neo4j:2004']
-    metrics_path: /metrics
-    scrape_interval: 30s
-
   - job_name: 'qdrant'
     static_configs:
       - targets: ['qdrant:6333']
-    metrics_path: /metrics
-    scrape_interval: 30s
-
-  - job_name: 'ollama'
-    static_configs:
-      - targets: ['ollama:11434']
     metrics_path: /metrics
     scrape_interval: 30s
 

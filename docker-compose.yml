@@ -41,11 +41,20 @@ services:
       - "${PGWEB_PORT:-8085}:8081"
     environment:
       PGWEB_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   neo4j:
     image: neo4j:5-community
@@ -151,6 +160,10 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   node-exporter:
     image: prom/node-exporter:v1.8.0
@@ -159,6 +172,10 @@ services:
       - "${NODE_EXPORTER_PORT:-9100}:9100"
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   prometheus:
     image: prom/prometheus:v2.51.0
@@ -182,6 +199,10 @@ services:
       - node-exporter
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   grafana:
     image: grafana/grafana:11.0.0
@@ -254,7 +275,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
 
   # ---------------------------------------------------------------------------
   # MCP LAYER
