@@ -40,6 +40,24 @@ REST API for the rust-brain code intelligence platform. All endpoints are served
 | `POST` | `/tools/chat/sessions/:id/fork` | Fork a session |
 | `POST` | `/tools/chat/sessions/:id/abort` | Abort an active session |
 
+### Artifacts
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/artifacts` | Create a new artifact |
+| `GET` | `/api/artifacts` | List artifacts (with filters) |
+| `GET` | `/api/artifacts/:id` | Get artifact by ID |
+| `PUT` | `/api/artifacts/:id` | Update artifact status/confidence |
+
+### Tasks
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/tasks` | Create a new task |
+| `GET` | `/api/tasks` | List tasks (with filters) |
+| `GET` | `/api/tasks/:id` | Get task by ID |
+| `PUT` | `/api/tasks/:id` | Update task status |
+
 ### System
 
 | Method | Endpoint | Purpose |
@@ -725,3 +743,177 @@ All errors follow this structure:
 | `FORBIDDEN_QUERY` | 403 | Cypher query contains forbidden operations |
 | `INTERNAL_ERROR` | 500 | Internal server error |
 | `SERVICE_UNAVAILABLE` | 503 | Dependency service unavailable |
+
+---
+
+## POST /api/artifacts
+
+Create a new artifact in the inter-agent communication store.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "id": "art-001",
+  "task_id": "task-001",
+  "type": "prd",
+  "producer": "planner",
+  "status": "draft",
+  "confidence": 1.0,
+  "summary": {"title": "My PRD"},
+  "payload": {"content": "..."}
+}
+```
+
+### Parameters
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `id` | string | Yes | - | Unique artifact ID |
+| `task_id` | string | Yes | - | Parent task ID |
+| `type` | string | Yes | - | Artifact type (e.g. `prd`, `plan`, `report`) |
+| `producer` | string | Yes | - | Agent that produced this artifact |
+| `status` | string | No | `draft` | `draft`, `final`, or `superseded` |
+| `confidence` | float | No | `1.0` | Confidence score 0.0–1.0 |
+| `summary` | object | Yes | - | Human-readable summary metadata |
+| `payload` | object | Yes | - | Full artifact content |
+
+### Response
+
+Returns the created `Artifact` object (HTTP 200).
+
+---
+
+## GET /api/artifacts
+
+List artifacts with optional filters.
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `task_id` | string | Filter by task ID |
+| `type` | string | Filter by artifact type |
+| `status` | string | Filter by status (`draft`, `final`, `superseded`) |
+| `producer` | string | Filter by producing agent |
+| `limit` | integer | Max results (default 20, max 100) |
+
+### Example
+
+```bash
+curl "http://localhost:8088/api/artifacts?task_id=task-001&status=final"
+```
+
+---
+
+## GET /api/artifacts/:id
+
+Get a single artifact by ID.
+
+### Example
+
+```bash
+curl "http://localhost:8088/api/artifacts/art-001"
+```
+
+---
+
+## PUT /api/artifacts/:id
+
+Update an artifact's status, superseded_by reference, or confidence.
+
+### Request
+
+```json
+{
+  "status": "final",
+  "superseded_by": null,
+  "confidence": 0.95
+}
+```
+
+All fields are optional; only provided fields are updated.
+
+---
+
+## POST /api/tasks
+
+Create a new orchestrator task.
+
+### Request
+
+```json
+{
+  "id": "task-001",
+  "parent_id": null,
+  "phase": "planning",
+  "class": "A",
+  "agent": "planner",
+  "status": "pending",
+  "inputs": [],
+  "constraints": {},
+  "acceptance": "PRD approved by CTO"
+}
+```
+
+### Parameters
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `id` | string | Yes | - | Unique task ID |
+| `parent_id` | string | No | null | Parent task ID |
+| `phase` | string | Yes | - | Pipeline phase (e.g. `planning`, `implementation`) |
+| `class` | string | Yes | - | Task class (e.g. `A`, `B`) |
+| `agent` | string | Yes | - | Assigned agent name |
+| `status` | string | No | `pending` | Initial status |
+| `inputs` | array | No | `[]` | Input artifact IDs |
+| `constraints` | object | No | `{}` | Task constraints |
+| `acceptance` | string | No | null | Acceptance criteria |
+
+---
+
+## GET /api/tasks
+
+List tasks with optional filters.
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status |
+| `agent` | string | Filter by agent name |
+| `phase` | string | Filter by phase |
+| `class` | string | Filter by class |
+| `limit` | integer | Max results (default 20) |
+
+### Example
+
+```bash
+curl "http://localhost:8088/api/tasks?agent=planner&status=pending"
+```
+
+---
+
+## GET /api/tasks/:id
+
+Get a single task by ID.
+
+---
+
+## PUT /api/tasks/:id
+
+Update a task's status (with state transition validation), retry count, or error message.
+
+### Request
+
+```json
+{
+  "status": "in_progress",
+  "retry_count": null,
+  "error": null
+}
+```
+
+Valid state transitions: `pending → in_progress → done | failed`. Any state can transition to `escalated`.
