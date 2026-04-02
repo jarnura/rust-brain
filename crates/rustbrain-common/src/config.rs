@@ -15,6 +15,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Connection credentials for all storage backends.
 ///
@@ -60,8 +61,7 @@ impl DatabaseConfig {
                 .expect("DATABASE_URL environment variable must be set"),
             neo4j_uri: std::env::var("NEO4J_URI")
                 .unwrap_or_else(|_| "bolt://neo4j:7687".to_string()),
-            neo4j_user: std::env::var("NEO4J_USER")
-                .unwrap_or_else(|_| "neo4j".to_string()),
+            neo4j_user: std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
             neo4j_password: std::env::var("NEO4J_PASSWORD")
                 .expect("NEO4J_PASSWORD environment variable must be set"),
             qdrant_url: std::env::var("QDRANT_HOST")
@@ -90,12 +90,15 @@ pub struct EmbeddingModelConfig {
 
 impl Default for EmbeddingModelConfig {
     fn default() -> Self {
-        Self {
+        debug!("EmbeddingModelConfig::default entry");
+        let config = Self {
             model: "nomic-embed-text".to_string(),
             dimensions: 768,
             code_collection: "code_embeddings".to_string(),
             doc_collection: "doc_embeddings".to_string(),
-        }
+        };
+        debug!(model = %config.model, dimensions = config.dimensions, "EmbeddingModelConfig default created");
+        config
     }
 }
 

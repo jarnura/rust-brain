@@ -34,6 +34,12 @@ struct ProgressInner {
     start_times: HashMap<String, Instant>,
 }
 
+impl Default for ProgressTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProgressTracker {
     /// Create a new tracker.  No bars are shown until [`begin_stage`] is called.
     pub fn new() -> Self {
@@ -128,10 +134,7 @@ impl ProgressTracker {
     pub fn fail_stage(&self, stage: &str, error: &str) {
         let inner = self.inner.lock().unwrap();
         if let Some(pb) = inner.bars.get(stage) {
-            pb.set_style(
-                ProgressStyle::with_template("{prefix}: {msg}")
-                    .unwrap(),
-            );
+            pb.set_style(ProgressStyle::with_template("{prefix}: {msg}").unwrap());
             pb.set_message(format!("FAILED: {}", error));
             pb.abandon();
         }

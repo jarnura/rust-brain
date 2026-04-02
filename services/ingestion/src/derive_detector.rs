@@ -81,7 +81,7 @@ impl DeriveDetector {
             ).unwrap(),
         }
     }
-    
+
     /// Detect derive-generated impl blocks
     ///
     /// # Arguments
@@ -99,35 +99,37 @@ impl DeriveDetector {
     ) -> Result<DeriveDetectionResult> {
         // Step 1: Find all derive attributes in original source
         let derives = self.find_derives(original_source);
-        debug!("Found {} derive attributes in original source", derives.len());
-        
+        debug!(
+            "Found {} derive attributes in original source",
+            derives.len()
+        );
+
         // Step 2: Find all impl blocks in expanded source
         let impl_blocks = self.find_impl_blocks(expanded_source);
         debug!("Found {} impl blocks in expanded source", impl_blocks.len());
-        
+
         // Step 3: Match derives to impls
         let generated_by = self.match_derives_to_impls(&derives, &impl_blocks);
-        debug!("Matched {} impl blocks to derive macros", generated_by.len());
-        
+        debug!(
+            "Matched {} impl blocks to derive macros",
+            generated_by.len()
+        );
+
         Ok(DeriveDetectionResult { generated_by })
     }
-    
+
     /// Find all derive attributes in original source
     fn find_derives(&self, source: &str) -> Vec<DeriveInfo> {
         let mut derives = Vec::new();
-        
+
         // First pass: find struct and enum declarations
-        let struct_pattern = Regex::new(
-            r"(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)"
-        ).unwrap();
-        
-        let enum_pattern = Regex::new(
-            r"(?:pub\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)"
-        ).unwrap();
-        
+        let struct_pattern = Regex::new(r"(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+
+        let enum_pattern = Regex::new(r"(?:pub\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+
         // Build a map of line number to type name
         let mut line_to_type: HashMap<usize, String> = HashMap::new();
-        
+
         for (line_num, line) in source.lines().enumerate() {
             if let Some(caps) = struct_pattern.captures(line) {
                 if let Some(type_name) = caps.get(1) {
@@ -140,16 +142,16 @@ impl DeriveDetector {
                 }
             }
         }
-        
+
         // Second pass: find derive attributes and associate them with types
         for (line_num, line) in source.lines().enumerate() {
             if let Some(caps) = self.derive_pattern.captures(line) {
                 let derive_content = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let traits = self.parse_derive_traits(derive_content);
-                
+
                 // Look for the type on the same line or following lines
                 let type_name = self.find_type_for_derive(source, line_num);
-                
+
                 if let Some(name) = type_name {
                     derives.push(DeriveInfo {
                         type_name: name.clone(),
@@ -159,10 +161,10 @@ impl DeriveDetector {
                 }
             }
         }
-        
+
         derives
     }
-    
+
     /// Parse derive trait names from derive content
     fn parse_derive_traits(&self, content: &str) -> Vec<String> {
         // Handle both simple and path-qualified trait names
@@ -173,46 +175,44 @@ impl DeriveDetector {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 // Extract just the trait name (last segment if path-qualified)
-                s.split("::")
-                    .last()
-                    .unwrap_or(s)
-                    .trim()
-                    .to_string()
+                s.split("::").last().unwrap_or(s).trim().to_string()
             })
             .collect()
     }
-    
+
     /// Find the type name associated with a derive attribute
     fn find_type_for_derive(&self, source: &str, derive_line: usize) -> Option<String> {
         let lines: Vec<&str> = source.lines().collect();
-        
+        let struct_re = Regex::new(r"struct\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+        let enum_re = Regex::new(r"enum\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+
         // Look for struct or enum on the same line or following lines (within 5 lines)
         for offset in 0..5 {
             let line_idx = derive_line + offset;
             if line_idx >= lines.len() {
                 break;
             }
-            
+
             let line = lines[line_idx];
-            
+
             // Check for struct
-            if let Some(caps) = Regex::new(r"struct\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap().captures(line) {
+            if let Some(caps) = struct_re.captures(line) {
                 return caps.get(1).map(|m| m.as_str().to_string());
             }
-            
+
             // Check for enum
-            if let Some(caps) = Regex::new(r"enum\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap().captures(line) {
+            if let Some(caps) = enum_re.captures(line) {
                 return caps.get(1).map(|m| m.as_str().to_string());
             }
         }
-        
+
         None
     }
-    
+
     /// Find all impl blocks in expanded source
     fn find_impl_blocks(&self, source: &str) -> Vec<ImplBlockInfo> {
         let mut impl_blocks = Vec::new();
-        
+
         for (line_num, line) in source.lines().enumerate() {
             // Check for trait impl: impl Trait for Type
             if let Some(caps) = self.impl_trait_pattern.captures(line) {
@@ -226,7 +226,7 @@ impl DeriveDetector {
                         .trim()
                         .to_string()
                 });
-                
+
                 if let (Some(trait_name), Some(self_type)) = (trait_name, self_type) {
                     impl_blocks.push(ImplBlockInfo {
                         trait_name: Some(trait_name.clone()),
@@ -237,10 +237,10 @@ impl DeriveDetector {
                 }
             }
         }
-        
+
         impl_blocks
     }
-    
+
     /// Match derive attributes to impl blocks
     fn match_derives_to_impls(
         &self,
@@ -248,10 +248,10 @@ impl DeriveDetector {
         impl_blocks: &[ImplBlockInfo],
     ) -> HashMap<String, String> {
         let mut generated_by = HashMap::new();
-        
+
         // Build a map from (type_name, trait_name) to derive info
         let mut derive_map: HashMap<(String, String), &DeriveInfo> = HashMap::new();
-        
+
         for derive_info in derives {
             for trait_name in &derive_info.traits {
                 derive_map.insert(
@@ -260,12 +260,12 @@ impl DeriveDetector {
                 );
             }
         }
-        
+
         // For each impl block, check if it matches a derive
         for impl_block in impl_blocks {
             if let Some(trait_name) = &impl_block.trait_name {
                 let key = (impl_block.self_type.clone(), trait_name.clone());
-                
+
                 if let Some(_derive_info) = derive_map.get(&key) {
                     // This impl was generated by a derive macro
                     let impl_key = format!("{} for {}", trait_name, impl_block.self_type);
@@ -273,7 +273,7 @@ impl DeriveDetector {
                 }
             }
         }
-        
+
         generated_by
     }
 }
@@ -295,11 +295,10 @@ impl DeriveAnnotated for crate::parsers::ParsedItem {
         if self.item_type != crate::parsers::ItemType::Impl {
             return None;
         }
-        
+
         // Check for impl_for attribute set by syn_parser
         for attr in &self.attributes {
-            if attr.starts_with("impl_for=") {
-                let trait_name = &attr[9..];
+            if let Some(trait_name) = attr.strip_prefix("impl_for=") {
                 // Extract self type from name (format: "TraitName_TypeName")
                 if let Some(underscore_pos) = self.name.find('_') {
                     let self_type = &self.name[underscore_pos + 1..];
@@ -307,7 +306,7 @@ impl DeriveAnnotated for crate::parsers::ParsedItem {
                 }
             }
         }
-        
+
         None
     }
 }
@@ -315,7 +314,7 @@ impl DeriveAnnotated for crate::parsers::ParsedItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_find_derives() {
         let detector = DeriveDetector::new();
@@ -332,19 +331,19 @@ enum Status {
     Inactive,
 }
 "#;
-        
+
         let derives = detector.find_derives(source);
-        
+
         assert_eq!(derives.len(), 2);
-        
+
         let point_derive = derives.iter().find(|d| d.type_name == "Point").unwrap();
         assert!(point_derive.traits.contains(&"Debug".to_string()));
         assert!(point_derive.traits.contains(&"Clone".to_string()));
-        
+
         let status_derive = derives.iter().find(|d| d.type_name == "Status").unwrap();
         assert!(status_derive.traits.contains(&"Serialize".to_string()));
     }
-    
+
     #[test]
     fn test_find_impl_blocks() {
         let detector = DeriveDetector::new();
@@ -366,22 +365,28 @@ impl Clone for Point {
     }
 }
 "#;
-        
+
         let impl_blocks = detector.find_impl_blocks(source);
-        
+
         assert!(impl_blocks.len() >= 2);
-        
-        let debug_impl = impl_blocks.iter().find(|i| i.trait_name.as_deref() == Some("Debug")).unwrap();
+
+        let debug_impl = impl_blocks
+            .iter()
+            .find(|i| i.trait_name.as_deref() == Some("Debug"))
+            .unwrap();
         assert_eq!(debug_impl.self_type, "Point");
-        
-        let clone_impl = impl_blocks.iter().find(|i| i.trait_name.as_deref() == Some("Clone")).unwrap();
+
+        let clone_impl = impl_blocks
+            .iter()
+            .find(|i| i.trait_name.as_deref() == Some("Clone"))
+            .unwrap();
         assert_eq!(clone_impl.self_type, "Point");
     }
-    
+
     #[test]
     fn test_match_derives_to_impls() {
         let detector = DeriveDetector::new();
-        
+
         let original = r#"
 #[derive(Debug, Clone)]
 struct Point {
@@ -389,7 +394,7 @@ struct Point {
     y: i32,
 }
 "#;
-        
+
         let expanded = r#"
 struct Point {
     x: i32,
@@ -408,26 +413,32 @@ impl Clone for Point {
     }
 }
 "#;
-        
+
         let result = detector.detect(original, expanded, "test").unwrap();
-        
+
         assert!(result.generated_by.contains_key("Debug for Point"));
         assert!(result.generated_by.contains_key("Clone for Point"));
-        assert_eq!(result.generated_by.get("Debug for Point"), Some(&"derive(Debug)".to_string()));
-        assert_eq!(result.generated_by.get("Clone for Point"), Some(&"derive(Clone)".to_string()));
+        assert_eq!(
+            result.generated_by.get("Debug for Point"),
+            Some(&"derive(Debug)".to_string())
+        );
+        assert_eq!(
+            result.generated_by.get("Clone for Point"),
+            Some(&"derive(Clone)".to_string())
+        );
     }
-    
+
     #[test]
     fn test_no_match_for_manual_impl() {
         let detector = DeriveDetector::new();
-        
+
         let original = r#"
 struct Point {
     x: i32,
     y: i32,
 }
 "#;
-        
+
         let expanded = r#"
 struct Point {
     x: i32,
@@ -440,9 +451,9 @@ impl Debug for Point {
     }
 }
 "#;
-        
+
         let result = detector.detect(original, expanded, "test").unwrap();
-        
+
         // No derive, so no match
         assert!(!result.generated_by.contains_key("Debug for Point"));
     }

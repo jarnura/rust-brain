@@ -9,9 +9,8 @@ use crate::parsers::GenericParam;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use syn::{
-    Expr, ExprCall, ExprPath, ExprMethodCall,
-    GenericArgument, Item as SynItem, ItemImpl, PathArguments,
-    Type, TypePath, ImplItem,
+    Expr, ExprCall, ExprMethodCall, ExprPath, GenericArgument, ImplItem, Item as SynItem, ItemImpl,
+    PathArguments, Type, TypePath,
 };
 use tracing::{debug, warn};
 
@@ -31,8 +30,8 @@ impl ResolutionQuality {
             ResolutionQuality::Heuristic => "heuristic",
         }
     }
-    
-    pub fn from_str(s: &str) -> Self {
+
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "analyzed" => ResolutionQuality::Analyzed,
             _ => ResolutionQuality::Heuristic,
@@ -95,7 +94,7 @@ impl TypeResolver {
     pub fn new() -> Self {
         Self {}
     }
-    
+
     /// Analyze expanded source code for type information
     ///
     /// This method:
@@ -113,9 +112,15 @@ impl TypeResolver {
         let mut trait_impls = Vec::new();
         let mut call_sites = Vec::new();
         let mut errors = Vec::new();
-        
+
         // Phase 1: Try syn-based analysis
-        match self.analyze_with_syn(crate_name, module_path, file_path, expanded_source, caller_fqns) {
+        match self.analyze_with_syn(
+            crate_name,
+            module_path,
+            file_path,
+            expanded_source,
+            caller_fqns,
+        ) {
             Ok((impls, sites)) => {
                 trait_impls.extend(impls);
                 call_sites.extend(sites);
@@ -123,9 +128,15 @@ impl TypeResolver {
             Err(e) => {
                 debug!("Syn analysis failed, falling back to heuristics: {}", e);
                 errors.push(format!("Syn analysis failed: {}", e));
-                
+
                 // Fall back to heuristic analysis
-                match self.analyze_with_heuristics(crate_name, module_path, file_path, expanded_source, caller_fqns) {
+                match self.analyze_with_heuristics(
+                    crate_name,
+                    module_path,
+                    file_path,
+                    expanded_source,
+                    caller_fqns,
+                ) {
                     Ok((impls, sites)) => {
                         trait_impls.extend(impls);
                         call_sites.extend(sites);
@@ -137,14 +148,14 @@ impl TypeResolver {
                 }
             }
         }
-        
+
         super::TypeResolutionResult {
             trait_impls,
             call_sites,
             errors,
         }
     }
-    
+
     /// Analyze source using heuristics only (skips syn parsing)
     /// Use for large files where syn would be too slow.
     pub fn analyze_heuristics_only(
@@ -156,15 +167,19 @@ impl TypeResolver {
         caller_fqns: &[String],
     ) -> super::TypeResolutionResult {
         let mut errors = Vec::new();
-        
-        match self.analyze_with_heuristics(crate_name, module_path, file_path, expanded_source, caller_fqns) {
-            Ok((trait_impls, call_sites)) => {
-                super::TypeResolutionResult {
-                    trait_impls,
-                    call_sites,
-                    errors,
-                }
-            }
+
+        match self.analyze_with_heuristics(
+            crate_name,
+            module_path,
+            file_path,
+            expanded_source,
+            caller_fqns,
+        ) {
+            Ok((trait_impls, call_sites)) => super::TypeResolutionResult {
+                trait_impls,
+                call_sites,
+                errors,
+            },
             Err(e) => {
                 warn!("Heuristic analysis failed: {}", e);
                 errors.push(format!("Heuristic analysis failed: {}", e));
@@ -176,7 +191,7 @@ impl TypeResolver {
             }
         }
     }
-    
+
     /// Analyze source using syn for precise type extraction
     fn analyze_with_syn(
         &self,
@@ -187,50 +202,39 @@ impl TypeResolver {
         _caller_fqns: &[String],
     ) -> Result<(Vec<TraitImplementation>, Vec<CallSite>)> {
         // Parse the entire source file
-        let file: syn::File = syn::parse_str(source)
-            .with_context(|| "Failed to parse source with syn")?;
-        
+        let file: syn::File =
+            syn::parse_str(source).with_context(|| "Failed to parse source with syn")?;
+
         let mut trait_impls = Vec::new();
         let mut call_sites = Vec::new();
-        
+
         for (idx, item) in file.items.iter().enumerate() {
             match item {
                 SynItem::Impl(impl_item) => {
-                    if let Some(impl_info) = self.extract_trait_impl(
-                        impl_item,
-                        crate_name,
-                        module_path,
-                        file_path,
-                        idx,
-                    ) {
+                    if let Some(impl_info) =
+                        self.extract_trait_impl(impl_item, crate_name, module_path, file_path, idx)
+                    {
                         trait_impls.push(impl_info);
                     }
-                    
+
                     // Also extract call sites from within impl blocks
                     let caller_fqn = self.impl_caller_fqn(impl_item, module_path);
-                    for call_site in self.extract_calls_from_impl(
-                        impl_item,
-                        file_path,
-                        &caller_fqn,
-                    ) {
+                    for call_site in self.extract_calls_from_impl(impl_item, file_path, &caller_fqn)
+                    {
                         call_sites.push(call_site);
                     }
                 }
                 SynItem::Fn(fn_item) => {
                     // Extract call sites from standalone functions
                     let caller_fqn = format!("{}::{}", module_path, fn_item.sig.ident);
-                    for call_site in self.extract_calls_from_fn(
-                        fn_item,
-                        file_path,
-                        &caller_fqn,
-                    ) {
+                    for call_site in self.extract_calls_from_fn(fn_item, file_path, &caller_fqn) {
                         call_sites.push(call_site);
                     }
                 }
                 _ => {}
             }
         }
-        
+
         // Mark all as analyzed quality
         for impl_info in &mut trait_impls {
             impl_info.quality = ResolutionQuality::Analyzed;
@@ -238,10 +242,10 @@ impl TypeResolver {
         for site in &mut call_sites {
             site.quality = ResolutionQuality::Analyzed;
         }
-        
+
         Ok((trait_impls, call_sites))
     }
-    
+
     /// Extract trait implementation info from an impl block
     fn extract_trait_impl(
         &self,
@@ -257,26 +261,27 @@ impl TypeResolver {
         } else {
             (None, false)
         };
-        
+
         if !is_trait_impl {
             return None;
         }
-        
-        let trait_fqn = trait_path.as_ref()
+
+        let trait_fqn = trait_path
+            .as_ref()
             .map(|p| self.path_to_fqn(p))
             .unwrap_or_default();
-        
+
         let self_type = self.type_to_string(&impl_item.self_ty);
-        
+
         // Use canonical format matching syn_parser: module::TraitName_Type
         let impl_fqn = format!("{}::{}_{}", module_path, trait_fqn, self_type);
-        
+
         // Extract generic parameters
         let generic_params = self.extract_generic_params(&impl_item.generics);
-        
+
         // Estimate line number (approximate)
         let line_number = 1;
-        
+
         Some(TraitImplementation {
             trait_fqn,
             self_type,
@@ -287,7 +292,7 @@ impl TypeResolver {
             quality: ResolutionQuality::Analyzed,
         })
     }
-    
+
     /// Extract call sites from an impl block
     fn extract_calls_from_impl(
         &self,
@@ -296,17 +301,21 @@ impl TypeResolver {
         caller_fqn: &str,
     ) -> Vec<CallSite> {
         let mut sites = Vec::new();
-        
+
         for item in &impl_item.items {
             if let ImplItem::Fn(method) = item {
                 let method_caller_fqn = format!("{}::{}", caller_fqn, method.sig.ident);
-                sites.extend(self.extract_calls_from_impl_fn(method, file_path, &method_caller_fqn));
+                sites.extend(self.extract_calls_from_impl_fn(
+                    method,
+                    file_path,
+                    &method_caller_fqn,
+                ));
             }
         }
-        
+
         sites
     }
-    
+
     /// Extract call sites from an impl method
     fn extract_calls_from_impl_fn(
         &self,
@@ -315,13 +324,13 @@ impl TypeResolver {
         caller_fqn: &str,
     ) -> Vec<CallSite> {
         let mut sites = Vec::new();
-        
+
         // Walk the expression tree looking for calls
         self.extract_calls_from_block(&method.block, file_path, caller_fqn, &mut sites);
-        
+
         sites
     }
-    
+
     /// Extract call sites from a standalone function
     fn extract_calls_from_fn(
         &self,
@@ -330,13 +339,13 @@ impl TypeResolver {
         caller_fqn: &str,
     ) -> Vec<CallSite> {
         let mut sites = Vec::new();
-        
+
         // Walk the expression tree looking for calls
         self.extract_calls_from_block(&fn_item.block, file_path, caller_fqn, &mut sites);
-        
+
         sites
     }
-    
+
     /// Recursively extract calls from a block
     fn extract_calls_from_block(
         &self,
@@ -352,13 +361,12 @@ impl TypeResolver {
                         self.extract_calls_from_expr(&init.expr, file_path, caller_fqn, sites);
                     }
                 }
-                syn::Stmt::Item(item) => {
+                syn::Stmt::Item(SynItem::Fn(nested_fn)) => {
                     // Could have nested items
-                    if let SynItem::Fn(nested_fn) = item {
-                        let nested_fqn = format!("{}::{}", caller_fqn, nested_fn.sig.ident);
-                        sites.extend(self.extract_calls_from_fn(nested_fn, file_path, &nested_fqn));
-                    }
+                    let nested_fqn = format!("{}::{}", caller_fqn, nested_fn.sig.ident);
+                    sites.extend(self.extract_calls_from_fn(nested_fn, file_path, &nested_fqn));
                 }
+                syn::Stmt::Item(_) => {}
                 syn::Stmt::Expr(expr, _) => {
                     self.extract_calls_from_expr(expr, file_path, caller_fqn, sites);
                 }
@@ -366,7 +374,7 @@ impl TypeResolver {
             }
         }
     }
-    
+
     /// Recursively extract calls from an expression
     fn extract_calls_from_expr(
         &self,
@@ -386,7 +394,9 @@ impl TypeResolver {
                 }
             }
             Expr::MethodCall(method_call) => {
-                if let Some(site) = self.extract_method_call_site(method_call, file_path, caller_fqn) {
+                if let Some(site) =
+                    self.extract_method_call_site(method_call, file_path, caller_fqn)
+                {
                     sites.push(site);
                 }
                 // Recurse into receiver and arguments
@@ -471,7 +481,7 @@ impl TypeResolver {
             _ => {}
         }
     }
-    
+
     /// Extract a call site from a function call
     fn extract_call_site(
         &self,
@@ -488,9 +498,9 @@ impl TypeResolver {
             }
             _ => return None,
         };
-        
+
         let is_monomorphized = !type_args.is_empty();
-        
+
         Some(CallSite {
             caller_fqn: caller_fqn.to_string(),
             callee_fqn,
@@ -501,7 +511,7 @@ impl TypeResolver {
             quality: ResolutionQuality::Analyzed,
         })
     }
-    
+
     /// Extract a call site from a method call
     fn extract_method_call_site(
         &self,
@@ -510,19 +520,19 @@ impl TypeResolver {
         caller_fqn: &str,
     ) -> Option<CallSite> {
         let method_name = method_call.method.to_string();
-        
+
         // Extract turbofish type arguments if present
         let type_args = if let Some(turbofish) = &method_call.turbofish {
             self.extract_turbofish_args_from_angle_bracketed(turbofish)
         } else {
             Vec::new()
         };
-        
+
         let is_monomorphized = !type_args.is_empty();
-        
+
         // Try to infer the callee FQN from the receiver type
         let callee_fqn = self.infer_method_callee(&method_call.receiver, &method_name);
-        
+
         Some(CallSite {
             caller_fqn: caller_fqn.to_string(),
             callee_fqn,
@@ -533,11 +543,11 @@ impl TypeResolver {
             quality: ResolutionQuality::Analyzed,
         })
     }
-    
+
     /// Extract type arguments from turbofish syntax
     fn extract_turbofish_types(&self, path_expr: &ExprPath) -> Vec<TypeArg> {
         let mut type_args = Vec::new();
-        
+
         for segment in &path_expr.path.segments {
             if let PathArguments::AngleBracketed(args) = &segment.arguments {
                 for (idx, arg) in args.args.iter().enumerate() {
@@ -550,17 +560,17 @@ impl TypeResolver {
                 }
             }
         }
-        
+
         type_args
     }
-    
+
     /// Extract type arguments from turbofish on method calls (AngleBracketedGenericArguments)
     fn extract_turbofish_args_from_angle_bracketed(
-        &self, 
-        args: &syn::AngleBracketedGenericArguments
+        &self,
+        args: &syn::AngleBracketedGenericArguments,
     ) -> Vec<TypeArg> {
         let mut type_args = Vec::new();
-        
+
         for (idx, arg) in args.args.iter().enumerate() {
             if let GenericArgument::Type(ty) = arg {
                 type_args.push(TypeArg {
@@ -569,10 +579,10 @@ impl TypeResolver {
                 });
             }
         }
-        
+
         type_args
     }
-    
+
     /// Infer method callee FQN from receiver
     fn infer_method_callee(&self, receiver: &Expr, method_name: &str) -> String {
         // Try to get the type of the receiver
@@ -601,10 +611,10 @@ impl TypeResolver {
             }
             _ => format!("unknown::{}", method_name),
         };
-        
+
         receiver_type
     }
-    
+
     /// Convert a path to FQN string
     fn path_to_fqn(&self, path: &syn::Path) -> String {
         path.segments
@@ -613,7 +623,7 @@ impl TypeResolver {
             .collect::<Vec<_>>()
             .join("::")
     }
-    
+
     /// Convert an expression path to FQN
     fn path_expr_to_fqn(&self, path_expr: &ExprPath) -> String {
         path_expr
@@ -624,7 +634,7 @@ impl TypeResolver {
             .collect::<Vec<_>>()
             .join("::")
     }
-    
+
     /// Convert a type to string
     fn type_to_string(&self, ty: &Type) -> String {
         match ty {
@@ -641,9 +651,7 @@ impl TypeResolver {
                 s
             }
             Type::Tuple(tuple) => {
-                let elems: Vec<_> = tuple.elems.iter()
-                    .map(|t| self.type_to_string(t))
-                    .collect();
+                let elems: Vec<_> = tuple.elems.iter().map(|t| self.type_to_string(t)).collect();
                 format!("({})", elems.join(", "))
             }
             Type::Array(arr) => {
@@ -658,20 +666,22 @@ impl TypeResolver {
             _ => quote::quote!(#ty).to_string().replace(' ', ""),
         }
     }
-    
+
     /// Convert a type path to string
     fn type_path_to_string(&self, type_path: &TypePath) -> String {
         let mut segments = Vec::new();
-        
+
         if let Some(qself) = &type_path.qself {
             segments.push(format!("<{}>", self.type_to_string(&qself.ty)));
         }
-        
+
         for segment in &type_path.path.segments {
             let mut seg_str = segment.ident.to_string();
-            
+
             if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                let args_str: Vec<_> = args.args.iter()
+                let args_str: Vec<_> = args
+                    .args
+                    .iter()
                     .map(|arg| match arg {
                         GenericArgument::Type(ty) => self.type_to_string(ty),
                         GenericArgument::Lifetime(lt) => format!("'{}", lt.ident),
@@ -679,18 +689,18 @@ impl TypeResolver {
                         _ => String::new(),
                     })
                     .collect();
-                
+
                 if !args_str.is_empty() {
                     seg_str.push_str(&format!("<{}>", args_str.join(", ")));
                 }
             }
-            
+
             segments.push(seg_str);
         }
-        
+
         segments.join("::")
     }
-    
+
     /// Generate caller FQN for an impl block.
     ///
     /// Uses canonical `module::Type` format to match FQNs produced by
@@ -701,7 +711,7 @@ impl TypeResolver {
         // Use module::Type so that appending ::method yields module::Type::method
         format!("{}::{}", module_path, self_type)
     }
-    
+
     /// Extract generic parameters from syn Generics
     fn extract_generic_params(&self, generics: &syn::Generics) -> Vec<GenericParam> {
         generics
@@ -714,14 +724,15 @@ impl TypeResolver {
                         .iter()
                         .map(|b| quote::quote!(#b).to_string())
                         .collect();
-                    
+
                     GenericParam {
                         name: type_param.ident.to_string(),
                         kind: "type".to_string(),
                         bounds,
-                        default: type_param.default.as_ref().map(|d| {
-                            quote::quote!(#d).to_string()
-                        }),
+                        default: type_param
+                            .default
+                            .as_ref()
+                            .map(|d| quote::quote!(#d).to_string()),
                     }
                 }
                 syn::GenericParam::Lifetime(lt_param) => {
@@ -730,7 +741,7 @@ impl TypeResolver {
                         .iter()
                         .map(|lt| format!("'{}", lt.ident))
                         .collect();
-                    
+
                     GenericParam {
                         name: format!("'{}", lt_param.lifetime.ident),
                         kind: "lifetime".to_string(),
@@ -738,24 +749,23 @@ impl TypeResolver {
                         default: None,
                     }
                 }
-                syn::GenericParam::Const(const_param) => {
-                    GenericParam {
-                        name: const_param.ident.to_string(),
-                        kind: "const".to_string(),
-                        bounds: vec![quote::quote!(#const_param.ty).to_string()],
-                        default: const_param.default.as_ref().map(|d| {
-                            quote::quote!(#d).to_string()
-                        }),
-                    }
-                }
+                syn::GenericParam::Const(const_param) => GenericParam {
+                    name: const_param.ident.to_string(),
+                    kind: "const".to_string(),
+                    bounds: vec![quote::quote!(#const_param.ty).to_string()],
+                    default: const_param
+                        .default
+                        .as_ref()
+                        .map(|d| quote::quote!(#d).to_string()),
+                },
             })
             .collect()
     }
-    
+
     // ========================================================================
     // Heuristic Analysis (Fallback)
     // ========================================================================
-    
+
     /// Analyze source using regex and heuristics
     fn analyze_with_heuristics(
         &self,
@@ -767,28 +777,23 @@ impl TypeResolver {
     ) -> Result<(Vec<TraitImplementation>, Vec<CallSite>)> {
         let mut trait_impls = Vec::new();
         let mut call_sites = Vec::new();
-        
+
         // Pattern for impl Trait for Type
-        let impl_trait_pattern = regex::Regex::new(
-            r"impl\s*(?:<[^>]*>)?\s*(\w+(?:::\w+)*)\s+for\s+([^\{]+)"
-        ).unwrap();
-        
+        let impl_trait_pattern =
+            regex::Regex::new(r"impl\s*(?:<[^>]*>)?\s*(\w+(?:::\w+)*)\s+for\s+([^\{]+)").unwrap();
+
         // Pattern for turbofish calls: function::<Type>
-        let turbofish_pattern = regex::Regex::new(
-            r"(\w+(?:::\w+)*)::<([^>]+)>"
-        ).unwrap();
-        
+        let turbofish_pattern = regex::Regex::new(r"(\w+(?:::\w+)*)::<([^>]+)>").unwrap();
+
         // Pattern for method calls with turbofish: .method::<Type>
-        let method_turbofish_pattern = regex::Regex::new(
-            r"\.(\w+)::<([^>]+)>"
-        ).unwrap();
-        
+        let method_turbofish_pattern = regex::Regex::new(r"\.(\w+)::<([^>]+)>").unwrap();
+
         // Find trait implementations
         for (line_num, line) in source.lines().enumerate() {
             if let Some(caps) = impl_trait_pattern.captures(line) {
                 let trait_fqn = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let self_type = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-                
+
                 trait_impls.push(TraitImplementation {
                     trait_fqn: trait_fqn.to_string(),
                     self_type: self_type.to_string(),
@@ -800,17 +805,17 @@ impl TypeResolver {
                 });
             }
         }
-        
+
         // Find call sites with turbofish
         for (line_num, line) in source.lines().enumerate() {
             // Function calls with turbofish
             for caps in turbofish_pattern.captures_iter(line) {
                 let callee_fqn = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let type_arg_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                
+
                 let type_args = self.parse_type_args_heuristic(type_arg_str);
                 let is_monomorphized = !type_args.is_empty();
-                
+
                 call_sites.push(CallSite {
                     caller_fqn: caller_fqns.first().cloned().unwrap_or_default(),
                     callee_fqn: callee_fqn.to_string(),
@@ -821,15 +826,15 @@ impl TypeResolver {
                     quality: ResolutionQuality::Heuristic,
                 });
             }
-            
+
             // Method calls with turbofish
             for caps in method_turbofish_pattern.captures_iter(line) {
                 let method_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let type_arg_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                
+
                 let type_args = self.parse_type_args_heuristic(type_arg_str);
                 let is_monomorphized = !type_args.is_empty();
-                
+
                 call_sites.push(CallSite {
                     caller_fqn: caller_fqns.first().cloned().unwrap_or_default(),
                     callee_fqn: format!("unknown::{}", method_name),
@@ -841,19 +846,19 @@ impl TypeResolver {
                 });
             }
         }
-        
+
         Ok((trait_impls, call_sites))
     }
-    
+
     /// Parse type arguments from a string (heuristic)
     fn parse_type_args_heuristic(&self, args_str: &str) -> Vec<TypeArg> {
         let mut type_args = Vec::new();
-        
+
         // Handle nested generics by tracking bracket depth
         let mut depth = 0;
         let mut current = String::new();
         let mut idx = 0;
-        
+
         for ch in args_str.chars() {
             match ch {
                 '<' => {
@@ -880,7 +885,7 @@ impl TypeResolver {
                 }
             }
         }
-        
+
         // Don't forget the last one
         let trimmed = current.trim();
         if !trimmed.is_empty() {
@@ -889,7 +894,7 @@ impl TypeResolver {
                 concrete_type: trimmed.to_string(),
             });
         }
-        
+
         type_args
     }
 }
@@ -903,7 +908,7 @@ impl Default for TypeResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_extract_trait_impl() {
         let resolver = TypeResolver::new();
@@ -914,7 +919,7 @@ mod tests {
                 }
             }
         "#;
-        
+
         let result = resolver.analyze_source(
             "test_crate",
             "test::module",
@@ -922,13 +927,13 @@ mod tests {
             source,
             &["test::module::test".to_string()],
         );
-        
+
         assert!(!result.trait_impls.is_empty());
         let impl_info = &result.trait_impls[0];
         assert!(impl_info.trait_fqn.contains("Display"));
         assert!(impl_info.self_type.contains("Point"));
     }
-    
+
     #[test]
     fn test_extract_turbofish_call() {
         let resolver = TypeResolver::new();
@@ -938,7 +943,7 @@ mod tests {
                 let data = Vec::<i32>::new();
             }
         "#;
-        
+
         let result = resolver.analyze_source(
             "test_crate",
             "test::module",
@@ -946,14 +951,14 @@ mod tests {
             source,
             &["test::module::test".to_string()],
         );
-        
+
         // Should find the turbofish calls
         assert!(!result.call_sites.is_empty());
-        
+
         // At least one should be monomorphized
         assert!(result.call_sites.iter().any(|s| s.is_monomorphized));
     }
-    
+
     #[test]
     fn test_heuristic_fallback() {
         let resolver = TypeResolver::new();
@@ -970,13 +975,7 @@ mod tests {
         "#;
 
         // Should fall back to heuristics since syn will fail
-        let result = resolver.analyze_source(
-            "test_crate",
-            "test::module",
-            "test.rs",
-            source,
-            &[],
-        );
+        let result = resolver.analyze_source("test_crate", "test::module", "test.rs", source, &[]);
 
         // Heuristic regex should still find impl patterns even in broken code
         // The result may be empty if heuristics also can't extract, which is acceptable
@@ -984,7 +983,7 @@ mod tests {
             assert!(matches!(impl_info.quality, ResolutionQuality::Heuristic));
         }
     }
-    
+
     #[test]
     fn test_parse_type_args_heuristic() {
         let resolver = TypeResolver::new();
@@ -1011,13 +1010,7 @@ mod tests {
             }
         "#;
 
-        let result = resolver.analyze_source(
-            "test_crate",
-            "test::module",
-            "test.rs",
-            source,
-            &[],
-        );
+        let result = resolver.analyze_source("test_crate", "test::module", "test.rs", source, &[]);
 
         // Inherent impl should NOT appear in trait_impls
         assert!(result.trait_impls.is_empty());
@@ -1042,17 +1035,15 @@ mod tests {
             }
         "#;
 
-        let result = resolver.analyze_source(
-            "test_crate",
-            "test::module",
-            "test.rs",
-            source,
-            &[],
-        );
+        let result = resolver.analyze_source("test_crate", "test::module", "test.rs", source, &[]);
 
         assert_eq!(result.trait_impls.len(), 3);
 
-        let trait_names: Vec<&str> = result.trait_impls.iter().map(|i| i.trait_fqn.as_str()).collect();
+        let trait_names: Vec<&str> = result
+            .trait_impls
+            .iter()
+            .map(|i| i.trait_fqn.as_str())
+            .collect();
         assert!(trait_names.iter().any(|n| n.contains("Clone")));
         assert!(trait_names.iter().any(|n| n.contains("Default")));
         assert!(trait_names.iter().any(|n| n.contains("Display")));
@@ -1080,11 +1071,17 @@ mod tests {
         );
 
         // Should find call sites from process()
-        let process_calls: Vec<_> = result.call_sites.iter()
+        let process_calls: Vec<_> = result
+            .call_sites
+            .iter()
             .filter(|s| s.caller_fqn.contains("process"))
             .collect();
 
-        assert!(process_calls.len() >= 2, "Expected at least 2 calls from process(), got {}", process_calls.len());
+        assert!(
+            process_calls.len() >= 2,
+            "Expected at least 2 calls from process(), got {}",
+            process_calls.len()
+        );
     }
 
     #[test]
@@ -1096,13 +1093,7 @@ mod tests {
             }
         "#;
 
-        let result = resolver.analyze_source(
-            "test_crate",
-            "test::module",
-            "test.rs",
-            source,
-            &[],
-        );
+        let result = resolver.analyze_source("test_crate", "test::module", "test.rs", source, &[]);
 
         // Syn-parsed impls should have Analyzed quality
         for impl_info in &result.trait_impls {
@@ -1113,13 +1104,7 @@ mod tests {
     #[test]
     fn test_empty_source() {
         let resolver = TypeResolver::new();
-        let result = resolver.analyze_source(
-            "test_crate",
-            "test::module",
-            "test.rs",
-            "",
-            &[],
-        );
+        let result = resolver.analyze_source("test_crate", "test::module", "test.rs", "", &[]);
 
         assert!(result.trait_impls.is_empty());
         assert!(result.call_sites.is_empty());
@@ -1137,13 +1122,7 @@ mod tests {
             }
         "#;
 
-        let result = resolver.analyze_source(
-            "test_crate",
-            "test::module",
-            "test.rs",
-            source,
-            &[],
-        );
+        let result = resolver.analyze_source("test_crate", "test::module", "test.rs", source, &[]);
 
         assert_eq!(result.trait_impls.len(), 1);
         let impl_info = &result.trait_impls[0];

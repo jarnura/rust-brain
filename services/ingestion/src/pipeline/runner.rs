@@ -3,17 +3,16 @@
 //! Executes pipeline stages in order, handling errors gracefully
 //! and recording progress to the database.
 
-use crate::monitoring::{Monitor, MonitorConfig};
 use crate::monitoring::audit::AuditEmitter;
-use crate::pipeline::{
-    PipelineConfig, PipelineContext, PipelineResult, PipelineStatus,
-    PipelineStage, StageCounts,
-};
+use crate::monitoring::{Monitor, MonitorConfig};
+use crate::pipeline::resilience::{CheckpointManager, DegradationTier, ResilienceCoordinator};
 use crate::pipeline::stages::{
-    ExpandStage, ExtractStage, GraphStage, ParseStage, StageError, StageResult, StageStatus,
-    TypecheckStage, EmbedStage,
+    EmbedStage, ExpandStage, ExtractStage, GraphStage, ParseStage, StageError, StageResult,
+    StageStatus, TypecheckStage,
 };
-use crate::pipeline::resilience::{ResilienceCoordinator, DegradationTier, CheckpointManager};
+use crate::pipeline::{
+    PipelineConfig, PipelineContext, PipelineResult, PipelineStage, PipelineStatus, StageCounts,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sqlx::PgPool;
@@ -44,7 +43,7 @@ impl PipelineRunner {
     /// Create a new pipeline runner
     pub fn new(config: PipelineConfig) -> Result<Self> {
         let ctx = PipelineContext::new(config.clone());
-        
+
         // Initialize stages in order
         let stages: Vec<Box<dyn PipelineStage>> = vec![
             Box::new(ExpandStage::new()?),
@@ -54,7 +53,7 @@ impl PipelineRunner {
             Box::new(GraphStage::new()),
             Box::new(EmbedStage::new()),
         ];
-        
+
         Ok(Self {
             ctx,
             pool: None,
@@ -84,7 +83,7 @@ impl PipelineRunner {
             monitor: None,
         })
     }
-    
+
     /// Connect to the database for run tracking and initialize resilience + monitoring.
     pub async fn connect(&mut self) -> Result<()> {
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -94,10 +93,7 @@ impl PipelineRunner {
             .context("Failed to connect to database")?;
 
         // Initialize resilience coordinator with checkpoint support
-        let coordinator = ResilienceCoordinator::new(
-            Some(pool.clone()),
-            self.ctx.id.0,
-        )?;
+        let coordinator = ResilienceCoordinator::new(Some(pool.clone()), self.ctx.id.0)?;
         coordinator.ensure_checkpoint_table().await?;
         self.resilience = Some(Arc::new(coordinator));
 
@@ -112,7 +108,7 @@ impl PipelineRunner {
         self.pool = Some(pool);
         Ok(())
     }
-    
+
     /// Run the pipeline with resilience: degradation tiers, circuit breakers,
     /// memory watchdog, and checkpoint/resume.
     pub async fn run(&mut self) -> Result<PipelineResult> {
@@ -132,7 +128,9 @@ impl PipelineRunner {
         if self.monitor.is_none() {
             let show_bars = !self.ctx.config.dry_run;
             let monitor = Monitor::new(
-                MonitorConfig { show_progress_bars: show_bars },
+                MonitorConfig {
+                    show_progress_bars: show_bars,
+                },
                 AuditEmitter::noop(),
             )?;
             self.monitor = Some(Arc::new(monitor));
@@ -283,7 +281,10 @@ impl PipelineRunner {
                         .checkpoint(stage_name, completed_stages.len(), &completed_stages)
                         .await
                     {
-                        warn!("Failed to write checkpoint after stage {}: {}", stage_name, e);
+                        warn!(
+                            "Failed to write checkpoint after stage {}: {}",
+                            stage_name, e
+                        );
                     }
                 }
                 Err(e) => {
@@ -316,9 +317,7 @@ impl PipelineRunner {
         // Determine final status
         let status = if has_failures && !self.ctx.config.continue_on_error {
             PipelineStatus::Failed
-        } else if has_failures {
-            PipelineStatus::Partial
-        } else if has_partial {
+        } else if has_failures || has_partial {
             PipelineStatus::Partial
         } else {
             PipelineStatus::Completed
@@ -359,7 +358,7 @@ impl PipelineRunner {
             duration_ms: duration.as_millis() as u64,
         })
     }
-    
+
     /// Check if a stage should run based on config
     fn should_run_stage(&self, stage_name: &str) -> bool {
         match &self.ctx.config.stages {
@@ -367,23 +366,22 @@ impl PipelineRunner {
             None => true,
         }
     }
-    
+
     /// Create ingestion run record in database
     async fn create_ingestion_run(&self, id: Uuid) -> Result<()> {
-        let pool = self.pool.as_ref()
-            .context("Database not connected")?;
-        
+        let pool = self.pool.as_ref().context("Database not connected")?;
+
         let now = Utc::now();
         let metadata = serde_json::json!({
             "crate_path": self.ctx.config.crate_path.to_string_lossy(),
             "dry_run": self.ctx.config.dry_run,
         });
-        
+
         sqlx::query(
             r#"
             INSERT INTO ingestion_runs (id, started_at, status, metadata)
             VALUES ($1, $2, 'running', $3)
-            "#
+            "#,
         )
         .bind(id)
         .bind(now)
@@ -391,11 +389,11 @@ impl PipelineRunner {
         .execute(pool)
         .await
         .context("Failed to create ingestion run record")?;
-        
+
         debug!("Created ingestion run record: {}", id);
         Ok(())
     }
-    
+
     /// Record stage completion in database
     async fn record_stage_completion(
         &self,
@@ -403,9 +401,8 @@ impl PipelineRunner {
         stage_name: &str,
         result: &StageResult,
     ) -> Result<()> {
-        let pool = self.pool.as_ref()
-            .context("Database not connected")?;
-        
+        let pool = self.pool.as_ref().context("Database not connected")?;
+
         // Store stage result in metadata
         let stage_metadata = serde_json::json!({
             "stage": stage_name,
@@ -416,7 +413,7 @@ impl PipelineRunner {
             "error": result.error,
             "timestamp": result.timestamp,
         });
-        
+
         // Append to metadata
         sqlx::query(
             r#"
@@ -424,17 +421,17 @@ impl PipelineRunner {
             SET metadata = metadata || jsonb_build_object('stages', 
                 COALESCE(metadata->'stages', '[]'::jsonb) || $2::jsonb)
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(run_id)
         .bind(stage_metadata)
         .execute(pool)
         .await
         .context("Failed to record stage completion")?;
-        
+
         Ok(())
     }
-    
+
     /// Complete ingestion run record in database
     async fn complete_ingestion_run(
         &self,
@@ -443,12 +440,11 @@ impl PipelineRunner {
         counts: &StageCounts,
         errors: &[StageError],
     ) -> Result<()> {
-        let pool = self.pool.as_ref()
-            .context("Database not connected")?;
-        
+        let pool = self.pool.as_ref().context("Database not connected")?;
+
         let now = Utc::now();
         let errors_json = serde_json::to_value(errors).unwrap_or(serde_json::json!([]));
-        
+
         sqlx::query(
             r#"
             UPDATE ingestion_runs
@@ -458,7 +454,7 @@ impl PipelineRunner {
                 items_extracted = $5,
                 errors = $6
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(id)
         .bind(now)
@@ -469,11 +465,14 @@ impl PipelineRunner {
         .execute(pool)
         .await
         .context("Failed to complete ingestion run record")?;
-        
-        debug!("Completed ingestion run record: {} with status {}", id, status);
+
+        debug!(
+            "Completed ingestion run record: {} with status {}",
+            id, status
+        );
         Ok(())
     }
-    
+
     /// Get the pipeline context
     pub fn context(&self) -> &PipelineContext {
         &self.ctx
@@ -525,12 +524,9 @@ impl PipelineRunner {
 }
 
 /// Run a single stage by name (for testing/debugging)
-pub async fn run_single_stage(
-    config: PipelineConfig,
-    stage_name: &str,
-) -> Result<StageResult> {
+pub async fn run_single_stage(config: PipelineConfig, stage_name: &str) -> Result<StageResult> {
     let ctx = PipelineContext::new(config);
-    
+
     let stage: Box<dyn PipelineStage> = match stage_name {
         "expand" => Box::new(ExpandStage::new()?),
         "parse" => Box::new(ParseStage::new()?),
@@ -540,7 +536,7 @@ pub async fn run_single_stage(
         "embed" => Box::new(EmbedStage::new()),
         _ => anyhow::bail!("Unknown stage: {}", stage_name),
     };
-    
+
     stage.run(&ctx).await
 }
 
@@ -570,26 +566,26 @@ mod tests {
         let runner = PipelineRunner::new(config);
         assert!(runner.is_ok());
     }
-    
+
     #[test]
     fn test_should_run_stage() {
         let config = PipelineConfig {
             stages: Some(vec!["expand".to_string(), "parse".to_string()]),
             ..test_config()
         };
-        
+
         let runner = PipelineRunner::new(config).unwrap();
-        
+
         assert!(runner.should_run_stage("expand"));
         assert!(runner.should_run_stage("parse"));
         assert!(!runner.should_run_stage("embed"));
     }
-    
+
     #[test]
     fn test_all_stages_run_by_default() {
         let config = test_config();
         let runner = PipelineRunner::new(config).unwrap();
-        
+
         for stage_name in STAGE_NAMES {
             assert!(runner.should_run_stage(stage_name));
         }

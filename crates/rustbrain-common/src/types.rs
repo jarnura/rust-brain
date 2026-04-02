@@ -10,6 +10,7 @@
 //! - [`StoreReference`] — cross-store consistency tracking
 
 use serde::{Deserialize, Serialize};
+use tracing::{debug, trace, warn};
 
 /// A generic parameter extracted from a Rust item signature.
 ///
@@ -60,6 +61,7 @@ impl Visibility {
     /// Used for database storage and serialization. Returns `"pub"`,
     /// `"pub_crate"`, `"pub_super"`, the path for `PubIn`, or `"private"`.
     pub fn as_str(&self) -> &str {
+        trace!("Visibility::as_str");
         match self {
             Visibility::Public => "pub",
             Visibility::PubCrate => "pub_crate",
@@ -122,6 +124,7 @@ impl ItemType {
     /// Returns the snake_case string representation used in the database
     /// and JSON serialization.
     pub fn as_str(&self) -> &str {
+        trace!("ItemType::as_str");
         match self {
             ItemType::Function => "function",
             ItemType::Struct => "struct",
@@ -196,6 +199,7 @@ pub struct StoreReference {
 impl StoreReference {
     /// Create a new store reference with just the FQN and crate
     pub fn new(fqn: String, crate_name: String) -> Self {
+        debug!(fqn = %fqn, crate_name = %crate_name, "StoreReference::new entry");
         Self {
             fqn,
             postgres_id: None,
@@ -208,24 +212,39 @@ impl StoreReference {
 
     /// Check if the item exists in all three stores
     pub fn is_fully_synced(&self) -> bool {
-        self.postgres_id.is_some()
+        let result = self.postgres_id.is_some()
             && self.neo4j_node_id.is_some()
-            && self.qdrant_point_id.is_some()
+            && self.qdrant_point_id.is_some();
+        debug!(result = result, "StoreReference::is_fully_synced exit");
+        result
     }
 
     /// Check if the item is orphaned (exists in no store)
     pub fn is_orphaned(&self) -> bool {
-        self.postgres_id.is_none()
+        let result = self.postgres_id.is_none()
             && self.neo4j_node_id.is_none()
-            && self.qdrant_point_id.is_none()
+            && self.qdrant_point_id.is_none();
+        if result {
+            warn!(fqn = %self.fqn, "StoreReference is orphaned");
+        }
+        result
     }
 
     /// Get stores where this item is missing
     pub fn missing_stores(&self) -> Vec<&'static str> {
         let mut missing = Vec::new();
-        if self.postgres_id.is_none() { missing.push("postgres"); }
-        if self.neo4j_node_id.is_none() { missing.push("neo4j"); }
-        if self.qdrant_point_id.is_none() { missing.push("qdrant"); }
+        if self.postgres_id.is_none() {
+            missing.push("postgres");
+        }
+        if self.neo4j_node_id.is_none() {
+            missing.push("neo4j");
+        }
+        if self.qdrant_point_id.is_none() {
+            missing.push("qdrant");
+        }
+        if !missing.is_empty() {
+            warn!(fqn = %self.fqn, missing = ?missing, "StoreReference has missing stores");
+        }
         missing
     }
 }
@@ -241,12 +260,18 @@ impl std::str::FromStr for ResolutionQuality {
     ///
     /// Returns an error string for any unrecognized value.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        trace!("ResolutionQuality::from_str entry");
+        let result = match s {
             "analyzed" => Ok(ResolutionQuality::Analyzed),
             "heuristic" => Ok(ResolutionQuality::Heuristic),
             "unknown" => Ok(ResolutionQuality::Unknown),
             _ => Err(format!("Unknown resolution quality: {}", s)),
+        };
+        match &result {
+            Ok(q) => debug!(quality = ?q, "ResolutionQuality::from_str success"),
+            Err(e) => warn!(input = s, error = %e, "ResolutionQuality::from_str failed"),
         }
+        result
     }
 }
 
@@ -270,8 +295,14 @@ mod tests {
 
     #[test]
     fn test_resolution_quality_roundtrip() {
-        assert_eq!("analyzed".parse::<ResolutionQuality>().unwrap(), ResolutionQuality::Analyzed);
-        assert_eq!("heuristic".parse::<ResolutionQuality>().unwrap(), ResolutionQuality::Heuristic);
+        assert_eq!(
+            "analyzed".parse::<ResolutionQuality>().unwrap(),
+            ResolutionQuality::Analyzed
+        );
+        assert_eq!(
+            "heuristic".parse::<ResolutionQuality>().unwrap(),
+            ResolutionQuality::Heuristic
+        );
     }
 
     #[test]

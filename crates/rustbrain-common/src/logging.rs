@@ -54,7 +54,10 @@ pub fn init_logging(default_level: Level) -> LoggingGuard {
 ///
 /// let _guard = init_logging_with_directives(Level::INFO, &["rustbrain_api=debug"]);
 /// ```
-pub fn init_logging_with_directives(default_level: Level, extra_directives: &[&str]) -> LoggingGuard {
+pub fn init_logging_with_directives(
+    default_level: Level,
+    extra_directives: &[&str],
+) -> LoggingGuard {
     trace!(
         default_level = %default_level,
         num_extra_directives = extra_directives.len(),
@@ -94,9 +97,7 @@ pub fn init_logging_with_directives(default_level: Level, extra_directives: &[&s
                     Some(guard)
                 }
                 Err(_) => {
-                    tracing_subscriber::registry()
-                        .with($stdout_layer)
-                        .init();
+                    tracing_subscriber::registry().with($stdout_layer).init();
                     None
                 }
             }

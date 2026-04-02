@@ -368,6 +368,6 @@ mod tests {
         let tokens = tokenize_sql("SELECT UPDATED_AT FROM TASKS");
         assert!(tokens.contains(&"UPDATED"));
         assert!(tokens.contains(&"AT"));
-        assert!(!tokens.iter().any(|t| *t == "UPDATE"));
+        assert!(!tokens.contains(&"UPDATE"));
     }
 }

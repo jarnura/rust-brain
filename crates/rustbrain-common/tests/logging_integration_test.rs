@@ -381,7 +381,10 @@ fn logging_does_not_alter_return_values() {
     assert!(r.missing_stores().is_empty());
 
     // ResolutionQuality round-trip
-    assert_eq!("analyzed".parse::<ResolutionQuality>().unwrap(), ResolutionQuality::Analyzed);
+    assert_eq!(
+        "analyzed".parse::<ResolutionQuality>().unwrap(),
+        ResolutionQuality::Analyzed
+    );
     assert!("invalid".parse::<ResolutionQuality>().is_err());
 
     // EmbeddingModelConfig defaults

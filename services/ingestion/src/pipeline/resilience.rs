@@ -332,11 +332,7 @@ impl SpillStore {
         }
         writer.flush()?;
 
-        info!(
-            "Spilled {} items to {}",
-            count,
-            path.display()
-        );
+        info!("Spilled {} items to {}", count, path.display());
         self.spill_files.push(path);
         self.in_memory_count = self.in_memory_count.saturating_sub(count);
         Ok(count)
@@ -358,8 +354,9 @@ impl SpillStore {
                 if line.is_empty() {
                     continue;
                 }
-                let item: ParsedItemInfo = serde_json::from_str(&line)
-                    .with_context(|| format!("Failed to deserialize spill line in {}", path.display()))?;
+                let item: ParsedItemInfo = serde_json::from_str(&line).with_context(|| {
+                    format!("Failed to deserialize spill line in {}", path.display())
+                })?;
                 items.push(item);
             }
 
@@ -464,11 +461,7 @@ impl std::fmt::Display for DegradationTier {
 
 impl DegradationTier {
     /// Determine the tier from current system state.
-    pub fn from_state(
-        pressure: MemoryPressure,
-        neo4j_open: bool,
-        ollama_open: bool,
-    ) -> Self {
+    pub fn from_state(pressure: MemoryPressure, neo4j_open: bool, ollama_open: bool) -> Self {
         if pressure >= MemoryPressure::Emergency {
             return Self::Emergency;
         }
@@ -742,9 +735,8 @@ impl ResilienceCoordinator {
     /// Create a fully-wired coordinator.
     pub fn new(pool: Option<PgPool>, run_id: Uuid) -> Result<Self> {
         let spill_store = SpillStore::with_defaults()?;
-        let checkpoint_mgr = pool.map(|p| {
-            tokio::sync::Mutex::new(CheckpointManager::new(p, run_id))
-        });
+        let checkpoint_mgr =
+            pool.map(|p| tokio::sync::Mutex::new(CheckpointManager::new(p, run_id)));
 
         Ok(Self {
             watchdog: MemoryWatchdog::spawn(),
@@ -759,10 +751,10 @@ impl ResilienceCoordinator {
     /// Compute the current degradation tier.
     pub fn current_tier(&self) -> DegradationTier {
         let pressure = self.watchdog.current_pressure();
-        let neo4j_open = self.neo4j_breaker.state()
-            == crate::pipeline::circuit_breaker::CircuitState::Open;
-        let ollama_open = self.ollama_breaker.state()
-            == crate::pipeline::circuit_breaker::CircuitState::Open;
+        let neo4j_open =
+            self.neo4j_breaker.state() == crate::pipeline::circuit_breaker::CircuitState::Open;
+        let ollama_open =
+            self.ollama_breaker.state() == crate::pipeline::circuit_breaker::CircuitState::Open;
 
         DegradationTier::from_state(pressure, neo4j_open, ollama_open)
     }
@@ -779,7 +771,11 @@ impl ResilienceCoordinator {
         let neo4j = self.neo4j_breaker.metrics();
         let ollama = self.ollama_breaker.metrics();
         let qdrant = self.qdrant_breaker.metrics();
-        let spill_count = self.spill_store.lock().map(|s| s.spill_file_count()).unwrap_or(0);
+        let spill_count = self
+            .spill_store
+            .lock()
+            .map(|s| s.spill_file_count())
+            .unwrap_or(0);
 
         info!(
             "Resilience status: tier={}, pressure={}, spill_files={}, {}; {}; {}",
@@ -1005,7 +1001,10 @@ mod tests {
         assert_eq!(batches[0].len(), 2);
         assert_eq!(batches[0][0].fqn, "crate::foo");
         assert_eq!(batches[0][1].fqn, "crate::bar");
-        assert_eq!(batches[0][1].generated_by, Some("derive(Debug)".to_string()));
+        assert_eq!(
+            batches[0][1].generated_by,
+            Some("derive(Debug)".to_string())
+        );
 
         store.cleanup().unwrap();
     }
@@ -1038,8 +1037,8 @@ mod tests {
             generated_by: None,
         };
 
-        store.spill(&[item.clone()]).unwrap();
-        store.spill(&[item.clone()]).unwrap();
+        store.spill(std::slice::from_ref(&item)).unwrap();
+        store.spill(std::slice::from_ref(&item)).unwrap();
         store.spill(&[item]).unwrap();
         assert_eq!(store.spill_file_count(), 3);
 

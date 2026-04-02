@@ -147,7 +147,7 @@ pub async fn get_callers_from_neo4j(
     fqn: &str,
     depth: usize,
 ) -> Result<Vec<CallerNode>, AppError> {
-    let depth = depth.min(5).max(1);
+    let depth = depth.clamp(1, 5);
 
     // Use bounded variable-length pattern instead of unbounded [:CALLS*]
     // Build the cypher with the depth baked in (Cypher doesn't support param-based bounds)
@@ -205,7 +205,7 @@ pub async fn get_callers_for_impl_with_prefix(
     method_prefix: &str,
     depth: usize,
 ) -> Result<Vec<CallerNode>, AppError> {
-    let depth = depth.min(5).max(1);
+    let depth = depth.clamp(1, 5);
 
     let cypher = format!(
         r#"

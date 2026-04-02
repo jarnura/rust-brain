@@ -309,7 +309,7 @@ mod tests {
         assert!(!result.items.is_empty());
         let item = &result.items[0];
         assert_eq!(item.name, "Container");
-        assert!(item.generic_params.len() >= 1);
+        assert!(!item.generic_params.is_empty());
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
 
         assert!(!result.items.is_empty());
         let item = &result.items[0];
-        assert!(item.where_clauses.len() >= 1);
+        assert!(!item.where_clauses.is_empty());
     }
 
     #[test]

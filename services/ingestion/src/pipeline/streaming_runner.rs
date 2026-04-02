@@ -11,13 +11,12 @@
 //!   graph    → embed  : 256
 
 use crate::pipeline::memory_accountant::{
-    channel_capacity, DiscoveredCrate, ExpandedCrate, GraphResult, MemoryAccountant,
-    ParsedBatch,
+    channel_capacity, DiscoveredCrate, ExpandedCrate, GraphResult, MemoryAccountant, ParsedBatch,
 };
 use crate::pipeline::stages::{StageError, StageResult, StageStatus};
 use crate::pipeline::{
     ParsedItemInfo, PipelineConfig, PipelineContext, PipelineResult, PipelineStatus,
-    StageCounts, SourceFileInfo,
+    SourceFileInfo, StageCounts,
 };
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
@@ -60,10 +59,8 @@ impl StreamingPipelineRunner {
             mpsc::channel::<DiscoveredCrate>(channel_capacity::DISCOVER_TO_EXPAND);
         let (expand_tx, expand_rx) =
             mpsc::channel::<ExpandedCrate>(channel_capacity::EXPAND_TO_PARSE);
-        let (parse_tx, parse_rx) =
-            mpsc::channel::<ParsedBatch>(channel_capacity::PARSE_TO_GRAPH);
-        let (graph_tx, graph_rx) =
-            mpsc::channel::<GraphResult>(channel_capacity::GRAPH_TO_EMBED);
+        let (parse_tx, parse_rx) = mpsc::channel::<ParsedBatch>(channel_capacity::PARSE_TO_GRAPH);
+        let (graph_tx, graph_rx) = mpsc::channel::<GraphResult>(channel_capacity::GRAPH_TO_EMBED);
 
         let acct = self.accountant.clone();
         let config = self.config.clone();
@@ -92,23 +89,33 @@ impl StreamingPipelineRunner {
         // ---- GRAPH TASK ----
         let graph_config = config.clone();
         let graph_acct = acct.clone();
-        let graph_handle = tokio::spawn(async move {
-            graph_stage(graph_config, graph_acct, parse_rx, graph_tx).await
-        });
+        let graph_handle =
+            tokio::spawn(
+                async move { graph_stage(graph_config, graph_acct, parse_rx, graph_tx).await },
+            );
 
         // ---- EMBED TASK ----
         let embed_config = config.clone();
         let embed_acct = acct.clone();
-        let embed_handle = tokio::spawn(async move {
-            embed_stage(embed_config, embed_acct, graph_rx).await
-        });
+        let embed_handle =
+            tokio::spawn(async move { embed_stage(embed_config, embed_acct, graph_rx).await });
 
         // Await all stages and collect results
-        let discover_result = discover_handle.await.map_err(|e| anyhow!("discover task panicked: {}", e))?;
-        let expand_result = expand_handle.await.map_err(|e| anyhow!("expand task panicked: {}", e))?;
-        let parse_result = parse_handle.await.map_err(|e| anyhow!("parse task panicked: {}", e))?;
-        let graph_result = graph_handle.await.map_err(|e| anyhow!("graph task panicked: {}", e))?;
-        let embed_result = embed_handle.await.map_err(|e| anyhow!("embed task panicked: {}", e))?;
+        let discover_result = discover_handle
+            .await
+            .map_err(|e| anyhow!("discover task panicked: {}", e))?;
+        let expand_result = expand_handle
+            .await
+            .map_err(|e| anyhow!("expand task panicked: {}", e))?;
+        let parse_result = parse_handle
+            .await
+            .map_err(|e| anyhow!("parse task panicked: {}", e))?;
+        let graph_result = graph_handle
+            .await
+            .map_err(|e| anyhow!("graph task panicked: {}", e))?;
+        let embed_result = embed_handle
+            .await
+            .map_err(|e| anyhow!("embed task panicked: {}", e))?;
 
         let mut stages = Vec::new();
         let mut has_failures = false;
@@ -117,7 +124,13 @@ impl StreamingPipelineRunner {
         let mut errors = Vec::new();
 
         let stage_names = ["discover", "expand", "parse", "graph", "embed"];
-        let results = [discover_result, expand_result, parse_result, graph_result, embed_result];
+        let results = [
+            discover_result,
+            expand_result,
+            parse_result,
+            graph_result,
+            embed_result,
+        ];
 
         for (stage_name, result) in stage_names.into_iter().zip(results) {
             match result {
@@ -148,9 +161,7 @@ impl StreamingPipelineRunner {
             }
         }
 
-        let status = if has_failures {
-            PipelineStatus::Partial
-        } else if has_partial {
+        let status = if has_failures || has_partial {
             PipelineStatus::Partial
         } else {
             PipelineStatus::Completed
@@ -187,8 +198,7 @@ fn compute_module_path_local(crate_path: &Path, file_path: &Path, crate_name: &s
         let module = relative
             .to_string_lossy()
             .trim_end_matches(".rs")
-            .replace('/', "::")
-            .replace('\\', "::");
+            .replace(['/', '\\'], "::");
         if module == "lib" || module == "main" {
             crate_name.to_string()
         } else {
@@ -248,12 +258,7 @@ async fn discover_stage(
         let source_files: Vec<PathBuf> = WalkDir::new(&src_path)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "rs")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
             .filter(|e| {
                 // Pre-flight: skip files > 10 MB
                 e.metadata()
@@ -379,7 +384,10 @@ async fn expand_stage(
     );
 
     if failed_count > 0 && expanded_count == 0 {
-        Ok(StageResult::failed("expand", "All expansion attempts failed"))
+        Ok(StageResult::failed(
+            "expand",
+            "All expansion attempts failed",
+        ))
     } else if failed_count > 0 {
         Ok(StageResult::partial(
             "expand",
@@ -527,7 +535,10 @@ async fn graph_stage(
 
     drop(tx);
     let duration = start.elapsed();
-    info!("Graph stage: {} items forwarded in {:?}", node_count, duration);
+    info!(
+        "Graph stage: {} items forwarded in {:?}",
+        node_count, duration
+    );
     Ok(StageResult::success("graph", node_count, 0, duration))
 }
 
@@ -556,21 +567,22 @@ async fn embed_stage(
         .clone()
         .or_else(|| std::env::var("OLLAMA_HOST").ok())
         .unwrap_or_else(|| "http://ollama:11434".to_string());
-    let qdrant_url = std::env::var("QDRANT_HOST")
-        .unwrap_or_else(|_| "http://qdrant:6333".to_string());
+    let qdrant_url =
+        std::env::var("QDRANT_HOST").unwrap_or_else(|_| "http://qdrant:6333".to_string());
 
     // Create and initialise embedding service
-    let embedding_service = match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
-        Ok(s) => s,
-        Err(e) => {
-            // Drain remaining items so upstream stages don't block
-            while rx.recv().await.is_some() {}
-            return Ok(StageResult::failed(
-                "embed",
-                format!("Failed to create embedding service: {}", e),
-            ));
-        }
-    };
+    let embedding_service =
+        match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
+            Ok(s) => s,
+            Err(e) => {
+                // Drain remaining items so upstream stages don't block
+                while rx.recv().await.is_some() {}
+                return Ok(StageResult::failed(
+                    "embed",
+                    format!("Failed to create embedding service: {}", e),
+                ));
+            }
+        };
 
     if let Err(e) = embedding_service.initialize().await {
         while rx.recv().await.is_some() {}
@@ -618,7 +630,11 @@ async fn embed_stage(
             match embedding_service.embed_items(chunk).await {
                 Ok(results) => {
                     embedded_count += results.len();
-                    debug!("Embedded {} items in batch {}", results.len(), batch_num + 1);
+                    debug!(
+                        "Embedded {} items in batch {}",
+                        results.len(),
+                        batch_num + 1
+                    );
                 }
                 Err(e) => {
                     warn!(
@@ -636,7 +652,10 @@ async fn embed_stage(
     let duration = start.elapsed();
 
     if failed_count > 0 && embedded_count == 0 {
-        Ok(StageResult::failed("embed", "All embedding attempts failed"))
+        Ok(StageResult::failed(
+            "embed",
+            "All embedding attempts failed",
+        ))
     } else if failed_count > 0 {
         Ok(StageResult::partial(
             "embed",
