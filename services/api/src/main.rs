@@ -2,30 +2,38 @@
 //!
 //! Provides REST endpoints for code intelligence queries.
 
-pub mod opencode;
 pub mod config;
 pub mod errors;
-pub mod state;
-pub mod neo4j;
-pub mod handlers;
 mod gaps;
+pub mod handlers;
+pub mod neo4j;
+pub mod opencode;
+pub mod state;
 
 use axum::{
+    extract::DefaultBodyLimit,
     response::Redirect,
     routing::{get, post},
     Router,
 };
 use neo4rs::Graph;
+use rustbrain_common::logging::init_logging_with_directives;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
-use rustbrain_common::logging::init_logging_with_directives;
 use tracing::{info, Level};
 
-use config::{Config, redact_url};
+/// Body size limit for query/write endpoints: 1 MiB.
+const QUERY_BODY_LIMIT: usize = 1024 * 1024;
+
+/// Rate limit burst size for embedding endpoints (requests per second per IP).
+const EMBEDDING_RATE_PER_SEC: u64 = 10;
+
+use config::{redact_url, Config};
 use state::{AppState, Metrics};
 
 /// Redirect /playground to /playground/ for static file serving
@@ -45,7 +53,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Configuration loaded: port={}", config.port);
 
     // Connect to Postgres
-    info!("Connecting to Postgres: {}", redact_url(&config.database_url));
+    info!(
+        "Connecting to Postgres: {}",
+        redact_url(&config.database_url)
+    );
     let pg_pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
@@ -59,7 +70,8 @@ async fn main() -> anyhow::Result<()> {
         &config.neo4j_uri,
         &config.neo4j_user,
         &config.neo4j_password,
-    ).await?;
+    )
+    .await?;
     info!("Connected to Neo4j");
 
     // Create HTTP client (for Qdrant/Ollama)
@@ -87,6 +99,29 @@ async fn main() -> anyhow::Result<()> {
         opencode_client,
     };
 
+    // Rate limiter: 10 req/s per IP, burst of 10 for embedding endpoints
+    let embedding_governor_config = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(EMBEDDING_RATE_PER_SEC)
+            .burst_size(EMBEDDING_RATE_PER_SEC as u32)
+            .finish()
+            .expect("valid governor config"),
+    );
+
+    // Embedding routes with per-IP rate limiting
+    let embedding_routes = Router::new()
+        .route(
+            "/tools/search_semantic",
+            post(handlers::search::search_semantic),
+        )
+        .route(
+            "/tools/aggregate_search",
+            post(handlers::search::aggregate_search),
+        )
+        .layer(GovernorLayer {
+            config: embedding_governor_config,
+        });
+
     // Build router
     let app = Router::new()
         // Health & metrics
@@ -95,31 +130,93 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/snapshot", get(handlers::health::snapshot_info))
         // Playground (static file serving)
         .route("/playground", get(playground_redirect))
-        .nest_service("/playground/", ServeDir::new("static").append_index_html_on_directories(true))
+        .nest_service(
+            "/playground/",
+            ServeDir::new("static").append_index_html_on_directories(true),
+        )
+        // Embedding endpoints (rate-limited)
+        .merge(embedding_routes)
         // Code intelligence tools
-        .route("/tools/search_semantic", post(handlers::search::search_semantic))
         .route("/tools/chat", post(handlers::chat::chat_handler))
-        .route("/tools/chat/stream", get(handlers::chat::chat_stream_handler))
+        .route(
+            "/tools/chat/stream",
+            get(handlers::chat::chat_stream_handler),
+        )
         .route("/tools/chat/send", post(handlers::chat::chat_send_handler))
         .route("/tools/get_function", get(handlers::items::get_function))
         .route("/tools/get_callers", get(handlers::items::get_callers))
-        .route("/tools/get_trait_impls", get(handlers::graph::get_trait_impls))
-        .route("/tools/find_usages_of_type", get(handlers::graph::find_usages_of_type))
-        .route("/tools/get_module_tree", get(handlers::graph::get_module_tree))
+        .route(
+            "/tools/get_trait_impls",
+            get(handlers::graph::get_trait_impls),
+        )
+        .route(
+            "/tools/find_usages_of_type",
+            get(handlers::graph::find_usages_of_type),
+        )
+        .route(
+            "/tools/get_module_tree",
+            get(handlers::graph::get_module_tree),
+        )
         // Type check queries
-        .route("/tools/find_calls_with_type", get(handlers::typecheck::find_calls_with_type))
-        .route("/tools/find_trait_impls_for_type", get(handlers::typecheck::find_trait_impls_for_type))
+        .route(
+            "/tools/find_calls_with_type",
+            get(handlers::typecheck::find_calls_with_type),
+        )
+        .route(
+            "/tools/find_trait_impls_for_type",
+            get(handlers::typecheck::find_trait_impls_for_type),
+        )
         .route("/tools/query_graph", post(handlers::graph::query_graph))
-        .route("/tools/aggregate_search", post(handlers::search::aggregate_search))
+        // Read-only SQL query
+        .route("/tools/pg_query", post(handlers::pg_query::pg_query))
+        // Artifacts CRUD
+        .route(
+            "/api/artifacts",
+            post(handlers::artifacts::create_artifact).get(handlers::artifacts::list_artifacts),
+        )
+        .route(
+            "/api/artifacts/:id",
+            get(handlers::artifacts::get_artifact).put(handlers::artifacts::update_artifact),
+        )
+        // Tasks CRUD
+        .route(
+            "/api/tasks",
+            post(handlers::tasks::create_task).get(handlers::tasks::list_tasks),
+        )
+        .route(
+            "/api/tasks/:id",
+            get(handlers::tasks::get_task).put(handlers::tasks::update_task),
+        )
         // Ingestion progress
-        .route("/api/ingestion/progress", get(handlers::ingestion::ingestion_progress))
+        .route(
+            "/api/ingestion/progress",
+            get(handlers::ingestion::ingestion_progress),
+        )
         // OpenCode session management
-        .route("/tools/chat/sessions", post(handlers::chat::chat_sessions_create).get(handlers::chat::chat_sessions_list))
-        .route("/tools/chat/sessions/:id", get(handlers::chat::chat_sessions_get).delete(handlers::chat::chat_sessions_delete))
-        .route("/tools/chat/sessions/:id/fork", post(handlers::chat::chat_sessions_fork))
-        .route("/tools/chat/sessions/:id/abort", post(handlers::chat::chat_sessions_abort))
-        // Middleware
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .route(
+            "/tools/chat/sessions",
+            post(handlers::chat::chat_sessions_create).get(handlers::chat::chat_sessions_list),
+        )
+        .route(
+            "/tools/chat/sessions/:id",
+            get(handlers::chat::chat_sessions_get).delete(handlers::chat::chat_sessions_delete),
+        )
+        .route(
+            "/tools/chat/sessions/:id/fork",
+            post(handlers::chat::chat_sessions_fork),
+        )
+        .route(
+            "/tools/chat/sessions/:id/abort",
+            post(handlers::chat::chat_sessions_abort),
+        )
+        // Middleware (applied to all routes)
+        .layer(DefaultBodyLimit::max(QUERY_BODY_LIMIT))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

@@ -5,7 +5,7 @@
 //! All functions return [`AppError::Neo4j`] on failure.
 
 use crate::errors::AppError;
-use crate::handlers::{CallerNode, CalleeInfo};
+use crate::handlers::{CalleeInfo, CallerNode};
 use crate::state::AppState;
 
 /// Verifies the Neo4j connection by executing `RETURN 1`.
@@ -14,12 +14,15 @@ use crate::state::AppState;
 ///
 /// Returns [`AppError::Neo4j`] if the query fails or the connection is refused.
 pub async fn check_neo4j(state: &AppState) -> Result<(), AppError> {
-    let mut result = state.neo4j_graph
+    let mut result = state
+        .neo4j_graph
         .execute(neo4rs::query("RETURN 1 as test"))
         .await
         .map_err(|e| AppError::Neo4j(format!("Neo4j health check failed: {}", e)))?;
 
-    let _row = result.next().await
+    let _row = result
+        .next()
+        .await
         .map_err(|e| AppError::Neo4j(format!("Neo4j health check failed: {}", e)))?;
 
     Ok(())
@@ -61,13 +64,16 @@ pub async fn execute_neo4j_query(
         }
     }
 
-    let mut result = state.neo4j_graph
+    let mut result = state
+        .neo4j_graph
         .execute(q)
         .await
         .map_err(|e| AppError::Neo4j(format!("Failed to execute Neo4j query: {}", e)))?;
 
     let mut rows = Vec::new();
-    while let Some(row) = result.next().await
+    while let Some(row) = result
+        .next()
+        .await
         .map_err(|e| AppError::Neo4j(format!("Failed to fetch Neo4j row: {}", e)))?
     {
         let row_json = row_to_json(&row);
@@ -110,9 +116,7 @@ pub fn bolt_type_to_json(value: &neo4rs::BoltType) -> serde_json::Value {
         neo4rs::BoltType::Boolean(b) => serde_json::Value::Bool(b.value),
         neo4rs::BoltType::Null(_) => serde_json::Value::Null,
         neo4rs::BoltType::List(list) => {
-            let items: Vec<serde_json::Value> = list.iter()
-                .map(bolt_type_to_json)
-                .collect();
+            let items: Vec<serde_json::Value> = list.iter().map(bolt_type_to_json).collect();
             serde_json::Value::Array(items)
         }
         neo4rs::BoltType::Map(map) => bolt_map_to_json(map),
@@ -121,9 +125,8 @@ pub fn bolt_type_to_json(value: &neo4rs::BoltType) -> serde_json::Value {
             for (key, value) in &node.properties.value {
                 obj.insert(key.to_string(), bolt_type_to_json(value));
             }
-            let labels: Vec<serde_json::Value> = node.labels.iter()
-                .map(bolt_type_to_json)
-                .collect();
+            let labels: Vec<serde_json::Value> =
+                node.labels.iter().map(bolt_type_to_json).collect();
             obj.insert("_labels".to_string(), serde_json::Value::Array(labels));
             serde_json::Value::Object(obj)
         }
@@ -169,7 +172,11 @@ pub async fn get_callers_from_neo4j(
             Some(CallerNode {
                 fqn: r.get("fqn")?.as_str()?.to_string(),
                 name: r.get("name")?.as_str()?.to_string(),
-                file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                file_path: r
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 line: r.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
                 depth: 1,
             })
@@ -224,7 +231,11 @@ pub async fn get_callers_for_impl_with_prefix(
             Some(CallerNode {
                 fqn: r.get("fqn")?.as_str()?.to_string(),
                 name: r.get("name")?.as_str()?.to_string(),
-                file_path: r.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                file_path: r
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 line: r.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
                 depth: 1,
             })
@@ -326,9 +337,10 @@ mod tests {
 
     #[test]
     fn test_bolt_type_to_json_float() {
-        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(3.14));
+        let val = 2.5_f64;
+        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(val));
         let json = bolt_type_to_json(&bolt);
-        assert!((json.as_f64().unwrap() - 3.14).abs() < f64::EPSILON);
+        assert!((json.as_f64().unwrap() - val).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -369,9 +381,17 @@ mod tests {
     #[test]
     fn test_bolt_node_to_json() {
         let properties: neo4rs::BoltMap = vec![
-            (neo4rs::BoltString::from("fqn"), neo4rs::BoltType::from("crate::func")),
-            (neo4rs::BoltString::from("name"), neo4rs::BoltType::from("func")),
-        ].into_iter().collect();
+            (
+                neo4rs::BoltString::from("fqn"),
+                neo4rs::BoltType::from("crate::func"),
+            ),
+            (
+                neo4rs::BoltString::from("name"),
+                neo4rs::BoltType::from("func"),
+            ),
+        ]
+        .into_iter()
+        .collect();
         let labels = neo4rs::BoltList::from(vec![neo4rs::BoltType::from("Function")]);
         let node = neo4rs::BoltNode::new(neo4rs::BoltInteger::new(1), labels, properties);
         let bolt = neo4rs::BoltType::Node(node);
