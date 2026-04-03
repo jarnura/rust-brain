@@ -6,6 +6,7 @@ pub mod config;
 pub mod docker;
 pub mod errors;
 mod gaps;
+pub mod github;
 pub mod handlers;
 pub mod neo4j;
 pub mod opencode;
@@ -214,6 +215,19 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/tools/chat/sessions/:id/abort",
             post(handlers::chat::chat_sessions_abort),
+        )
+        // Workspace management
+        .route(
+            "/workspaces",
+            post(handlers::workspace::create_workspace).get(handlers::workspace::list_workspaces),
+        )
+        .route(
+            "/workspaces/:id",
+            get(handlers::workspace::get_workspace).delete(handlers::workspace::delete_workspace),
+        )
+        .route(
+            "/workspaces/:id/files",
+            get(handlers::workspace::list_files),
         )
         // Middleware (applied to all routes)
         .layer(DefaultBodyLimit::max(QUERY_BODY_LIMIT))

@@ -6,6 +6,7 @@
 
 use crate::config::Config;
 use crate::opencode::OpenCodeClient;
+use crate::workspace::WorkspaceManager;
 use neo4rs::Graph;
 use prometheus::Registry;
 use std::sync::Arc;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// Client for the OpenCode session API
     pub opencode_client: OpenCodeClient,
+    /// Workspace manager for lifecycle and schema operations
+    pub workspace_manager: WorkspaceManager,
 }
 
 /// Prometheus metrics for API request tracking.
