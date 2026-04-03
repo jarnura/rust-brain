@@ -348,6 +348,51 @@ impl DockerClient {
         Ok(())
     }
 
+    /// Copies the contents of `src_host_path` into a Docker volume.
+    ///
+    /// Runs an ephemeral `busybox` container that bind-mounts the source
+    /// directory read-only at `/src` and the target volume read-write at
+    /// `/dest`, then executes `cp -r /src/. /dest/` to populate the volume.
+    ///
+    /// Returns `Ok(())` when the copy completes successfully.
+    /// Returns `Err` if the Docker command exits non-zero.
+    pub async fn populate_volume(
+        &self,
+        volume_name: &str,
+        src_host_path: &str,
+    ) -> anyhow::Result<()> {
+        let src_mount = format!("{}:/src:ro", src_host_path);
+        let dest_mount = format!("{}:/dest:rw", volume_name);
+
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "-v",
+                &src_mount,
+                "-v",
+                &dest_mount,
+                "busybox",
+                "sh",
+                "-c",
+                "cp -r /src/. /dest/",
+            ])
+            .output()
+            .await
+            .context("failed to spawn `docker run` for volume population")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "volume population failed (exit {}): {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        Ok(())
+    }
+
     /// Returns `true` if the named volume exists, `false` otherwise.
     ///
     /// Uses `docker volume inspect <name>` — exit 0 means found, exit 1 means

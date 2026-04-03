@@ -300,12 +300,16 @@ pub async fn list_files(
 // Background clone task
 // =============================================================================
 
+/// Default Docker volume size in gigabytes for workspace volumes.
+const DEFAULT_VOLUME_SIZE_GB: u32 = 10;
+
 /// Clone the repository and then run the ingestion pipeline.
 ///
 /// Status transitions:
-/// - Clone success: `cloning` → (sets clone_path) → `indexing`
+/// - Clone success: `cloning` → (sets clone_path, creates volume) → `indexing`
 /// - Ingestion success: `indexing` → `ready`
 /// - Clone failure: `cloning` → `error`
+/// - Volume creation failure: `cloning` → `error`
 /// - Ingestion failure: `indexing` → `error`
 ///
 /// `schema_name` is appended to `DATABASE_URL` as `search_path` so the
@@ -333,11 +337,63 @@ async fn run_clone(
                 workspace_id = %ws_id,
                 default_branch = %branch,
                 clone_path = %container_clone_dir,
-                "Clone complete — advancing to indexing"
+                "Clone complete — creating Docker volume"
             );
             if let Err(e) = lifecycle::clone_workspace(&pool, ws_id, &container_clone_dir).await {
                 warn!("Failed to set clone_path for workspace {}: {}", ws_id, e);
             }
+
+            // --- Stage 1b: Create Docker volume ---
+            let vol_name = DockerClient::volume_name(&ws_id.to_string());
+            if let Err(e) = docker
+                .create_volume(&vol_name, DEFAULT_VOLUME_SIZE_GB)
+                .await
+            {
+                warn!(
+                    workspace_id = %ws_id,
+                    volume = %vol_name,
+                    "Failed to create Docker volume: {}", e
+                );
+                if let Err(e2) =
+                    lifecycle::fail(&pool, ws_id, &format!("volume creation failed: {}", e)).await
+                {
+                    warn!(
+                        "Failed to mark workspace {} as error after volume failure: {}",
+                        ws_id, e2
+                    );
+                }
+                return;
+            }
+
+            // --- Stage 1c: Populate volume with cloned files ---
+            if let Err(e) = docker.populate_volume(&vol_name, &host_clone_dir).await {
+                warn!(
+                    workspace_id = %ws_id,
+                    volume = %vol_name,
+                    "Failed to populate Docker volume: {}", e
+                );
+                if let Err(e2) =
+                    lifecycle::fail(&pool, ws_id, &format!("volume population failed: {}", e)).await
+                {
+                    warn!(
+                        "Failed to mark workspace {} as error after volume population failure: {}",
+                        ws_id, e2
+                    );
+                }
+                return;
+            }
+
+            // Persist the volume name so execution handler can use it
+            if let Err(e) = lifecycle::set_volume_name(&pool, ws_id, &vol_name).await {
+                warn!("Failed to set volume_name for workspace {}: {}", ws_id, e);
+            }
+
+            info!(
+                workspace_id = %ws_id,
+                volume = %vol_name,
+                "Volume ready — advancing to indexing"
+            );
+
             if let Err(e) = lifecycle::start_indexing(&pool, ws_id).await {
                 warn!("Failed to advance workspace {} to indexing: {}", ws_id, e);
                 return;

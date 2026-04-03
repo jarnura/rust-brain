@@ -124,6 +124,34 @@ pub async fn archive(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Record the Docker volume name for a workspace still in `cloning` status.
+///
+/// Returns `Err` if the workspace is not currently in `cloning` status.
+pub async fn set_volume_name(pool: &PgPool, id: Uuid, volume_name: &str) -> anyhow::Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE workspaces
+        SET volume_name = $2,
+            updated_at = NOW()
+        WHERE id = $1 AND status = 'cloning'
+        "#,
+    )
+    .bind(id)
+    .bind(volume_name)
+    .execute(pool)
+    .await
+    .context("set_volume_name: DB update failed")?;
+
+    if result.rows_affected() == 0 {
+        bail!(
+            "set_volume_name: workspace {} is not in '{}' status",
+            id,
+            WorkspaceStatus::Cloning
+        );
+    }
+    Ok(())
+}
+
 /// Record the clone path for a workspace still in `cloning` status.
 ///
 /// Returns `Err` if the workspace is not currently in `cloning` status.
