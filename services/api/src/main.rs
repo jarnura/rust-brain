@@ -256,6 +256,23 @@ async fn main() -> anyhow::Result<()> {
             "/executions/:id/events",
             get(handlers::execution::stream_events),
         )
+        // Workspace git operations
+        .route(
+            "/workspaces/:id/stream",
+            get(handlers::workspace_stream::stream_workspace),
+        )
+        .route(
+            "/workspaces/:id/diff",
+            get(handlers::workspace_diff::workspace_diff),
+        )
+        .route(
+            "/workspaces/:id/commit",
+            post(handlers::workspace_commit::workspace_commit),
+        )
+        .route(
+            "/workspaces/:id/reset",
+            post(handlers::workspace_reset::workspace_reset),
+        )
         // Middleware (applied to all routes)
         .layer(DefaultBodyLimit::max(QUERY_BODY_LIMIT))
         .layer(

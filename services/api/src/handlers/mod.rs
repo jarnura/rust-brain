@@ -27,6 +27,10 @@ pub mod search;
 pub mod tasks;
 pub mod typecheck;
 pub mod workspace;
+pub mod workspace_commit;
+pub mod workspace_diff;
+pub mod workspace_reset;
+pub mod workspace_stream;
 
 use serde::{Deserialize, Serialize};
 
