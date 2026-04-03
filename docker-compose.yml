@@ -253,6 +253,7 @@ services:
       # Docker socket access for per-workspace volume orchestration.
       # Override with DOCKER_HOST env var if using a remote daemon.
       DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      GH_TOKEN: ${GH_TOKEN:-}
     networks:
       rustbrain-net:
         aliases:
