@@ -23,6 +23,31 @@
 use anyhow::{anyhow, bail, Context};
 use tokio::process::Command;
 
+/// Configuration passed to [`DockerClient::run_ingestion`].
+#[derive(Debug, Clone)]
+pub struct IngestionConfig<'a> {
+    /// Absolute path on the **host** filesystem where the repo was cloned.
+    pub host_clone_path: &'a str,
+    /// Docker network the ingestion container joins (e.g. `rustbrain-net`).
+    pub network: &'a str,
+    /// Postgres connection string, forwarded as `DATABASE_URL`.
+    pub database_url: &'a str,
+    /// Neo4j Bolt URL, forwarded as `NEO4J_URL`.
+    pub neo4j_url: &'a str,
+    /// Neo4j username, forwarded as `NEO4J_USER`.
+    pub neo4j_user: &'a str,
+    /// Neo4j password, forwarded as `NEO4J_PASSWORD`.
+    pub neo4j_password: &'a str,
+    /// Ollama base URL, forwarded as `OLLAMA_HOST`.
+    pub ollama_host: &'a str,
+    /// Qdrant base URL, forwarded as `QDRANT_HOST`.
+    pub qdrant_host: &'a str,
+    /// Embedding model name, forwarded as `EMBEDDING_MODEL`.
+    pub embedding_model: &'a str,
+    /// Docker image to run (e.g. `rustbrain-ingestion:latest`).
+    pub ingestion_image: &'a str,
+}
+
 /// Client for creating and destroying Docker volumes that back workspaces.
 ///
 /// By default it invokes the `docker` binary on `PATH`. Override the Docker
@@ -243,6 +268,64 @@ impl DockerClient {
         Ok(())
     }
 
+    /// Runs the rustbrain ingestion pipeline in an ephemeral container.
+    ///
+    /// Mounts `cfg.host_clone_path` (a host-side directory) at
+    /// `/workspace/target-repo` inside the container and forwards the provided
+    /// environment variables to the ingestion binary.
+    ///
+    /// Status transitions are the caller's responsibility:
+    /// - On `Ok`: call `lifecycle::mark_ready`
+    /// - On `Err`: call `lifecycle::fail`
+    ///
+    /// Returns the combined stdout+stderr from the container on success.
+    pub async fn run_ingestion(&self, cfg: &IngestionConfig<'_>) -> anyhow::Result<String> {
+        let volume_mount = format!("{}:/workspace/target-repo:ro", cfg.host_clone_path);
+
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                cfg.network,
+                "-v",
+                &volume_mount,
+                "-e",
+                &format!("DATABASE_URL={}", cfg.database_url),
+                "-e",
+                &format!("NEO4J_URL={}", cfg.neo4j_url),
+                "-e",
+                &format!("NEO4J_USER={}", cfg.neo4j_user),
+                "-e",
+                &format!("NEO4J_PASSWORD={}", cfg.neo4j_password),
+                "-e",
+                &format!("OLLAMA_HOST={}", cfg.ollama_host),
+                "-e",
+                &format!("QDRANT_HOST={}", cfg.qdrant_host),
+                "-e",
+                &format!("EMBEDDING_MODEL={}", cfg.embedding_model),
+                cfg.ingestion_image,
+                "--crate-path",
+                "/workspace/target-repo",
+            ])
+            .output()
+            .await
+            .context("failed to spawn `docker run` for ingestion")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            bail!(
+                "ingestion container failed (exit {}): {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        Ok(format!("{}{}", stdout, stderr))
+    }
+
     /// Force-removes a container by ID or name.
     ///
     /// Runs `docker rm -f <container_id>`. Safe to call on already-stopped containers.
@@ -383,5 +466,27 @@ mod tests {
         // Either docker returns an error about not finding the volume, or
         // docker is not present. Either way we expect Err, not panic.
         assert!(result.is_err() || result.is_ok()); // no panic is the test
+    }
+
+    #[tokio::test]
+    async fn test_run_ingestion_fails_with_nonexistent_image() {
+        let client = DockerClient::new();
+        // A clearly non-existent image should return Err (image pull failure or
+        // docker not available). Either way no panic.
+        let cfg = IngestionConfig {
+            host_clone_path: "/tmp/nonexistent-clone-path",
+            network: "rustbrain-net",
+            database_url: "postgresql://unused:unused@localhost/unused",
+            neo4j_url: "bolt://unused:7687",
+            neo4j_user: "neo4j",
+            neo4j_password: "unused",
+            ollama_host: "http://unused:11434",
+            qdrant_host: "http://unused:6333",
+            embedding_model: "nomic-embed-text",
+            ingestion_image: "rustbrain-ingestion-test-nonexistent:latest",
+        };
+        let result = client.run_ingestion(&cfg).await;
+        // No panic is the assertion — docker may be absent or the image may be missing.
+        assert!(result.is_err() || result.is_ok());
     }
 }

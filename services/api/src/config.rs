@@ -72,6 +72,17 @@ pub struct Config {
     pub docker_network: String,
     /// OpenCode Docker image used for per-execution containers
     pub opencode_image: String,
+    /// Host-side root directory for workspace clones.
+    ///
+    /// Must be accessible by the host Docker daemon so it can be bind-mounted
+    /// into the ingestion container. Defaults to `/tmp/rustbrain-clones`.
+    /// Override via `WORKSPACE_HOST_CLONE_ROOT` env var.
+    pub workspace_host_clone_root: String,
+    /// Docker image used to run the ingestion pipeline for workspaces.
+    ///
+    /// Defaults to `rustbrain-ingestion:latest`.
+    /// Override via `INGESTION_IMAGE` env var.
+    pub ingestion_image: String,
 }
 
 impl Config {
@@ -131,6 +142,10 @@ impl Config {
                 .unwrap_or_else(|_| "rustbrain".to_string()),
             opencode_image: std::env::var("OPENCODE_IMAGE")
                 .unwrap_or_else(|_| "opencode:latest".to_string()),
+            workspace_host_clone_root: std::env::var("WORKSPACE_HOST_CLONE_ROOT")
+                .unwrap_or_else(|_| "/tmp/rustbrain-clones".to_string()),
+            ingestion_image: std::env::var("INGESTION_IMAGE")
+                .unwrap_or_else(|_| "rustbrain-ingestion:latest".to_string()),
         }
     }
 }
@@ -158,6 +173,8 @@ mod tests {
             opencode_auth_pass: None,
             docker_network: "rustbrain".to_string(),
             opencode_image: "opencode:latest".to_string(),
+            workspace_host_clone_root: "/tmp/rustbrain-clones".to_string(),
+            ingestion_image: "rustbrain-ingestion:latest".to_string(),
         };
 
         assert_eq!(config.embedding_dimensions, 768);

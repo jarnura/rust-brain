@@ -17,9 +17,11 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::config::Config;
+use crate::docker::{DockerClient, IngestionConfig};
 use crate::errors::AppError;
 use crate::github::GithubClient;
 use crate::state::AppState;
@@ -166,9 +168,15 @@ pub async fn create_workspace(
     let pool = state.workspace_manager.pool.clone();
     let ws_id = workspace.id;
     let source_url = workspace.source_url.clone();
+    let schema_name = workspace
+        .schema_name
+        .clone()
+        .unwrap_or_else(|| schema_name_from_id(ws_id));
+    let docker = state.docker.clone();
+    let config = state.config.clone();
 
     tokio::spawn(async move {
-        run_clone(pool, client, ws_id, &source_url).await;
+        run_clone(pool, client, docker, config, ws_id, schema_name, source_url).await;
     });
 
     let body = CreateWorkspaceResponse {
@@ -292,38 +300,47 @@ pub async fn list_files(
 // Background clone task
 // =============================================================================
 
-/// Clone the repository and update workspace status.
+/// Clone the repository and then run the ingestion pipeline.
 ///
 /// Status transitions:
-/// - Success: `cloning` → (sets clone_path) → `indexing`
-/// - Failure: `cloning` → `error`
+/// - Clone success: `cloning` → (sets clone_path) → `indexing`
+/// - Ingestion success: `indexing` → `ready`
+/// - Clone failure: `cloning` → `error`
+/// - Ingestion failure: `indexing` → `error`
 ///
-/// Full indexing into Postgres/Neo4j/Qdrant is triggered separately
-/// by the ingestion pipeline.
+/// `schema_name` is appended to `DATABASE_URL` as `search_path` so the
+/// ingestion pipeline writes extracted items into the workspace-scoped
+/// Postgres schema rather than the default schema.
 async fn run_clone(
     pool: sqlx::postgres::PgPool,
     client: GithubClient,
+    docker: DockerClient,
+    config: Config,
     ws_id: Uuid,
-    source_url: &str,
+    schema_name: String,
+    source_url: String,
 ) {
-    let clone_dir = format!("/tmp/rustbrain-clones/{}", ws_id);
-    let clone_path = std::path::Path::new(&clone_dir);
+    // The clone directory is inside the container at this path.
+    // The host-side equivalent is config.workspace_host_clone_root/<ws_id>.
+    let container_clone_dir = format!("/tmp/rustbrain-clones/{}", ws_id);
+    let host_clone_dir = format!("{}/{}", config.workspace_host_clone_root, ws_id);
+    let clone_path = std::path::Path::new(&container_clone_dir);
 
-    match client.clone_repo(source_url, clone_path).await {
+    // --- Stage 1: Clone ---
+    match client.clone_repo(&source_url, clone_path).await {
         Ok(branch) => {
             info!(
                 workspace_id = %ws_id,
                 default_branch = %branch,
-                clone_path = %clone_dir,
-                "Clone complete"
+                clone_path = %container_clone_dir,
+                "Clone complete — advancing to indexing"
             );
-            // Record clone path
-            if let Err(e) = lifecycle::clone_workspace(&pool, ws_id, &clone_dir).await {
+            if let Err(e) = lifecycle::clone_workspace(&pool, ws_id, &container_clone_dir).await {
                 warn!("Failed to set clone_path for workspace {}: {}", ws_id, e);
             }
-            // Advance to indexing
             if let Err(e) = lifecycle::start_indexing(&pool, ws_id).await {
                 warn!("Failed to advance workspace {} to indexing: {}", ws_id, e);
+                return;
             }
         }
         Err(e) => {
@@ -334,7 +351,77 @@ async fn run_clone(
                     ws_id, e2
                 );
             }
+            return;
         }
+    }
+
+    // --- Stage 2: Ingest ---
+    // Append search_path to the DATABASE_URL so the ingestion pipeline
+    // writes into the workspace-scoped schema rather than the default schema.
+    let db_url_with_schema = append_search_path(&config.database_url, &schema_name);
+
+    info!(
+        workspace_id = %ws_id,
+        schema = %schema_name,
+        host_clone_dir = %host_clone_dir,
+        "Starting ingestion pipeline"
+    );
+
+    let ingestion_cfg = IngestionConfig {
+        host_clone_path: &host_clone_dir,
+        network: &config.docker_network,
+        database_url: &db_url_with_schema,
+        neo4j_url: &config.neo4j_uri,
+        neo4j_user: &config.neo4j_user,
+        neo4j_password: &config.neo4j_password,
+        ollama_host: &config.ollama_host,
+        qdrant_host: &config.qdrant_host,
+        embedding_model: &config.embedding_model,
+        ingestion_image: &config.ingestion_image,
+    };
+
+    match docker.run_ingestion(&ingestion_cfg).await {
+        Ok(output) => {
+            info!(
+                workspace_id = %ws_id,
+                "Ingestion complete — marking workspace ready"
+            );
+            if !output.is_empty() {
+                info!(workspace_id = %ws_id, "Ingestion output: {}", output.trim_end());
+            }
+            if let Err(e) = lifecycle::mark_ready(&pool, ws_id).await {
+                error!(
+                    "Failed to mark workspace {} as ready after successful ingestion: {}",
+                    ws_id, e
+                );
+            }
+        }
+        Err(e) => {
+            error!("Ingestion failed for workspace {}: {}", ws_id, e);
+            if let Err(e2) = lifecycle::fail(&pool, ws_id, &e.to_string()).await {
+                error!(
+                    "Failed to mark workspace {} as error after ingestion failure: {}",
+                    ws_id, e2
+                );
+            }
+        }
+    }
+}
+
+/// Append `?options=--search_path%3D<schema>,public` to a Postgres URL.
+///
+/// If the URL already contains a query string, the `options` parameter is
+/// appended with `&`. Handles both plain URLs and those with existing params.
+fn append_search_path(database_url: &str, schema_name: &str) -> String {
+    // Encode the value: --search_path=<schema>,public
+    // The `%3D` encodes `=`, which is required inside the options value.
+    let options = format!("--search_path%3D{},public", schema_name);
+    let param = format!("options={}", options);
+
+    if database_url.contains('?') {
+        format!("{}&{}", database_url, param)
+    } else {
+        format!("{}?{}", database_url, param)
     }
 }
 
@@ -404,6 +491,35 @@ fn build_tree(path: &std::path::Path, root: &std::path::Path) -> std::io::Result
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_append_search_path_no_existing_query() {
+        let url = "postgresql://user:pass@host:5432/db";
+        let result = append_search_path(url, "ws_abc12345");
+        assert_eq!(
+            result,
+            "postgresql://user:pass@host:5432/db?options=--search_path%3Dws_abc12345,public"
+        );
+    }
+
+    #[test]
+    fn test_append_search_path_existing_query() {
+        let url = "postgresql://user:pass@host:5432/db?sslmode=require";
+        let result = append_search_path(url, "ws_abc12345");
+        assert_eq!(
+            result,
+            "postgresql://user:pass@host:5432/db?sslmode=require&options=--search_path%3Dws_abc12345,public"
+        );
+    }
+
+    #[test]
+    fn test_append_search_path_preserves_base_url() {
+        let url = "postgresql://localhost/mydb";
+        let result = append_search_path(url, "ws_00000000");
+        assert!(result.starts_with("postgresql://localhost/mydb?"));
+        assert!(result.contains("ws_00000000"));
+        assert!(result.contains("public"));
+    }
 
     #[test]
     fn test_validate_github_url_valid() {

@@ -254,6 +254,12 @@ services:
       # Override with DOCKER_HOST env var if using a remote daemon.
       DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
       GH_TOKEN: ${GH_TOKEN:-}
+      # Host-side clone root — must match the host path that backs the bind
+      # mount below so docker run -v <host_path>:... works from the API container.
+      WORKSPACE_HOST_CLONE_ROOT: ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}
+      # Ingestion image triggered per-workspace after clone completes.
+      INGESTION_IMAGE: ${INGESTION_IMAGE:-rustbrain-ingestion:latest}
+      DOCKER_NETWORK: rustbrain-net
     networks:
       rustbrain-net:
         aliases:
@@ -263,6 +269,9 @@ services:
       # Docker socket mount — required for DockerClient (workspace volume CRUD).
       # The API container calls `docker volume create/rm/inspect` at runtime.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Shared clone directory — bind-mounted so the host Docker daemon can
+      # mount workspace clone paths into the ingestion container.
+      - ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}:/tmp/rustbrain-clones
     depends_on:
       postgres:
         condition: service_healthy
@@ -417,6 +426,7 @@ services:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
+    image: rustbrain-ingestion:latest
     container_name: rustbrain-ingestion
     volumes:
       - ${HOME}/.cargo/registry:/root/.cargo/registry:ro  # Share cargo cache
