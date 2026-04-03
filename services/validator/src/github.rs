@@ -143,9 +143,12 @@ impl GithubClient {
     ///
     /// Calls:
     /// ```text
-    /// gh pr view <pr_number> --repo <repo> \
-    ///     --json title,body,commits,closingIssuesReferences
+    /// gh pr view <pr_number> --repo <repo> --json title,body,commits
     /// ```
+    ///
+    /// `closingIssuesReferences` is fetched separately via `gh api graphql`
+    /// because the field is absent from `gh pr view --json` in gh ≤ 2.45.
+    /// If the GraphQL call fails the field degrades gracefully to an empty list.
     ///
     /// Parses the JSON output into a [`PrContext`].
     ///
@@ -156,6 +159,9 @@ impl GithubClient {
     pub async fn extract_pr(&self, repo: &str, pr_number: u32) -> Result<PrContext> {
         let pr_str = pr_number.to_string();
 
+        // `closingIssuesReferences` intentionally omitted — gh ≤ 2.45 rejects
+        // it as an unknown JSON field. Closing issues are fetched separately via
+        // GraphQL in `fetch_closing_issues`.
         let mut cmd = Command::new("gh");
         cmd.args([
             "pr",
@@ -164,7 +170,7 @@ impl GithubClient {
             "--repo",
             repo,
             "--json",
-            "title,body,commits,closingIssuesReferences",
+            "title,body,commits",
         ]);
         for (k, v) in self.build_env() {
             cmd.env(k, v);
@@ -180,7 +186,81 @@ impl GithubClient {
         }
 
         let raw: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-        parse_pr_json(raw)
+        let mut pr = parse_pr_json(raw)?;
+
+        // Best-effort: fetch closing issues via GraphQL. Degrade to empty list
+        // on any failure (missing token, firewall, older gh CLI without GraphQL).
+        pr.closing_issues = self
+            .fetch_closing_issues(repo, pr_number)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(
+                    "Could not fetch closingIssuesReferences via GraphQL, \
+                     defaulting to empty list: {}",
+                    e
+                );
+                vec![]
+            });
+
+        Ok(pr)
+    }
+
+    /// Fetch the issues that will be closed by a PR using the GitHub GraphQL API.
+    ///
+    /// Uses `gh api graphql` so it works regardless of the `gh pr view --json`
+    /// field set supported by the installed gh version.
+    ///
+    /// Returns at most 25 closing issues (GitHub's practical limit for a PR).
+    async fn fetch_closing_issues(
+        &self,
+        repo: &str,
+        pr_number: u32,
+    ) -> Result<Vec<ClosingIssue>> {
+        let (owner, name) = repo
+            .split_once('/')
+            .ok_or_else(|| anyhow::anyhow!("invalid repo format (expected owner/name): {}", repo))?;
+
+        let query = format!(
+            r#"{{ repository(owner:"{owner}", name:"{name}") \
+{{ pullRequest(number:{pr_number}) \
+{{ closingIssuesReferences(first:25) \
+{{ nodes {{ number title url }} }} }} }} }}"#
+        );
+
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "graphql", "-f", &format!("query={query}")]);
+        for (k, v) in self.build_env() {
+            cmd.env(k, v);
+        }
+
+        let output = cmd.output().await?;
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !stderr.is_empty() {
+            warn!("gh api graphql stderr: {}", stderr);
+        }
+        if !output.status.success() {
+            bail!(
+                "gh api graphql failed (exit {}): {}",
+                output.status,
+                stderr
+            );
+        }
+
+        let raw: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let nodes = raw["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|i| ClosingIssue {
+                        number: i["number"].as_u64().unwrap_or(0) as u32,
+                        title: i["title"].as_str().unwrap_or("").to_string(),
+                        url: i["url"].as_str().unwrap_or("").to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(nodes)
     }
 
     /// Check out a specific commit in a local repository clone.
@@ -455,6 +535,28 @@ mod tests {
         assert_eq!(pr.commits[1].authors.len(), 2);
         assert_eq!(pr.closing_issues.len(), 2);
         assert_eq!(pr.closing_issues[1].number, 2);
+    }
+
+    /// Verify that `parse_pr_json` returns empty `closing_issues` when the
+    /// `closingIssuesReferences` key is absent — this is the normal case when
+    /// using `gh pr view --json title,body,commits` (without the field).
+    #[test]
+    fn test_parse_pr_json_no_closing_issues_key() {
+        let raw = serde_json::json!({
+            "title": "My PR",
+            "body": "body text",
+            "commits": [
+                {"oid": "deadbeef", "messageHeadline": "fix: something", "authors": [{"login": "alice"}]}
+            ]
+            // "closingIssuesReferences" intentionally absent
+        });
+        let pr = parse_pr_json(raw).unwrap();
+        assert_eq!(pr.title, "My PR");
+        assert_eq!(pr.commits.len(), 1);
+        assert!(
+            pr.closing_issues.is_empty(),
+            "closing_issues must be empty when the key is missing"
+        );
     }
 
     #[test]
