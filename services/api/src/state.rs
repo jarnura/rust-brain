@@ -5,6 +5,7 @@
 //! Prometheus [`Metrics`] collector.
 
 use crate::config::Config;
+use crate::docker::DockerClient;
 use crate::opencode::OpenCodeClient;
 use crate::workspace::WorkspaceManager;
 use neo4rs::Graph;
@@ -31,6 +32,8 @@ pub struct AppState {
     pub opencode_client: OpenCodeClient,
     /// Workspace manager for lifecycle and schema operations
     pub workspace_manager: WorkspaceManager,
+    /// Docker client for volume and container lifecycle operations
+    pub docker: DockerClient,
 }
 
 /// Prometheus metrics for API request tracking.

@@ -15,6 +15,7 @@
 
 pub mod artifacts;
 pub mod chat;
+pub mod execution;
 pub mod graph;
 pub mod graph_templates;
 pub mod health;

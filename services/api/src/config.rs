@@ -68,6 +68,10 @@ pub struct Config {
     pub opencode_auth_user: Option<String>,
     /// Optional HTTP Basic Auth password for OpenCode
     pub opencode_auth_pass: Option<String>,
+    /// Docker network used for per-execution OpenCode containers
+    pub docker_network: String,
+    /// OpenCode Docker image used for per-execution containers
+    pub opencode_image: String,
 }
 
 impl Config {
@@ -89,6 +93,8 @@ impl Config {
     /// | `OPENCODE_HOST` | no | `http://opencode:4096` |
     /// | `OPENCODE_AUTH_USER` | no | _(none)_ |
     /// | `OPENCODE_AUTH_PASS` | no | _(none)_ |
+    /// | `DOCKER_NETWORK` | no | `rustbrain` |
+    /// | `OPENCODE_IMAGE` | no | `opencode:latest` |
     ///
     /// # Panics
     ///
@@ -121,6 +127,10 @@ impl Config {
                 .unwrap_or_else(|_| "http://opencode:4096".to_string()),
             opencode_auth_user: std::env::var("OPENCODE_AUTH_USER").ok(),
             opencode_auth_pass: std::env::var("OPENCODE_AUTH_PASS").ok(),
+            docker_network: std::env::var("DOCKER_NETWORK")
+                .unwrap_or_else(|_| "rustbrain".to_string()),
+            opencode_image: std::env::var("OPENCODE_IMAGE")
+                .unwrap_or_else(|_| "opencode:latest".to_string()),
         }
     }
 }
@@ -146,6 +156,8 @@ mod tests {
             opencode_host: "http://opencode:4096".to_string(),
             opencode_auth_user: None,
             opencode_auth_pass: None,
+            docker_network: "rustbrain".to_string(),
+            opencode_image: "opencode:latest".to_string(),
         };
 
         assert_eq!(config.embedding_dimensions, 768);

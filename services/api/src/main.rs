@@ -5,6 +5,7 @@
 pub mod config;
 pub mod docker;
 pub mod errors;
+pub mod execution;
 mod gaps;
 pub mod github;
 pub mod handlers;
@@ -37,6 +38,7 @@ const QUERY_BODY_LIMIT: usize = 1024 * 1024;
 const EMBEDDING_RATE_PER_SEC: u64 = 10;
 
 use config::{redact_url, Config};
+use docker::DockerClient;
 use state::{AppState, Metrics};
 
 /// Redirect /playground to /playground/ for static file serving
@@ -95,6 +97,9 @@ async fn main() -> anyhow::Result<()> {
     // Create workspace manager (shares the same Postgres pool)
     let workspace_manager = workspace::WorkspaceManager::new(pg_pool.clone());
 
+    // Create Docker client
+    let docker = DockerClient::new();
+
     // Create app state
     let state = AppState {
         config: config.clone(),
@@ -103,8 +108,16 @@ async fn main() -> anyhow::Result<()> {
         http_client,
         metrics,
         opencode_client,
-        workspace_manager,
+        workspace_manager: workspace_manager.clone(),
+        docker: docker.clone(),
     };
+
+    // Start timeout sweeper for stale execution containers
+    execution::start_sweeper(
+        workspace_manager.pool.clone(),
+        docker,
+        std::time::Duration::from_secs(30),
+    );
 
     // Rate limiter: 10 req/s per IP, burst of 10 for embedding endpoints
     let embedding_governor_config = Arc::new(
@@ -228,6 +241,20 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/workspaces/:id/files",
             get(handlers::workspace::list_files),
+        )
+        // Execution management
+        .route(
+            "/workspaces/:id/execute",
+            post(handlers::execution::execute_workspace),
+        )
+        .route(
+            "/workspaces/:id/executions",
+            get(handlers::execution::list_executions),
+        )
+        .route("/executions/:id", get(handlers::execution::get_execution))
+        .route(
+            "/executions/:id/events",
+            get(handlers::execution::stream_events),
         )
         // Middleware (applied to all routes)
         .layer(DefaultBodyLimit::max(QUERY_BODY_LIMIT))
