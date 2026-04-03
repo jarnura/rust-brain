@@ -1,0 +1,45 @@
+[package]
+name = "rustbrain-validator"
+version = "0.1.0"
+edition = "2021"
+description = "Validator service: PR extraction, environment preparation, execution, and structural comparison"
+
+[[bin]]
+name = "validator"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.37", features = ["full"] }
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# String similarity (Jaro-Winkler / Levenshtein)
+strsim = "0.11"
+
+# HTTP client (for OpenCode)
+reqwest = { version = "0.12", features = ["json"] }
+
+# UUID support
+uuid = { version = "1.8", features = ["v4", "serde"] }
+
+# Pin home to avoid Rust 1.88 requirement
+home = "=0.5.9"
+
+# Shared types
+rustbrain-common = { path = "../../crates/rustbrain-common" }
+
+[dev-dependencies]
+tokio = { version = "1.37", features = ["full"] }
