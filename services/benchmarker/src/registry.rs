@@ -135,50 +135,38 @@ pub async fn sync_to_db(pool: &PgPool, suite_name: &str, cases: &[EvalCase]) -> 
 /// Fetch all eval cases registered for `suite_name` from the database.
 #[cfg(feature = "db")]
 pub async fn list_suite(pool: &PgPool, suite_name: &str) -> Result<Vec<EvalCase>> {
-    let rows = sqlx::query_as!(
-        DbEvalCase,
+    type DbRow = (String, String, i32, String, f64, Vec<String>);
+
+    let rows = sqlx::query_as::<_, DbRow>(
         r#"
         SELECT id, repo, pr_number, expected_outcome, weight, tags
         FROM eval_cases
         WHERE suite_name = $1
         ORDER BY id
         "#,
-        suite_name,
     )
+    .bind(suite_name)
     .fetch_all(pool)
     .await
     .with_context(|| format!("listing eval cases for suite {suite_name}"))?;
 
-    rows.into_iter().map(DbEvalCase::into_eval_case).collect()
-}
-
-#[cfg(feature = "db")]
-struct DbEvalCase {
-    id: String,
-    repo: String,
-    pr_number: i32,
-    expected_outcome: String,
-    weight: f64,
-    tags: Vec<String>,
-}
-
-#[cfg(feature = "db")]
-impl DbEvalCase {
-    fn into_eval_case(self) -> Result<EvalCase> {
-        let expected_outcome = match self.expected_outcome.as_str() {
-            "pass" => ExpectedOutcome::Pass,
-            "reject" => ExpectedOutcome::Reject,
-            other => anyhow::bail!("unknown expected_outcome: {other}"),
-        };
-        Ok(EvalCase {
-            id: self.id,
-            repo: self.repo,
-            pr: self.pr_number as u32,
-            expected_outcome,
-            weight: self.weight,
-            tags: self.tags,
+    rows.into_iter()
+        .map(|r| {
+            let expected_outcome = match r.3.as_str() {
+                "pass" => ExpectedOutcome::Pass,
+                "reject" => ExpectedOutcome::Reject,
+                other => anyhow::bail!("unknown expected_outcome: {other}"),
+            };
+            Ok(EvalCase {
+                id: r.0,
+                repo: r.1,
+                pr: r.2 as u32,
+                expected_outcome,
+                weight: r.4,
+                tags: r.5,
+            })
         })
-    }
+        .collect()
 }
 
 // =============================================================================
