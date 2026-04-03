@@ -92,32 +92,54 @@ impl GithubClient {
         }
     }
 
-    /// Clone a GitHub repository to `dest` using `gh repo clone`.
+    /// Clone a GitHub repository to `dest`.
     ///
     /// Uses `--depth=1` for a shallow clone. Returns the default branch name
     /// as detected by `git symbolic-ref --short HEAD` after cloning.
     ///
+    /// When [`GithubAuthMethod::None`] is active (no token configured), falls
+    /// back to plain `git clone` which works for public repos without requiring
+    /// `gh auth login`. Authenticated methods continue to use `gh repo clone`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the `gh` subprocess exits non-zero or if the branch
+    /// Returns an error if the subprocess exits non-zero or if the branch
     /// detection step fails.
     pub async fn clone_repo(&self, url: &str, dest: &Path) -> Result<String> {
         let dest_str = dest.to_string_lossy().to_string();
 
-        let mut cmd = Command::new("gh");
-        cmd.args(["repo", "clone", url, &dest_str, "--", "--depth=1"]);
-        for (k, v) in self.build_env() {
-            cmd.env(k, v);
-        }
-
-        let output = cmd.output().await?;
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if !stderr.is_empty() {
-            warn!("gh repo clone stderr: {}", stderr);
-        }
-        if !output.status.success() {
-            bail!("gh repo clone failed (exit {}): {}", output.status, stderr);
-        }
+        match self.auth_method {
+            GithubAuthMethod::None => {
+                // No credentials — use plain git which works for public repos
+                // without any gh CLI auth setup.
+                let output = Command::new("git")
+                    .args(["clone", "--depth=1", url, &dest_str])
+                    .output()
+                    .await?;
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                if !stderr.is_empty() {
+                    warn!("git clone stderr: {}", stderr);
+                }
+                if !output.status.success() {
+                    bail!("git clone failed (exit {}): {}", output.status, stderr);
+                }
+            }
+            GithubAuthMethod::Pat | GithubAuthMethod::App => {
+                let mut cmd = Command::new("gh");
+                cmd.args(["repo", "clone", url, &dest_str, "--", "--depth=1"]);
+                for (k, v) in self.build_env() {
+                    cmd.env(k, v);
+                }
+                let output = cmd.output().await?;
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                if !stderr.is_empty() {
+                    warn!("gh repo clone stderr: {}", stderr);
+                }
+                if !output.status.success() {
+                    bail!("gh repo clone failed (exit {}): {}", output.status, stderr);
+                }
+            }
+        };
 
         // Detect default branch
         let branch_out = Command::new("git")
@@ -375,6 +397,52 @@ mod tests {
         let client = GithubClient::new(GithubAuthMethod::None);
         let env = client.build_env();
         assert!(env.is_empty());
+    }
+
+    /// Verify that `clone_repo` with `GithubAuthMethod::None` invokes `git clone`
+    /// (not `gh repo clone`). We test this indirectly: calling clone against a
+    /// non-existent path with no git binary shimmed will fail, but the error
+    /// message must contain "git clone failed" — not "gh repo clone failed".
+    #[tokio::test]
+    async fn test_clone_repo_none_uses_git_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("repo");
+
+        // Use a deliberately invalid URL so the command exits non-zero quickly.
+        let client = GithubClient::new(GithubAuthMethod::None);
+        let err = client
+            .clone_repo("https://invalid.example/repo.git", &dest)
+            .await
+            .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("git clone failed"),
+            "expected 'git clone failed' in error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("gh repo clone failed"),
+            "None auth should not invoke gh repo clone, got: {msg}"
+        );
+    }
+
+    /// Verify that `clone_repo` with `GithubAuthMethod::Pat` invokes `gh repo clone`.
+    #[tokio::test]
+    async fn test_clone_repo_pat_uses_gh_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("repo");
+
+        let client = GithubClient::new(GithubAuthMethod::Pat);
+        let err = client
+            .clone_repo("owner/invalid-repo-xyz", &dest)
+            .await
+            .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gh repo clone failed"),
+            "expected 'gh repo clone failed' in error, got: {msg}"
+        );
     }
 
     #[test]
