@@ -259,7 +259,8 @@ services:
       WORKSPACE_HOST_CLONE_ROOT: ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}
       # Ingestion image triggered per-workspace after clone completes.
       INGESTION_IMAGE: ${INGESTION_IMAGE:-rustbrain-ingestion:latest}
-      DOCKER_NETWORK: rustbrain-net
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-rustbrain-opencode:latest}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-rustbrain_rustbrain-net}
     networks:
       rustbrain-net:
         aliases:
