@@ -78,9 +78,10 @@ COPY --from=builder /build/target/release/rustbrain-api /usr/local/bin/
 # Copy static files for playground
 COPY --from=builder /build/services/api/static /app/static
 
-# Create non-root user
+# Create non-root user and writable clone directory
 RUN useradd -r -s /bin/false rustbrain && \
-    chown -R rustbrain:rustbrain /app
+    chown -R rustbrain:rustbrain /app && \
+    mkdir -p /tmp/rustbrain-clones && chown rustbrain:rustbrain /tmp/rustbrain-clones
 
 USER rustbrain
 
