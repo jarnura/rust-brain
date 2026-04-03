@@ -38,7 +38,9 @@ rustbrain-common = { path = "../../crates/rustbrain-common" }
 
 [features]
 # Enable Postgres persistence functions (sync_to_db, list_suite).
-# Disabled by default so unit tests run without a live database.
+# Enabled by default for the binary. Disable for unit-test-only builds:
+#   cargo test --no-default-features
+default = ["db"]
 db = []
 
 [dev-dependencies]
