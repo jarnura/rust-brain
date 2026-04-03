@@ -224,10 +224,7 @@ async fn main() -> anyhow::Result<()> {
             "/benchmarker/runs",
             get(handlers::benchmarker::list_runs).post(handlers::benchmarker::trigger_run),
         )
-        .route(
-            "/benchmarker/runs/:id",
-            get(handlers::benchmarker::get_run),
-        )
+        .route("/benchmarker/runs/:id", get(handlers::benchmarker::get_run))
         // OpenCode session management
         .route(
             "/tools/chat/sessions",

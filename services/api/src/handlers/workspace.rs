@@ -27,9 +27,8 @@ use crate::github::GithubClient;
 use crate::state::AppState;
 use crate::workspace::{
     create_workspace as db_create_workspace, get_workspace as db_get_workspace, lifecycle,
-    list_workspaces as db_list_workspaces,
-    schema::create_workspace_schema,
-    CreateWorkspaceParams, Workspace, WorkspaceSourceType, WorkspaceStatus,
+    list_workspaces as db_list_workspaces, schema::create_workspace_schema, CreateWorkspaceParams,
+    Workspace, WorkspaceSourceType, WorkspaceStatus,
 };
 
 // =============================================================================
@@ -435,7 +434,9 @@ async fn run_clone(
             "Failed to create workspace schema: {}",
             e
         );
-        if let Err(e2) = lifecycle::fail(&pool, ws_id, &format!("schema creation failed: {}", e)).await {
+        if let Err(e2) =
+            lifecycle::fail(&pool, ws_id, &format!("schema creation failed: {}", e)).await
+        {
             error!(
                 "Failed to mark workspace {} as error after schema creation failure: {}",
                 ws_id, e2

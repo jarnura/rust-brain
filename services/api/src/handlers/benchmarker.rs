@@ -195,7 +195,9 @@ fn case_result_from_row(r: CaseResultRow) -> CaseResultDetail {
 pub async fn list_suites(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SuiteSummary>>, AppError> {
-    state.metrics.record_request("list_benchmarker_suites", "GET");
+    state
+        .metrics
+        .record_request("list_benchmarker_suites", "GET");
     debug!("Listing eval suites");
 
     let rows = sqlx::query_as::<_, SuiteRow>(
@@ -322,16 +324,17 @@ pub async fn trigger_run(
     State(state): State<AppState>,
     Json(body): Json<TriggerRunRequest>,
 ) -> Result<(StatusCode, Json<TriggerRunResponse>), AppError> {
-    state.metrics.record_request("trigger_benchmarker_run", "POST");
+    state
+        .metrics
+        .record_request("trigger_benchmarker_run", "POST");
 
     // Validate: suite must have registered cases
-    let (case_count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM eval_cases WHERE suite_name = $1",
-    )
-    .bind(&body.suite_name)
-    .fetch_one(&state.pg_pool)
-    .await
-    .map_err(|e| AppError::Database(format!("Failed to check suite: {e}")))?;
+    let (case_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM eval_cases WHERE suite_name = $1")
+            .bind(&body.suite_name)
+            .fetch_one(&state.pg_pool)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to check suite: {e}")))?;
 
     if case_count == 0 {
         return Err(AppError::BadRequest(format!(
@@ -502,8 +505,7 @@ mod tests {
     #[test]
     fn list_runs_query_all_optional() {
         let qs: ListRunsQuery =
-            serde_json::from_str(r#"{"suite":"default","status":"completed","limit":10}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"suite":"default","status":"completed","limit":10}"#).unwrap();
         assert_eq!(qs.suite.as_deref(), Some("default"));
         assert_eq!(qs.status.as_deref(), Some("completed"));
         assert_eq!(qs.limit, Some(10));
