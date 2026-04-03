@@ -250,12 +250,18 @@ services:
       RUST_LOG: ${RUST_LOG:-info,rustbrain_api=debug}
       API_PORT: 8080
       OPENCODE_HOST: http://opencode:4096
+      # Docker socket access for per-workspace volume orchestration.
+      # Override with DOCKER_HOST env var if using a remote daemon.
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
     networks:
       rustbrain-net:
         aliases:
           - api
     volumes:
       - ./.snapshot-manifest.json:/app/.snapshot-manifest.json:ro
+      # Docker socket mount — required for DockerClient (workspace volume CRUD).
+      # The API container calls `docker volume create/rm/inspect` at runtime.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy

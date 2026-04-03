@@ -3,12 +3,14 @@
 //! Provides REST endpoints for code intelligence queries.
 
 pub mod config;
+pub mod docker;
 pub mod errors;
 mod gaps;
 pub mod handlers;
 pub mod neo4j;
 pub mod opencode;
 pub mod state;
+pub mod workspace;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -89,6 +91,9 @@ async fn main() -> anyhow::Result<()> {
         config.opencode_auth_pass.clone(),
     );
 
+    // Create workspace manager (shares the same Postgres pool)
+    let workspace_manager = workspace::WorkspaceManager::new(pg_pool.clone());
+
     // Create app state
     let state = AppState {
         config: config.clone(),
@@ -97,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         http_client,
         metrics,
         opencode_client,
+        workspace_manager,
     };
 
     // Rate limiter: 10 req/s per IP, burst of 10 for embedding endpoints
