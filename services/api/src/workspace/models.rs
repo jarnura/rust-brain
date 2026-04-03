@@ -198,7 +198,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn workspace_status_roundtrip() {
         let pairs = [
             ("pending", WorkspaceStatus::Pending),

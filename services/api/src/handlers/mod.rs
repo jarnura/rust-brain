@@ -25,6 +25,7 @@ pub mod playground;
 pub mod search;
 pub mod tasks;
 pub mod typecheck;
+pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 
