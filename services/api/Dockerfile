@@ -53,6 +53,9 @@ RUN touch crates/rustbrain-common/src/lib.rs \
 # Build the API service
 RUN cargo build --release -p rustbrain-api
 
+# Docker CLI stage — copy only the binary, no daemon
+FROM docker:27-cli AS docker-cli
+
 # Runtime stage
 FROM debian:bookworm-slim AS runtime
 
@@ -71,6 +74,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Copy the Docker CLI binary (needed for workspace volume operations via the host socket)
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Copy the binary
 COPY --from=builder /build/target/release/rustbrain-api /usr/local/bin/

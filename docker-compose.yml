@@ -272,6 +272,11 @@ services:
       # Shared clone directory — bind-mounted so the host Docker daemon can
       # mount workspace clone paths into the ingestion container.
       - ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}:/tmp/rustbrain-clones
+    # Grant the rustbrain user access to /var/run/docker.sock.
+    # DOCKER_GID must match the host docker group gid (check: stat -c %g /var/run/docker.sock).
+    # Common values: 999 (Ubuntu), 125 (Debian-based), 998 (Fedora).
+    group_add:
+      - "${DOCKER_GID:-999}"
     depends_on:
       postgres:
         condition: service_healthy
