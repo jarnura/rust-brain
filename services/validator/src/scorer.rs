@@ -17,11 +17,8 @@ pub fn compute_stats(runs: &[RunResult]) -> (f32, f32) {
     let composites: Vec<f32> = runs.iter().map(|r| r.composite).collect();
     let mean = composites.iter().sum::<f32>() / composites.len() as f32;
 
-    let variance = composites
-        .iter()
-        .map(|c| (c - mean).powi(2))
-        .sum::<f32>()
-        / composites.len() as f32;
+    let variance =
+        composites.iter().map(|c| (c - mean).powi(2)).sum::<f32>() / composites.len() as f32;
 
     let std_dev = variance.sqrt();
     (mean, std_dev)
@@ -150,7 +147,10 @@ mod tests {
         let runs = vec![make_run(0, &[4.0, 4.0, 4.0, 4.0, 4.0, 4.0])];
         let (mean, std_dev) = compute_stats(&runs);
         assert!((mean - 4.0).abs() < 1e-4, "Mean should be 4.0, got {mean}");
-        assert!(std_dev.abs() < 1e-4, "Stddev of 1 run should be 0, got {std_dev}");
+        assert!(
+            std_dev.abs() < 1e-4,
+            "Stddev of 1 run should be 0, got {std_dev}"
+        );
     }
 
     #[test]
@@ -160,7 +160,10 @@ mod tests {
             make_run(1, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), // composite = 1.0
         ];
         let (mean, _) = compute_stats(&runs);
-        assert!((mean - 3.0).abs() < 1e-4, "Mean of 5.0 and 1.0 should be 3.0, got {mean}");
+        assert!(
+            (mean - 3.0).abs() < 1e-4,
+            "Mean of 5.0 and 1.0 should be 3.0, got {mean}"
+        );
     }
 
     #[test]
@@ -190,7 +193,10 @@ mod tests {
     fn aggregate_pass_inverted() {
         let runs = vec![make_run(0, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0])];
         let result = aggregate("org/repo".to_string(), 7, runs, true);
-        assert!(result.pass, "Score 1.0 should pass inverted threshold (< 2.0)");
+        assert!(
+            result.pass,
+            "Score 1.0 should pass inverted threshold (< 2.0)"
+        );
         assert!(result.inverted);
     }
 
@@ -208,7 +214,10 @@ mod tests {
             make_run(1, &[3.0, 3.0, 3.0, 3.0, 3.0, 3.0]),
         ];
         let result = aggregate("org/repo".to_string(), 1, runs, false);
-        assert!((result.cost_usd - 0.02).abs() < 1e-5, "Total cost should be 0.02");
+        assert!(
+            (result.cost_usd - 0.02).abs() < 1e-5,
+            "Total cost should be 0.02"
+        );
     }
 
     #[test]
@@ -221,7 +230,14 @@ mod tests {
         assert_eq!(stats.len(), 6);
 
         // File Precision: mean of 3.0 and 5.0 = 4.0
-        let fp = stats.iter().find(|(d, _, _)| d == "File Precision").unwrap();
-        assert!((fp.1 - 4.0).abs() < 1e-4, "File Precision mean should be 4.0, got {}", fp.1);
+        let fp = stats
+            .iter()
+            .find(|(d, _, _)| d == "File Precision")
+            .unwrap();
+        assert!(
+            (fp.1 - 4.0).abs() < 1e-4,
+            "File Precision mean should be 4.0, got {}",
+            fp.1
+        );
     }
 }

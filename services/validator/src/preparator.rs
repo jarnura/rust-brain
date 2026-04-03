@@ -189,8 +189,10 @@ mod tests {
         // is no repo at the path. We confirm the error message mentions git.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let pr = pr_with_commits(&[]);
-        let result =
-            rt.block_on(resolve_parent_commit(Path::new("/nonexistent-path-for-test"), &pr));
+        let result = rt.block_on(resolve_parent_commit(
+            Path::new("/nonexistent-path-for-test"),
+            &pr,
+        ));
         // The error should come from git invocation, not from our logic
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

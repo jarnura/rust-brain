@@ -118,8 +118,7 @@ impl JudgeClient {
             .context("LITELLM_BASE_URL environment variable not set")?;
         let api_key = std::env::var("LITELLM_API_KEY")
             .context("LITELLM_API_KEY environment variable not set")?;
-        let model =
-            std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "open-large".to_string());
+        let model = std::env::var("LITELLM_MODEL").unwrap_or_else(|_| "open-large".to_string());
 
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -150,9 +149,12 @@ impl JudgeClient {
 
             match self.call_litellm(&prompt).await {
                 Ok(raw_response) => {
-                    let output = parse_judge_response(&raw_response, input.inverted)
-                        .with_context(|| {
-                            format!("Failed to parse judge response: {}", &raw_response[..200.min(raw_response.len())])
+                    let output =
+                        parse_judge_response(&raw_response, input.inverted).with_context(|| {
+                            format!(
+                                "Failed to parse judge response: {}",
+                                &raw_response[..200.min(raw_response.len())]
+                            )
                         })?;
                     return Ok(output);
                 }
@@ -198,10 +200,17 @@ impl JudgeClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!("litellm returned {}: {}", status, &text[..200.min(text.len())]);
+            bail!(
+                "litellm returned {}: {}",
+                status,
+                &text[..200.min(text.len())]
+            );
         }
 
-        let json: serde_json::Value = resp.json().await.context("Failed to parse litellm response JSON")?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse litellm response JSON")?;
 
         // Extract content from OpenAI-compatible response
         let content = json
@@ -313,10 +322,7 @@ fn parse_judge_response(raw: &str, inverted: bool) -> Result<JudgeOutput> {
         .context("Missing 'dimensions' array in judge response")?;
 
     if dims_arr.len() != 6 {
-        bail!(
-            "Expected 6 dimensions, got {}",
-            dims_arr.len()
-        );
+        bail!("Expected 6 dimensions, got {}", dims_arr.len());
     }
 
     let dimensions: Vec<DimensionScore> = dims_arr
@@ -329,11 +335,9 @@ fn parse_judge_response(raw: &str, inverted: bool) -> Result<JudgeOutput> {
                     .to_string(),
                 score: d["score"]
                     .as_f64()
-                    .context("dimension score missing or not a number")? as f32,
-                reasoning: d["reasoning"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
+                    .context("dimension score missing or not a number")?
+                    as f32,
+                reasoning: d["reasoning"].as_str().unwrap_or("").to_string(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -341,15 +345,16 @@ fn parse_judge_response(raw: &str, inverted: bool) -> Result<JudgeOutput> {
     // Validate scores are in range
     for d in &dimensions {
         if !(1.0..=5.0).contains(&d.score) {
-            bail!("Dimension '{}' score {} is out of range [1, 5]", d.dimension, d.score);
+            bail!(
+                "Dimension '{}' score {} is out of range [1, 5]",
+                d.dimension,
+                d.score
+            );
         }
     }
 
     let composite = compute_composite(&dimensions);
-    let overall_reasoning = json["overall_reasoning"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let overall_reasoning = json["overall_reasoning"].as_str().unwrap_or("").to_string();
 
     let pass = if inverted {
         composite < INVERTED_PASS_THRESHOLD
@@ -403,7 +408,10 @@ mod tests {
             })
             .collect();
         let composite = compute_composite(&dims);
-        assert!((composite - 5.0).abs() < 1e-4, "All 5s should give 5.0, got {composite}");
+        assert!(
+            (composite - 5.0).abs() < 1e-4,
+            "All 5s should give 5.0, got {composite}"
+        );
     }
 
     #[test]
@@ -417,7 +425,10 @@ mod tests {
             })
             .collect();
         let composite = compute_composite(&dims);
-        assert!((composite - 1.0).abs() < 1e-4, "All 1s should give 1.0, got {composite}");
+        assert!(
+            (composite - 1.0).abs() < 1e-4,
+            "All 1s should give 1.0, got {composite}"
+        );
     }
 
     #[test]
@@ -440,7 +451,11 @@ mod tests {
         assert!(!output.overall_reasoning.is_empty());
         // composite = 4*0.15 + 3*0.15 + 4*0.30 + 5*0.20 + 3*0.10 + 4*0.10
         // = 0.60 + 0.45 + 1.20 + 1.00 + 0.30 + 0.40 = 3.95
-        assert!((output.composite - 3.95).abs() < 0.01, "Expected ~3.95, got {}", output.composite);
+        assert!(
+            (output.composite - 3.95).abs() < 0.01,
+            "Expected ~3.95, got {}",
+            output.composite
+        );
         assert!(output.pass, "Composite 3.95 should pass threshold 3.0");
     }
 
@@ -460,8 +475,11 @@ mod tests {
         .to_string();
 
         let output = parse_judge_response(&raw, true).unwrap();
-        assert!(output.composite < INVERTED_PASS_THRESHOLD,
-            "Inverted low score should be < {INVERTED_PASS_THRESHOLD}, got {}", output.composite);
+        assert!(
+            output.composite < INVERTED_PASS_THRESHOLD,
+            "Inverted low score should be < {INVERTED_PASS_THRESHOLD}, got {}",
+            output.composite
+        );
         assert!(output.pass, "Inverted: low score should be a pass");
     }
 
@@ -500,7 +518,10 @@ mod tests {
         })
         .to_string();
 
-        assert!(parse_judge_response(&raw, false).is_err(), "Score 6 should be rejected");
+        assert!(
+            parse_judge_response(&raw, false).is_err(),
+            "Score 6 should be rejected"
+        );
     }
 
     #[test]
@@ -513,7 +534,10 @@ mod tests {
         })
         .to_string();
 
-        assert!(parse_judge_response(&raw, false).is_err(), "Only 1 dimension should fail");
+        assert!(
+            parse_judge_response(&raw, false).is_err(),
+            "Only 1 dimension should fail"
+        );
     }
 
     #[test]
@@ -527,7 +551,10 @@ mod tests {
             inverted: true,
         };
         let prompt = build_judge_prompt(&input);
-        assert!(prompt.contains("REVERTED or REJECTED"), "Inverted prompt should warn about rejection");
+        assert!(
+            prompt.contains("REVERTED or REJECTED"),
+            "Inverted prompt should warn about rejection"
+        );
     }
 
     #[test]
@@ -547,6 +574,10 @@ mod tests {
 
     #[test]
     fn dimensions_and_weights_consistent_length() {
-        assert_eq!(DIMENSIONS.len(), WEIGHTS.len(), "DIMENSIONS and WEIGHTS must have same length");
+        assert_eq!(
+            DIMENSIONS.len(),
+            WEIGHTS.len(),
+            "DIMENSIONS and WEIGHTS must have same length"
+        );
     }
 }

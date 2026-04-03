@@ -65,11 +65,7 @@ pub fn build_requirements(ctx: &PrContext) -> RequirementsText {
     let text = if commit_lines.is_empty() {
         ctx.title.clone()
     } else {
-        format!(
-            "{}\n\nCommits:\n{}",
-            ctx.title,
-            commit_lines.join("\n")
-        )
+        format!("{}\n\nCommits:\n{}", ctx.title, commit_lines.join("\n"))
     };
 
     RequirementsText {
