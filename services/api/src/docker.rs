@@ -122,18 +122,13 @@ impl DockerClient {
     ///
     /// Returns `Ok(())` when the volume is created (or already exists).
     /// Returns `Err` if the Docker command exits non-zero.
-    pub async fn create_volume(&self, name: &str, size_gb: u32) -> anyhow::Result<()> {
-        let size_opt = format!("size={}g", size_gb);
+    pub async fn create_volume(&self, name: &str, _size_gb: u32) -> anyhow::Result<()> {
+        // NOTE: `--opt size=Xg` requires filesystem-level quota support (XFS
+        // project quotas or tmpfs). The default local driver on ext4 does not
+        // support it, so we omit the size option and rely on external disk
+        // monitoring instead.
         let output = Command::new("docker")
-            .args([
-                "volume",
-                "create",
-                "--label",
-                "rustbrain.workspace=true",
-                "--opt",
-                &size_opt,
-                name,
-            ])
+            .args(["volume", "create", "--label", "rustbrain.workspace=true", name])
             .output()
             .await
             .context("failed to spawn `docker volume create`")?;
