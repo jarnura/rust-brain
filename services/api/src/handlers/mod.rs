@@ -14,6 +14,7 @@
 //! | [`playground`] | Playground HTML serving |
 
 pub mod artifacts;
+pub mod benchmarker;
 pub mod chat;
 pub mod execution;
 pub mod graph;

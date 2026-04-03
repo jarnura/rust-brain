@@ -215,6 +215,19 @@ async fn main() -> anyhow::Result<()> {
         // Validator run results
         .route("/validator/runs", get(handlers::validator::list_runs))
         .route("/validator/runs/:id", get(handlers::validator::get_run))
+        // Benchmarker
+        .route(
+            "/benchmarker/suites",
+            get(handlers::benchmarker::list_suites),
+        )
+        .route(
+            "/benchmarker/runs",
+            get(handlers::benchmarker::list_runs).post(handlers::benchmarker::trigger_run),
+        )
+        .route(
+            "/benchmarker/runs/:id",
+            get(handlers::benchmarker::get_run),
+        )
         // OpenCode session management
         .route(
             "/tools/chat/sessions",
