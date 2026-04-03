@@ -26,6 +26,7 @@ pub mod playground;
 pub mod search;
 pub mod tasks;
 pub mod typecheck;
+pub mod validator;
 pub mod workspace;
 pub mod workspace_commit;
 pub mod workspace_diff;

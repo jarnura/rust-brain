@@ -20,11 +20,11 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::execution::{
-    create_execution, get_execution as db_get_execution, list_executions as db_list_executions,
-    list_agent_events_after, CreateExecutionParams,
-};
 use crate::execution::runner::{run_execution, RunParams};
+use crate::execution::{
+    create_execution, get_execution as db_get_execution, list_agent_events_after,
+    list_executions as db_list_executions, CreateExecutionParams,
+};
 use crate::state::AppState;
 use crate::workspace::get_workspace;
 
@@ -159,7 +159,9 @@ pub async fn stream_events(
     Path(id): Path<Uuid>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, AppError>
 {
-    state.metrics.record_request("stream_execution_events", "GET");
+    state
+        .metrics
+        .record_request("stream_execution_events", "GET");
 
     // Verify execution exists before starting the stream
     db_get_execution(&state.workspace_manager.pool, id)

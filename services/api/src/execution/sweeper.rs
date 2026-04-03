@@ -9,8 +9,8 @@ use std::time::Duration;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use crate::docker::DockerClient;
 use super::models::{list_timed_out_executions, timeout_execution};
+use crate::docker::DockerClient;
 
 /// Launch the background sweeper as a detached Tokio task.
 ///
@@ -22,7 +22,10 @@ pub fn start_sweeper(pool: PgPool, docker: DockerClient, interval: Duration) {
 
 /// Inner sweep loop — runs indefinitely until the process exits.
 async fn sweeper_loop(pool: PgPool, docker: DockerClient, interval: Duration) {
-    info!("Execution timeout sweeper started (interval={:?})", interval);
+    info!(
+        "Execution timeout sweeper started (interval={:?})",
+        interval
+    );
     loop {
         tokio::time::sleep(interval).await;
         sweep_once(&pool, &docker).await;
@@ -73,7 +76,13 @@ mod tests {
     fn default_interval_is_reasonable() {
         // Document the expected default — callers should use 30 s.
         let interval = Duration::from_secs(30);
-        assert!(interval.as_secs() >= 10, "sweeper interval should be at least 10 s");
-        assert!(interval.as_secs() <= 300, "sweeper interval should not exceed 5 min");
+        assert!(
+            interval.as_secs() >= 10,
+            "sweeper interval should be at least 10 s"
+        );
+        assert!(
+            interval.as_secs() <= 300,
+            "sweeper interval should not exceed 5 min"
+        );
     }
 }

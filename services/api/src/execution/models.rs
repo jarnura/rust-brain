@@ -102,10 +102,7 @@ pub async fn get_execution(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Exe
 }
 
 /// List all executions for a workspace, newest first.
-pub async fn list_executions(
-    pool: &PgPool,
-    workspace_id: Uuid,
-) -> anyhow::Result<Vec<Execution>> {
+pub async fn list_executions(pool: &PgPool, workspace_id: Uuid) -> anyhow::Result<Vec<Execution>> {
     let rows = sqlx::query_as::<_, Execution>(
         r#"
         SELECT id, workspace_id, prompt, branch_name, session_id, container_id,
@@ -128,13 +125,11 @@ pub async fn set_container_id(
     execution_id: Uuid,
     container_id: &str,
 ) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE executions SET container_id = $2 WHERE id = $1",
-    )
-    .bind(execution_id)
-    .bind(container_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE executions SET container_id = $2 WHERE id = $1")
+        .bind(execution_id)
+        .bind(container_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -144,29 +139,21 @@ pub async fn set_session_id(
     execution_id: Uuid,
     session_id: &str,
 ) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE executions SET session_id = $2 WHERE id = $1",
-    )
-    .bind(execution_id)
-    .bind(session_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE executions SET session_id = $2 WHERE id = $1")
+        .bind(execution_id)
+        .bind(session_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 /// Advance the execution to a new agent phase.
-pub async fn set_agent_phase(
-    pool: &PgPool,
-    execution_id: Uuid,
-    phase: &str,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE executions SET agent_phase = $2 WHERE id = $1",
-    )
-    .bind(execution_id)
-    .bind(phase)
-    .execute(pool)
-    .await?;
+pub async fn set_agent_phase(pool: &PgPool, execution_id: Uuid, phase: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE executions SET agent_phase = $2 WHERE id = $1")
+        .bind(execution_id)
+        .bind(phase)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

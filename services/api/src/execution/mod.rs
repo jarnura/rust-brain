@@ -13,9 +13,8 @@ pub mod runner;
 pub mod sweeper;
 
 pub use models::{
+    create_execution, get_execution, list_agent_events, list_agent_events_after, list_executions,
     AgentEvent, CreateExecutionParams, Execution,
-    create_execution, get_execution, list_executions,
-    list_agent_events, list_agent_events_after,
 };
-pub use runner::{RunParams, run_execution};
+pub use runner::{run_execution, RunParams};
 pub use sweeper::start_sweeper;

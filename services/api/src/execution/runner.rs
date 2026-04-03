@@ -18,12 +18,12 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::models::{
+    complete_execution, fail_execution, insert_agent_event, set_agent_phase, set_container_id,
+    set_session_id,
+};
 use crate::docker::DockerClient;
 use crate::opencode::OpenCodeClient;
-use super::models::{
-    complete_execution, fail_execution, insert_agent_event, set_agent_phase,
-    set_container_id, set_session_id,
-};
 
 // =============================================================================
 // Phase definitions
@@ -32,19 +32,17 @@ use super::models::{
 /// Agent phases executed in order.
 const PHASES: &[(&str, &str)] = &[
     ("orchestrating", ORCHESTRATOR_PROMPT),
-    ("researching",   RESEARCH_PROMPT),
-    ("planning",      PLANNING_PROMPT),
-    ("developing",    DEVELOPMENT_PROMPT),
+    ("researching", RESEARCH_PROMPT),
+    ("planning", PLANNING_PROMPT),
+    ("developing", DEVELOPMENT_PROMPT),
 ];
 
-const ORCHESTRATOR_PROMPT: &str =
-    "You are the orchestrator agent for a Rust codebase assistant. \
+const ORCHESTRATOR_PROMPT: &str = "You are the orchestrator agent for a Rust codebase assistant. \
      Analyse the workspace and the user's request. \
      Identify which files are relevant, which architectural concerns apply, \
      and produce a concise task breakdown for the specialist agents.";
 
-const RESEARCH_PROMPT: &str =
-    "You are the research agent. Based on the orchestrator's analysis, \
+const RESEARCH_PROMPT: &str = "You are the research agent. Based on the orchestrator's analysis, \
      explore the relevant Rust source files in /workspace. \
      Summarise function signatures, module structure, and any existing tests \
      that touch the area described in the task.";
@@ -54,8 +52,7 @@ const PLANNING_PROMPT: &str =
      the research summary, produce a step-by-step implementation plan. \
      Be precise about which files to create or modify and what changes to make.";
 
-const DEVELOPMENT_PROMPT: &str =
-    "You are the development agent. Execute the implementation plan. \
+const DEVELOPMENT_PROMPT: &str = "You are the development agent. Execute the implementation plan. \
      Write idiomatic Rust code, update tests, and ensure `cargo check` passes. \
      Commit your changes to the workspace when done.";
 
@@ -137,7 +134,12 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
     let opencode = OpenCodeClient::new(base_url, params.opencode_user, params.opencode_pass);
     if !wait_for_container(&opencode, 30, Duration::from_secs(1)).await {
         warn!(execution_id = %exec_id, "OpenCode container did not become ready");
-        let _ = fail_execution(&pool, exec_id, "OpenCode container did not become ready within 30 s").await;
+        let _ = fail_execution(
+            &pool,
+            exec_id,
+            "OpenCode container did not become ready within 30 s",
+        )
+        .await;
         cleanup_container(&docker, &container_id, exec_id).await;
         return;
     }
@@ -152,7 +154,12 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
         }
         Err(e) => {
             warn!(execution_id = %exec_id, error = %e, "Failed to create OpenCode session");
-            let _ = fail_execution(&pool, exec_id, &format!("OpenCode session creation failed: {e}")).await;
+            let _ = fail_execution(
+                &pool,
+                exec_id,
+                &format!("OpenCode session creation failed: {e}"),
+            )
+            .await;
             cleanup_container(&docker, &container_id, exec_id).await;
             return;
         }
@@ -166,21 +173,12 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
             warn!(execution_id = %exec_id, phase = phase, error = %e, "Failed to set agent_phase");
         }
 
-        let _ = insert_agent_event(
-            &pool,
-            exec_id,
-            "phase_change",
-            json!({ "phase": phase }),
-        )
-        .await;
+        let _ = insert_agent_event(&pool, exec_id, "phase_change", json!({ "phase": phase })).await;
 
         info!(execution_id = %exec_id, phase = phase, "Running agent phase");
 
         // Build the prompt: prepend the system context then append the user task
-        let message = format!(
-            "{}\n\n---\nUser task: {}",
-            phase_system_prompt, full_prompt
-        );
+        let message = format!("{}\n\n---\nUser task: {}", phase_system_prompt, full_prompt);
 
         match opencode.send_message(&session_id, &message).await {
             Ok(msg) => {
@@ -196,7 +194,8 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
                     json!({ "phase": phase, "error": e.to_string() }),
                 )
                 .await;
-                let _ = fail_execution(&pool, exec_id, &format!("Phase '{phase}' failed: {e}")).await;
+                let _ =
+                    fail_execution(&pool, exec_id, &format!("Phase '{phase}' failed: {e}")).await;
                 cleanup_container(&docker, &container_id, exec_id).await;
                 return;
             }
@@ -243,15 +242,15 @@ async fn bridge_message(
 
     for part in parts {
         let (event_type, content) = match part {
-            MessagePart::Text { text } => (
-                "reasoning",
-                json!({ "phase": phase, "text": text }),
-            ),
-            MessagePart::Reasoning { text } => (
-                "reasoning",
-                json!({ "phase": phase, "reasoning": text }),
-            ),
-            MessagePart::ToolInvocation { tool_name, args, result } => (
+            MessagePart::Text { text } => ("reasoning", json!({ "phase": phase, "text": text })),
+            MessagePart::Reasoning { text } => {
+                ("reasoning", json!({ "phase": phase, "reasoning": text }))
+            }
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+            } => (
                 "tool_call",
                 json!({
                     "phase": phase,
@@ -260,10 +259,9 @@ async fn bridge_message(
                     "result": result,
                 }),
             ),
-            MessagePart::StepStart { id } => (
-                "reasoning",
-                json!({ "phase": phase, "step_start": id }),
-            ),
+            MessagePart::StepStart { id } => {
+                ("reasoning", json!({ "phase": phase, "step_start": id }))
+            }
             MessagePart::StepFinish { reason } => (
                 "reasoning",
                 json!({ "phase": phase, "step_finish": reason }),
@@ -300,7 +298,10 @@ mod tests {
     #[test]
     fn phases_ordered_correctly() {
         let names: Vec<&str> = PHASES.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["orchestrating", "researching", "planning", "developing"]);
+        assert_eq!(
+            names,
+            vec!["orchestrating", "researching", "planning", "developing"]
+        );
     }
 
     #[test]

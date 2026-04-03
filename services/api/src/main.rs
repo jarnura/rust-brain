@@ -212,6 +212,9 @@ async fn main() -> anyhow::Result<()> {
             "/api/ingestion/progress",
             get(handlers::ingestion::ingestion_progress),
         )
+        // Validator run results
+        .route("/validator/runs", get(handlers::validator::list_runs))
+        .route("/validator/runs/:id", get(handlers::validator::get_run))
         // OpenCode session management
         .route(
             "/tools/chat/sessions",
