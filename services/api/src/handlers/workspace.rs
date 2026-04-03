@@ -27,8 +27,9 @@ use crate::github::GithubClient;
 use crate::state::AppState;
 use crate::workspace::{
     create_workspace as db_create_workspace, get_workspace as db_get_workspace, lifecycle,
-    list_workspaces as db_list_workspaces, CreateWorkspaceParams, Workspace, WorkspaceSourceType,
-    WorkspaceStatus,
+    list_workspaces as db_list_workspaces,
+    schema::create_workspace_schema,
+    CreateWorkspaceParams, Workspace, WorkspaceSourceType, WorkspaceStatus,
 };
 
 // =============================================================================
@@ -420,20 +421,44 @@ async fn run_clone(
         }
     }
 
-    // --- Stage 2: Ingest ---
+    // Recompute the volume name here — it is deterministic from ws_id and was
+    // defined inside the match arm above, so it is no longer in scope.
+    let vol_name = DockerClient::volume_name(&ws_id.to_string());
+
+    // --- Stage 2: Create workspace Postgres schema ---
+    // The ingestion pipeline writes into a workspace-scoped schema; it must
+    // exist (with all tables) before the container starts.
+    if let Err(e) = create_workspace_schema(&pool, &schema_name).await {
+        error!(
+            workspace_id = %ws_id,
+            schema = %schema_name,
+            "Failed to create workspace schema: {}",
+            e
+        );
+        if let Err(e2) = lifecycle::fail(&pool, ws_id, &format!("schema creation failed: {}", e)).await {
+            error!(
+                "Failed to mark workspace {} as error after schema creation failure: {}",
+                ws_id, e2
+            );
+        }
+        return;
+    }
+    info!(
+        workspace_id = %ws_id,
+        schema = %schema_name,
+        "Workspace schema created — starting ingestion pipeline"
+    );
+
+    // --- Stage 3: Ingest ---
     // Append search_path to the DATABASE_URL so the ingestion pipeline
     // writes into the workspace-scoped schema rather than the default schema.
     let db_url_with_schema = append_search_path(&config.database_url, &schema_name);
 
-    info!(
-        workspace_id = %ws_id,
-        schema = %schema_name,
-        host_clone_dir = %host_clone_dir,
-        "Starting ingestion pipeline"
-    );
-
     let ingestion_cfg = IngestionConfig {
-        host_clone_path: &host_clone_dir,
+        // Use the named Docker volume (populated in Stage 1b) so the ingestion
+        // container can access the repo whether the API itself runs in Docker or
+        // bare-metal — host bind-mounts are not accessible to sibling containers.
+        volume_name: &vol_name,
         network: &config.docker_network,
         database_url: &db_url_with_schema,
         neo4j_url: &config.neo4j_uri,

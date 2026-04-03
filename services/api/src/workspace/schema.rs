@@ -54,15 +54,19 @@ pub async fn create_workspace_schema(pool: &PgPool, schema_name: &str) -> anyhow
     Ok(())
 }
 
-/// Validate that a schema name matches the expected `ws_[0-9a-f]{8}` pattern.
+/// Validate that a schema name matches `ws_[0-9a-f]{8,12}`.
+///
+/// Accepts both 8-char (legacy `schema_name_for`) and 12-char
+/// (`schema_name_from_id` in the workspace handler) hex suffixes.
 fn validate_schema_name(name: &str) -> anyhow::Result<()> {
     if !name.starts_with("ws_") {
         anyhow::bail!("Invalid schema name '{name}': must start with 'ws_'");
     }
     let suffix = &name[3..];
-    if suffix.len() != 8 || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+    let valid_len = suffix.len() == 8 || suffix.len() == 12;
+    if !valid_len || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
         anyhow::bail!(
-            "Invalid schema name '{name}': suffix must be exactly 8 hex characters, got '{suffix}'"
+            "Invalid schema name '{name}': suffix must be 8 or 12 hex characters, got '{suffix}'"
         );
     }
     Ok(())
@@ -136,9 +140,13 @@ mod tests {
 
     #[test]
     fn validate_schema_name_accepts_valid() {
+        // 8-char suffix (legacy schema_name_for format)
         assert!(validate_schema_name("ws_abcdef12").is_ok());
         assert!(validate_schema_name("ws_00000000").is_ok());
         assert!(validate_schema_name("ws_ffffffff").is_ok());
+        // 12-char suffix (schema_name_from_id format used by the workspace handler)
+        assert!(validate_schema_name("ws_abcdef123456").is_ok());
+        assert!(validate_schema_name("ws_000000000000").is_ok());
     }
 
     #[test]
@@ -150,7 +158,9 @@ mod tests {
     #[test]
     fn validate_schema_name_rejects_wrong_suffix_length() {
         assert!(validate_schema_name("ws_abc").is_err());
+        // 9, 10, 11, 13 are all invalid — only 8 and 12 are accepted
         assert!(validate_schema_name("ws_abcdef123").is_err());
+        assert!(validate_schema_name("ws_abcdef1234567").is_err());
     }
 
     #[test]

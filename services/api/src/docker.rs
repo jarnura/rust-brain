@@ -26,8 +26,12 @@ use tokio::process::Command;
 /// Configuration passed to [`DockerClient::run_ingestion`].
 #[derive(Debug, Clone)]
 pub struct IngestionConfig<'a> {
-    /// Absolute path on the **host** filesystem where the repo was cloned.
-    pub host_clone_path: &'a str,
+    /// Docker named volume containing the cloned repository (e.g. `rustbrain-ws-abc12345`).
+    ///
+    /// Mounted read-only at `/workspace/target-repo` inside the ingestion container.
+    /// Using a named volume (rather than a host bind-mount) ensures the volume is
+    /// accessible to sibling containers even when the API itself runs inside Docker.
+    pub volume_name: &'a str,
     /// Docker network the ingestion container joins (e.g. `rustbrain-net`).
     pub network: &'a str,
     /// Postgres connection string, forwarded as `DATABASE_URL`.
@@ -280,7 +284,9 @@ impl DockerClient {
     ///
     /// Returns the combined stdout+stderr from the container on success.
     pub async fn run_ingestion(&self, cfg: &IngestionConfig<'_>) -> anyhow::Result<String> {
-        let volume_mount = format!("{}:/workspace/target-repo:ro", cfg.host_clone_path);
+        // Mount the named Docker volume (not a host path) so this works whether the
+        // API is running bare-metal or as a sibling container talking to the host daemon.
+        let volume_mount = format!("{}:/workspace/target-repo:ro", cfg.volume_name);
 
         let output = Command::new("docker")
             .args([
@@ -519,7 +525,7 @@ mod tests {
         // A clearly non-existent image should return Err (image pull failure or
         // docker not available). Either way no panic.
         let cfg = IngestionConfig {
-            host_clone_path: "/tmp/nonexistent-clone-path",
+            volume_name: "rustbrain-ws-nonexistent",
             network: "rustbrain-net",
             database_url: "postgresql://unused:unused@localhost/unused",
             neo4j_url: "bolt://unused:7687",
