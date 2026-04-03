@@ -84,8 +84,10 @@ COPY --from=builder /build/target/release/rustbrain-api /usr/local/bin/
 # Copy static files for playground
 COPY --from=builder /build/services/api/static /app/static
 
-# Create non-root user and writable clone directory
-RUN useradd -r -s /bin/false rustbrain && \
+# Create non-root user with Docker socket access and writable clone directory.
+# GID 125 matches the host docker group that owns /var/run/docker.sock.
+RUN groupadd -g 125 docker && \
+    useradd -r -s /bin/false -G docker rustbrain && \
     chown -R rustbrain:rustbrain /app && \
     mkdir -p /tmp/rustbrain-clones && chown rustbrain:rustbrain /tmp/rustbrain-clones
 
