@@ -27,6 +27,10 @@ CREATE INDEX function_async_idx IF NOT EXISTS FOR (f:Function) ON (f.is_async);
 CREATE INDEX function_unsafe_idx IF NOT EXISTS FOR (f:Function) ON (f.is_unsafe);
 CREATE INDEX function_generic_idx IF NOT EXISTS FOR (f:Function) ON (f.is_generic);
 
+// Relationship property indexes
+CREATE INDEX crate_deps_idx IF NOT EXISTS FOR ()-[r:DEPENDS_ON]-() ON (r.is_dev);
+CREATE INDEX trait_methods_idx IF NOT EXISTS FOR ()-[r:HAS_METHOD]-() ON (r.is_required);
+
 // =============================================================================
 // Read-only API user
 // =============================================================================

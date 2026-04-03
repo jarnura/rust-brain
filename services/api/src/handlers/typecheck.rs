@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tracing::debug;
 
+use super::default_limit;
 use crate::errors::AppError;
 use crate::state::AppState;
-use super::default_limit;
 
 // =============================================================================
 // Request/Response Types
@@ -108,7 +108,10 @@ pub async fn find_calls_with_type(
     Query(query): Query<FindCallsWithTypeQuery>,
 ) -> Result<Json<CallsWithTypeResponse>, AppError> {
     state.metrics.record_request("find_calls_with_type", "GET");
-    debug!("Find calls with type: {} (callee: {:?})", query.type_name, query.callee_name);
+    debug!(
+        "Find calls with type: {} (callee: {:?})",
+        query.type_name, query.callee_name
+    );
 
     let type_pattern = format!("%{}%", query.type_name);
     let limit = query.limit.min(100) as i32;
@@ -130,7 +133,7 @@ pub async fn find_calls_with_type(
               AND concrete_type_args::text LIKE $2
             ORDER BY file_path, line_number
             LIMIT $3
-            "#
+            "#,
         )
         .bind(&callee_pattern)
         .bind(&type_pattern)
@@ -153,7 +156,7 @@ pub async fn find_calls_with_type(
             WHERE concrete_type_args::text LIKE $1
             ORDER BY file_path, line_number
             LIMIT $2
-            "#
+            "#,
         )
         .bind(&type_pattern)
         .bind(limit)
@@ -177,7 +180,9 @@ pub async fn find_calls_with_type(
                 line_number: row.get::<i32, _>("line_number") as u32,
                 concrete_type_args: type_args,
                 is_monomorphized: row.get("is_monomorphized"),
-                quality: row.get::<Option<String>, _>("quality").unwrap_or_else(|| "unknown".to_string()),
+                quality: row
+                    .get::<Option<String>, _>("quality")
+                    .unwrap_or_else(|| "unknown".to_string()),
             }
         })
         .collect();
@@ -195,7 +200,9 @@ pub async fn find_trait_impls_for_type(
     State(state): State<AppState>,
     Query(query): Query<FindTraitImplsForTypeQuery>,
 ) -> Result<Json<TraitImplsForTypeResponse>, AppError> {
-    state.metrics.record_request("find_trait_impls_for_type", "GET");
+    state
+        .metrics
+        .record_request("find_trait_impls_for_type", "GET");
     debug!("Find trait impls for type: {}", query.type_name);
 
     let type_pattern = format!("%{}%", query.type_name);
@@ -215,7 +222,7 @@ pub async fn find_trait_impls_for_type(
         WHERE self_type LIKE $1
         ORDER BY trait_fqn
         LIMIT $2
-        "#
+        "#,
     )
     .bind(&type_pattern)
     .bind(limit)
@@ -238,7 +245,9 @@ pub async fn find_trait_impls_for_type(
                 file_path: row.get("file_path"),
                 line_number: row.get::<i32, _>("line_number") as u32,
                 generic_params,
-                quality: row.get::<Option<String>, _>("quality").unwrap_or_else(|| "unknown".to_string()),
+                quality: row
+                    .get::<Option<String>, _>("quality")
+                    .unwrap_or_else(|| "unknown".to_string()),
             }
         })
         .collect();

@@ -83,6 +83,33 @@ impl ApiClient {
         response.json().await.map_err(McpError::Http)
     }
 
+    /// Make a PUT request to the API
+    #[instrument(skip(self, body), fields(path = %path))]
+    pub async fn put<T: DeserializeOwned, B: serde::Serialize + std::fmt::Debug>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        debug!("PUT {} {:?}", url, body);
+
+        let response = self
+            .client
+            .put(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(McpError::Http)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::Api(format!("{}: {}", status, body)));
+        }
+
+        response.json().await.map_err(McpError::Http)
+    }
+
     /// Check if the API is healthy
     #[instrument(skip(self))]
     pub async fn health_check(&self) -> Result<bool> {

@@ -168,6 +168,57 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events (event_ty
 CREATE INDEX IF NOT EXISTS idx_audit_events_severity ON audit_events (severity);
 
 -- =============================================================================
+-- ARTIFACTS: Inter-agent communication store
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    producer    TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'final', 'superseded')),
+    confidence  FLOAT NOT NULL DEFAULT 1.0,
+    summary     JSONB NOT NULL,
+    payload     JSONB NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    superseded_by TEXT REFERENCES artifacts(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(type);
+CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
+CREATE INDEX IF NOT EXISTS idx_artifacts_producer ON artifacts(producer);
+
+-- =============================================================================
+-- TASKS: Orchestrator task lifecycle
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id          TEXT PRIMARY KEY,
+    parent_id   TEXT,
+    phase       TEXT NOT NULL
+                CHECK (phase IN ('understand','plan','build','verify','communicate')),
+    class       TEXT NOT NULL CHECK (class IN ('A','B','C','D','E')),
+    agent       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','dispatched','in_progress','review',
+                                  'completed','rejected','blocked','escalated')),
+    inputs      JSONB DEFAULT '[]',
+    constraints JSONB DEFAULT '{}',
+    acceptance  TEXT,
+    retry_count INT DEFAULT 0,
+    error       TEXT,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent);
+CREATE INDEX IF NOT EXISTS idx_tasks_class ON tasks(class);
+CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase);
+
+-- =============================================================================
 -- UPDATE TRIGGER: Auto-update updated_at
 -- =============================================================================
 

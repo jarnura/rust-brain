@@ -103,7 +103,8 @@ fn parse_stages(metadata: &Option<Value>) -> Vec<StageProgress> {
         .iter()
         .filter_map(|stage| {
             // The JSON uses "stage" as the key for the stage name
-            let name = stage.get("stage")
+            let name = stage
+                .get("stage")
                 .or_else(|| stage.get("name"))
                 .and_then(|s| s.as_str())?
                 .to_string();
@@ -198,13 +199,11 @@ mod tests {
             completed_at: None,
             crates_processed: 3,
             items_extracted: 36000,
-            stages: vec![
-                StageProgress {
-                    name: "expand".to_string(),
-                    status: "success".to_string(),
-                    items_processed: 5,
-                },
-            ],
+            stages: vec![StageProgress {
+                name: "expand".to_string(),
+                status: "success".to_string(),
+                items_processed: 5,
+            }],
             errors: vec![],
         };
         let json = serde_json::to_value(&progress).unwrap();

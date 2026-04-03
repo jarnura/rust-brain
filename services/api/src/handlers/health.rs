@@ -63,89 +63,121 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
     let start = std::time::Instant::now();
     match sqlx::query("SELECT 1").execute(&state.pg_pool).await {
         Ok(_) => {
-            dependencies.insert("postgres".to_string(), DependencyStatus {
-                status: "healthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: None,
-                points_count: None,
-            });
+            dependencies.insert(
+                "postgres".to_string(),
+                DependencyStatus {
+                    status: "healthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: None,
+                    points_count: None,
+                },
+            );
         }
         Err(e) => {
-            dependencies.insert("postgres".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: None,
-                error: Some(e.to_string()),
-                points_count: None,
-            });
+            dependencies.insert(
+                "postgres".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                    points_count: None,
+                },
+            );
         }
     }
 
     // Check Qdrant
     let start = std::time::Instant::now();
-    match state.http_client
-        .get(format!("{}/collections/{}", state.config.qdrant_host, state.config.collection_name))
+    match state
+        .http_client
+        .get(format!(
+            "{}/collections/{}",
+            state.config.qdrant_host, state.config.collection_name
+        ))
         .send()
         .await
     {
         Ok(resp) if resp.status().is_success() => {
             let latency = start.elapsed().as_millis() as u64;
-            let points_count = resp.json::<serde_json::Value>().await.ok()
+            let points_count = resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
                 .and_then(|v| v["result"]["points_count"].as_u64());
-            dependencies.insert("qdrant".to_string(), DependencyStatus {
-                status: "healthy".to_string(),
-                latency_ms: Some(latency),
-                error: None,
-                points_count,
-            });
+            dependencies.insert(
+                "qdrant".to_string(),
+                DependencyStatus {
+                    status: "healthy".to_string(),
+                    latency_ms: Some(latency),
+                    error: None,
+                    points_count,
+                },
+            );
         }
         Ok(resp) => {
-            dependencies.insert("qdrant".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: Some(format!("Status: {}", resp.status())),
-                points_count: None,
-            });
+            dependencies.insert(
+                "qdrant".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: Some(format!("Status: {}", resp.status())),
+                    points_count: None,
+                },
+            );
         }
         Err(e) => {
-            dependencies.insert("qdrant".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: None,
-                error: Some(e.to_string()),
-                points_count: None,
-            });
+            dependencies.insert(
+                "qdrant".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                    points_count: None,
+                },
+            );
         }
     }
 
     // Check Ollama
     let start = std::time::Instant::now();
-    match state.http_client
+    match state
+        .http_client
         .get(format!("{}/api/tags", state.config.ollama_host))
         .send()
         .await
     {
         Ok(resp) if resp.status().is_success() => {
-            dependencies.insert("ollama".to_string(), DependencyStatus {
-                status: "healthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: None,
-                points_count: None,
-            });
+            dependencies.insert(
+                "ollama".to_string(),
+                DependencyStatus {
+                    status: "healthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: None,
+                    points_count: None,
+                },
+            );
         }
         Ok(resp) => {
-            dependencies.insert("ollama".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: Some(format!("Status: {}", resp.status())),
-                points_count: None,
-            });
+            dependencies.insert(
+                "ollama".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: Some(format!("Status: {}", resp.status())),
+                    points_count: None,
+                },
+            );
         }
         Err(e) => {
-            dependencies.insert("ollama".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: None,
-                error: Some(e.to_string()),
-                points_count: None,
-            });
+            dependencies.insert(
+                "ollama".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                    points_count: None,
+                },
+            );
         }
     }
 
@@ -153,20 +185,26 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
     let start = std::time::Instant::now();
     match check_neo4j(&state).await {
         Ok(_) => {
-            dependencies.insert("neo4j".to_string(), DependencyStatus {
-                status: "healthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: None,
-                points_count: None,
-            });
+            dependencies.insert(
+                "neo4j".to_string(),
+                DependencyStatus {
+                    status: "healthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: None,
+                    points_count: None,
+                },
+            );
         }
         Err(e) => {
-            dependencies.insert("neo4j".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: None,
-                error: Some(e.to_string()),
-                points_count: None,
-            });
+            dependencies.insert(
+                "neo4j".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                    points_count: None,
+                },
+            );
         }
     }
 
@@ -174,20 +212,26 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse
     let start = std::time::Instant::now();
     match state.opencode_client.health_check().await {
         Ok(true) => {
-            dependencies.insert("opencode".to_string(), DependencyStatus {
-                status: "healthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: None,
-                points_count: None,
-            });
+            dependencies.insert(
+                "opencode".to_string(),
+                DependencyStatus {
+                    status: "healthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: None,
+                    points_count: None,
+                },
+            );
         }
         Ok(false) | Err(_) => {
-            dependencies.insert("opencode".to_string(), DependencyStatus {
-                status: "unhealthy".to_string(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-                error: Some("OpenCode health check failed".to_string()),
-                points_count: None,
-            });
+            dependencies.insert(
+                "opencode".to_string(),
+                DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: Some("OpenCode health check failed".to_string()),
+                    points_count: None,
+                },
+            );
         }
     }
 
@@ -232,14 +276,22 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
 
     if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
         error!("Failed to encode metrics: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode metrics").into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to encode metrics",
+        )
+            .into_response();
     }
 
     match String::from_utf8(buffer) {
         Ok(metrics_text) => (StatusCode::OK, metrics_text).into_response(),
         Err(e) => {
             error!("Failed to convert metrics to string: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode metrics").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to encode metrics",
+            )
+                .into_response()
         }
     }
 }
@@ -251,12 +303,15 @@ mod tests {
     #[test]
     fn test_health_response_serialization() {
         let mut deps = HashMap::new();
-        deps.insert("postgres".to_string(), DependencyStatus {
-            status: "healthy".to_string(),
-            latency_ms: Some(5),
-            error: None,
-            points_count: None,
-        });
+        deps.insert(
+            "postgres".to_string(),
+            DependencyStatus {
+                status: "healthy".to_string(),
+                latency_ms: Some(5),
+                error: None,
+                points_count: None,
+            },
+        );
 
         let resp = HealthResponse {
             status: "healthy".to_string(),

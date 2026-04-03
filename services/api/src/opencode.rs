@@ -147,13 +147,9 @@ impl SendMessageResponse {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum MessagePart {
     /// Plain text content
-    Text {
-        text: String,
-    },
+    Text { text: String },
     /// Chain-of-thought reasoning (hidden from user display)
-    Reasoning {
-        text: String,
-    },
+    Reasoning { text: String },
     /// A tool invocation with optional arguments and result
     #[serde(rename = "tool-invocation")]
     ToolInvocation {
@@ -220,7 +216,7 @@ impl OpenCodeClient {
     /// TLS backend unavailable).
     pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(600))  // 10 minutes for long LLM responses
+            .timeout(Duration::from_secs(600)) // 10 minutes for long LLM responses
             .build()
             .expect("Failed to build HTTP client");
         Self {

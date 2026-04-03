@@ -38,14 +38,13 @@
 //! | `--max-concurrency` | — | 4 | — |
 //! | `--verbose` | `-v` | false | — |
 
-
-pub mod parsers;
-pub mod typecheck;
-pub mod pipeline;
-pub mod graph;
-pub mod embedding;
 pub mod derive_detector;
+pub mod embedding;
+pub mod graph;
 pub mod monitoring;
+pub mod parsers;
+pub mod pipeline;
+pub mod typecheck;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -68,36 +67,36 @@ struct Args {
     /// Path to the crate or workspace to process
     #[arg(short, long, default_value = ".")]
     crate_path: PathBuf,
-    
+
     /// Database connection URL
     #[arg(short, long, env = "DATABASE_URL")]
     database_url: Option<String>,
-    
+
     /// Neo4j connection URL (optional)
     #[arg(long, env = "NEO4J_URL")]
     neo4j_url: Option<String>,
-    
+
     /// Embedding service URL (optional)
     #[arg(long, env = "EMBEDDING_URL")]
     embedding_url: Option<String>,
-    
+
     /// Comma-separated list of stages to run (default: all)
     /// Available stages: expand, parse, typecheck, extract, graph, embed
     #[arg(short, long, value_delimiter = ',')]
     stages: Option<Vec<String>>,
-    
+
     /// Dry run mode - don't write to databases
     #[arg(long, default_value = "false")]
     dry_run: bool,
-    
+
     /// Stop on first error (default: continue on non-fatal errors)
     #[arg(long, default_value = "false")]
     fail_fast: bool,
-    
+
     /// Maximum concurrent operations
     #[arg(long, default_value = "4")]
     max_concurrency: usize,
-    
+
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -111,19 +110,23 @@ struct Args {
 async fn main() -> Result<()> {
     // Parse CLI arguments
     let args = Args::parse();
-    
+
     // Initialize logging
-    let log_level = if args.verbose { Level::DEBUG } else { Level::INFO };
-    let _subscriber = FmtSubscriber::builder()
+    let log_level = if args.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
+    FmtSubscriber::builder()
         .with_max_level(log_level)
         .with_target(false)
         .with_thread_ids(false)
         .pretty()
         .init();
-    
+
     info!("rust-brain ingestion service starting...");
     info!("Crate path: {:?}", args.crate_path);
-    
+
     // Build pipeline configuration
     let config = PipelineConfig {
         crate_path: args.crate_path.clone(),
@@ -137,38 +140,38 @@ async fn main() -> Result<()> {
         continue_on_error: !args.fail_fast,
         max_concurrency: args.max_concurrency,
     };
-    
+
     if args.dry_run {
         info!("Running in DRY RUN mode - no database writes");
     }
-    
+
     if let Some(ref stages) = config.stages {
         info!("Running stages: {}", stages.join(", "));
     } else {
         info!("Running all stages");
     }
-    
+
     // Create pipeline runner
-    let mut runner = PipelineRunner::new(config)
-        .context("Failed to create pipeline runner")?;
-    
+    let mut runner = PipelineRunner::new(config).context("Failed to create pipeline runner")?;
+
     // Connect to database (if not dry run)
     if !args.dry_run {
-        runner.connect().await
+        runner
+            .connect()
+            .await
             .context("Failed to connect to database")?;
     }
-    
+
     // Run the pipeline
-    let result = runner.run().await
-        .context("Pipeline execution failed")?;
-    
+    let result = runner.run().await.context("Pipeline execution failed")?;
+
     // Print summary
     println!("\n{}", "=".repeat(60));
     println!("Pipeline Run: {}", result.id);
     println!("Status: {}", result.status);
     println!("Duration: {}ms", result.duration_ms);
     println!("{}", "=".repeat(60));
-    
+
     // Print stage results
     println!("\nStage Results:");
     for stage in &result.stages {
@@ -180,17 +183,13 @@ async fn main() -> Result<()> {
         };
         println!(
             "  {} {}: {} processed, {} failed ({}ms)",
-            status_icon,
-            stage.name,
-            stage.items_processed,
-            stage.items_failed,
-            stage.duration_ms
+            status_icon, stage.name, stage.items_processed, stage.items_failed, stage.duration_ms
         );
         if let Some(ref error) = stage.error {
             println!("      Error: {}", error);
         }
     }
-    
+
     // Print counts
     println!("\nCounts:");
     println!("  Files expanded: {}", result.counts.files_expanded);
@@ -201,17 +200,26 @@ async fn main() -> Result<()> {
     println!("  Graph nodes: {}", result.counts.graph_nodes);
     println!("  Graph edges: {}", result.counts.graph_edges);
     println!("  Embeddings: {}", result.counts.embeddings_created);
-    
+
     // Print errors if any
     if !result.errors.is_empty() {
         println!("\nErrors ({}):", result.errors.len());
         for error in &result.errors {
             let fatal_marker = if error.is_fatal { " [FATAL]" } else { "" };
-            println!("  [{}]{} {}: {}", error.stage, fatal_marker, error.message,
-                error.context.as_ref().map(|c| format!("({})", c)).unwrap_or_default());
+            println!(
+                "  [{}]{} {}: {}",
+                error.stage,
+                fatal_marker,
+                error.message,
+                error
+                    .context
+                    .as_ref()
+                    .map(|c| format!("({})", c))
+                    .unwrap_or_default()
+            );
         }
     }
-    
+
     // Exit with appropriate code
     match result.status {
         pipeline::PipelineStatus::Completed => {

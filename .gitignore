@@ -19,3 +19,6 @@ tasks-*.md
 pipeline-*.json
 test-results/
 services/api/static/test.html
+
+# Agent worktrees
+.worktrees/

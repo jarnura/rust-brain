@@ -215,10 +215,7 @@ async fn flush_batch(pool: &PgPool, events: &[AuditEvent]) -> Result<(), sqlx::E
     let pipeline_ids: Vec<Uuid> = events.iter().map(|e| e.pipeline_id).collect();
     let timestamps: Vec<DateTime<Utc>> = events.iter().map(|e| e.timestamp).collect();
     let event_types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
-    let stages: Vec<Option<&str>> = events
-        .iter()
-        .map(|e| e.stage.as_deref())
-        .collect();
+    let stages: Vec<Option<&str>> = events.iter().map(|e| e.stage.as_deref()).collect();
     let details: Vec<&serde_json::Value> = events.iter().map(|e| &e.detail).collect();
     let severities: Vec<&str> = events.iter().map(|e| e.severity.as_str()).collect();
 

@@ -1,9 +1,6 @@
 //! Playground route handler.
 
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{http::StatusCode, response::IntoResponse};
 
 pub async fn playground_html() -> impl IntoResponse {
     (

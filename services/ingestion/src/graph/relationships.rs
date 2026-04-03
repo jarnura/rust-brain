@@ -1,10 +1,11 @@
 //! Relationship creation functions for Neo4j graph
 //!
 //! Provides functions to create relationships between code elements:
-//! CONTAINS, CALLS, RETURNS, ACCEPTS, IMPLEMENTS, HAS_FIELD, HAS_VARIANT, MONOMORPHIZED_AS
+//! CONTAINS, CALLS, RETURNS, ACCEPTS, IMPLEMENTS, HAS_FIELD, HAS_VARIANT, MONOMORPHIZED_AS,
+//! DEPENDS_ON, HAS_METHOD
 
 use anyhow::{Context, Result};
-use neo4rs::{Graph, query, BoltType};
+use neo4rs::{query, BoltType, Graph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +41,10 @@ pub enum RelationshipType {
     IMPORTS,
     /// Function/Method/Struct/Enum→Type usage relationship
     USES_TYPE,
+    /// Crate→Crate workspace dependency
+    DEPENDS_ON,
+    /// Trait→Function method relationship
+    HAS_METHOD,
 }
 
 impl RelationshipType {
@@ -59,6 +64,8 @@ impl RelationshipType {
             RelationshipType::EXPANDS_TO => "EXPANDS_TO",
             RelationshipType::IMPORTS => "IMPORTS",
             RelationshipType::USES_TYPE => "USES_TYPE",
+            RelationshipType::DEPENDS_ON => "DEPENDS_ON",
+            RelationshipType::HAS_METHOD => "HAS_METHOD",
         }
     }
 }
@@ -107,9 +114,8 @@ impl PropertyValue {
             PropertyValue::Float(f) => Some(BoltType::from(*f)),
             PropertyValue::Bool(b) => Some(BoltType::from(*b)),
             PropertyValue::Array(arr) => {
-                let bolt_list: Vec<BoltType> = arr.iter()
-                    .map(|s| BoltType::from(s.as_str()))
-                    .collect();
+                let bolt_list: Vec<BoltType> =
+                    arr.iter().map(|s| BoltType::from(s.as_str())).collect();
                 Some(BoltType::from(bolt_list))
             }
             PropertyValue::Null => None,
@@ -171,26 +177,31 @@ impl RelationshipBuilder {
              MATCH (to:{} {{id: $to_id}}) \
              MERGE (from)-[r:{}]->(to) \
              SET r += $props",
-            rel.from_label, rel.to_label, rel.rel_type.name()
+            rel.from_label,
+            rel.to_label,
+            rel.rel_type.name()
         );
 
-        let props: HashMap<String, BoltType> = rel.properties
+        let props: HashMap<String, BoltType> = rel
+            .properties
             .iter()
-            .filter_map(|(k, v)| {
-                v.to_bolt_type().map(|bv| (k.clone(), bv))
-            })
+            .filter_map(|(k, v)| v.to_bolt_type().map(|bv| (k.clone(), bv)))
             .collect();
 
-        self.graph.run(
-            query(&query_str)
-                .param("from_id", rel.from_id.as_str())
-                .param("to_id", rel.to_id.as_str())
-                .param("props", props)
-        )
-        .await
-        .context("Failed to merge relationship")?;
+        self.graph
+            .run(
+                query(&query_str)
+                    .param("from_id", rel.from_id.as_str())
+                    .param("to_id", rel.to_id.as_str())
+                    .param("props", props),
+            )
+            .await
+            .context("Failed to merge relationship")?;
 
-        debug!("Merged relationship: {} -[{}]-> {}", rel.from_id, rel.rel_type, rel.to_id);
+        debug!(
+            "Merged relationship: {} -[{}]-> {}",
+            rel.from_id, rel.rel_type, rel.to_id
+        );
         Ok(())
     }
 
@@ -226,9 +237,15 @@ impl RelationshipBuilder {
         properties.insert("line".to_string(), PropertyValue::from(line));
         properties.insert("file".to_string(), PropertyValue::from(file.into()));
         if !concrete_types.is_empty() {
-            properties.insert("concrete_types".to_string(), PropertyValue::from(concrete_types));
+            properties.insert(
+                "concrete_types".to_string(),
+                PropertyValue::from(concrete_types),
+            );
         }
-        properties.insert("is_static_dispatch".to_string(), PropertyValue::from(is_static_dispatch));
+        properties.insert(
+            "is_static_dispatch".to_string(),
+            PropertyValue::from(is_static_dispatch),
+        );
 
         RelationshipData {
             from_id: from_id.into(),
@@ -273,8 +290,14 @@ impl RelationshipBuilder {
         is_ref: bool,
     ) -> RelationshipData {
         let mut properties = HashMap::new();
-        properties.insert("param_name".to_string(), PropertyValue::from(param_name.into()));
-        properties.insert("param_position".to_string(), PropertyValue::from(param_position));
+        properties.insert(
+            "param_name".to_string(),
+            PropertyValue::from(param_name.into()),
+        );
+        properties.insert(
+            "param_position".to_string(),
+            PropertyValue::from(param_position),
+        );
         properties.insert("is_mut".to_string(), PropertyValue::from(is_mut));
         properties.insert("is_ref".to_string(), PropertyValue::from(is_ref));
 
@@ -306,10 +329,7 @@ impl RelationshipBuilder {
 
     /// Create FOR relationship
     /// Used for: Impl→Type (the type being implemented for)
-    pub fn create_for(
-        from_id: impl Into<String>,
-        to_id: impl Into<String>,
-    ) -> RelationshipData {
+    pub fn create_for(from_id: impl Into<String>, to_id: impl Into<String>) -> RelationshipData {
         RelationshipData {
             from_id: from_id.into(),
             to_id: to_id.into(),
@@ -331,8 +351,14 @@ impl RelationshipBuilder {
         has_default: bool,
     ) -> RelationshipData {
         let mut properties = HashMap::new();
-        properties.insert("field_name".to_string(), PropertyValue::from(field_name.into()));
-        properties.insert("field_position".to_string(), PropertyValue::from(field_position));
+        properties.insert(
+            "field_name".to_string(),
+            PropertyValue::from(field_name.into()),
+        );
+        properties.insert(
+            "field_position".to_string(),
+            PropertyValue::from(field_position),
+        );
         properties.insert("is_pub".to_string(), PropertyValue::from(is_pub));
         properties.insert("has_default".to_string(), PropertyValue::from(has_default));
 
@@ -356,8 +382,14 @@ impl RelationshipBuilder {
         has_data: bool,
     ) -> RelationshipData {
         let mut properties = HashMap::new();
-        properties.insert("variant_name".to_string(), PropertyValue::from(variant_name.into()));
-        properties.insert("variant_position".to_string(), PropertyValue::from(variant_position));
+        properties.insert(
+            "variant_name".to_string(),
+            PropertyValue::from(variant_name.into()),
+        );
+        properties.insert(
+            "variant_position".to_string(),
+            PropertyValue::from(variant_position),
+        );
         properties.insert("has_data".to_string(), PropertyValue::from(has_data));
 
         RelationshipData {
@@ -380,10 +412,16 @@ impl RelationshipBuilder {
     ) -> RelationshipData {
         let mut properties = HashMap::new();
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         if !concrete_params.is_empty() {
-            properties.insert("concrete_params".to_string(), PropertyValue::from(concrete_params));
+            properties.insert(
+                "concrete_params".to_string(),
+                PropertyValue::from(concrete_params),
+            );
         }
 
         RelationshipData {
@@ -452,16 +490,61 @@ impl RelationshipBuilder {
         }
     }
 
+    /// Create DEPENDS_ON relationship
+    /// Used for: Crate→Crate (workspace dependency)
+    pub fn create_depends_on(
+        from_id: impl Into<String>,
+        to_id: impl Into<String>,
+        is_dev: bool,
+        is_build: bool,
+    ) -> RelationshipData {
+        let mut properties = HashMap::new();
+        properties.insert("is_dev".to_string(), PropertyValue::from(is_dev));
+        properties.insert("is_build".to_string(), PropertyValue::from(is_build));
+
+        RelationshipData {
+            from_id: from_id.into(),
+            to_id: to_id.into(),
+            from_label: "Crate".to_string(),
+            to_label: "Crate".to_string(),
+            rel_type: RelationshipType::DEPENDS_ON,
+            properties,
+        }
+    }
+
+    /// Create HAS_METHOD relationship
+    /// Used for: Trait→Function (trait method declaration)
+    pub fn create_has_method(
+        from_id: impl Into<String>,
+        to_id: impl Into<String>,
+        is_required: bool,
+    ) -> RelationshipData {
+        let mut properties = HashMap::new();
+        properties.insert("is_required".to_string(), PropertyValue::from(is_required));
+
+        RelationshipData {
+            from_id: from_id.into(),
+            to_id: to_id.into(),
+            from_label: "Trait".to_string(),
+            to_label: "Function".to_string(),
+            rel_type: RelationshipType::HAS_METHOD,
+            properties,
+        }
+    }
+
     /// Create USES_TYPE relationship
     /// Used for: Function/Method/Struct/Enum→Type (type usage in code)
     pub fn create_uses_type(
         from_id: impl Into<String>,
         to_id: impl Into<String>,
-        usage_context: impl Into<String>,  // "parameter", "return", "body", "field", "generic"
+        usage_context: impl Into<String>, // "parameter", "return", "body", "field", "generic"
         line: Option<usize>,
     ) -> RelationshipData {
         let mut properties = HashMap::new();
-        properties.insert("usage_context".to_string(), PropertyValue::from(usage_context.into()));
+        properties.insert(
+            "usage_context".to_string(),
+            PropertyValue::from(usage_context.into()),
+        );
         if let Some(l) = line {
             properties.insert("line".to_string(), PropertyValue::from(l));
         }
@@ -490,7 +573,8 @@ pub async fn batch_insert_relationships(
     }
 
     // Group by (rel_type, from_label, to_label) so MATCH uses node labels for index hits
-    let mut grouped: HashMap<(RelationshipType, String, String), Vec<&RelationshipData>> = HashMap::new();
+    let mut grouped: HashMap<(RelationshipType, String, String), Vec<&RelationshipData>> =
+        HashMap::new();
     for rel in relationships {
         grouped
             .entry((rel.rel_type, rel.from_label.clone(), rel.to_label.clone()))
@@ -507,17 +591,18 @@ pub async fn batch_insert_relationships(
                  MATCH (to:{} {{id: rel_data.to_id}}) \
                  MERGE (from)-[r:{}]->(to) \
                  SET r += rel_data.props",
-                from_label, to_label, rel_type.name()
+                from_label,
+                to_label,
+                rel_type.name()
             );
 
             let rel_params: Vec<HashMap<String, BoltType>> = chunk
                 .iter()
                 .map(|rel| {
-                    let props: HashMap<String, BoltType> = rel.properties
+                    let props: HashMap<String, BoltType> = rel
+                        .properties
                         .iter()
-                        .filter_map(|(k, v)| {
-                            v.to_bolt_type().map(|bv| (k.clone(), bv))
-                        })
+                        .filter_map(|(k, v)| v.to_bolt_type().map(|bv| (k.clone(), bv)))
                         .collect();
 
                     let mut rel_param = HashMap::new();
@@ -528,12 +613,13 @@ pub async fn batch_insert_relationships(
                 })
                 .collect();
 
-            graph.run(
-                query(&query_str)
-                    .param("rels", rel_params)
-            )
-            .await
-            .context(format!("Failed to batch insert {} relationships", rel_type.name()))?;
+            graph
+                .run(query(&query_str).param("rels", rel_params))
+                .await
+                .context(format!(
+                    "Failed to batch insert {} relationships",
+                    rel_type.name()
+                ))?;
         }
     }
 
@@ -575,6 +661,82 @@ mod tests {
         assert_eq!(rel.rel_type, RelationshipType::HAS_FIELD);
         assert!(rel.properties.contains_key("field_name"));
         assert!(rel.properties.contains_key("is_pub"));
+    }
+
+    #[test]
+    fn test_create_depends_on_relationship() {
+        let rel = RelationshipBuilder::create_depends_on("my_crate", "dep_crate", false, false);
+
+        assert_eq!(rel.rel_type, RelationshipType::DEPENDS_ON);
+        assert_eq!(rel.from_label, "Crate");
+        assert_eq!(rel.to_label, "Crate");
+        assert_eq!(rel.from_id, "my_crate");
+        assert_eq!(rel.to_id, "dep_crate");
+        assert!(rel.properties.contains_key("is_dev"));
+        assert!(rel.properties.contains_key("is_build"));
+    }
+
+    #[test]
+    fn test_depends_on_properties() {
+        let dev_dep = RelationshipBuilder::create_depends_on("my_crate", "dep_crate", true, false);
+        match dev_dep.properties.get("is_dev") {
+            Some(PropertyValue::Bool(v)) => assert!(*v),
+            other => panic!("is_dev should be Bool(true), got {:?}", other),
+        }
+        match dev_dep.properties.get("is_build") {
+            Some(PropertyValue::Bool(v)) => assert!(!*v),
+            other => panic!("is_build should be Bool(false), got {:?}", other),
+        }
+
+        let build_dep =
+            RelationshipBuilder::create_depends_on("my_crate", "build_crate", false, true);
+        match build_dep.properties.get("is_dev") {
+            Some(PropertyValue::Bool(v)) => assert!(!*v),
+            other => panic!("is_dev should be Bool(false), got {:?}", other),
+        }
+        match build_dep.properties.get("is_build") {
+            Some(PropertyValue::Bool(v)) => assert!(*v),
+            other => panic!("is_build should be Bool(true), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_create_has_method_relationship() {
+        let rel = RelationshipBuilder::create_has_method(
+            "crate::MyTrait",
+            "crate::MyTrait::my_method",
+            true,
+        );
+
+        assert_eq!(rel.rel_type, RelationshipType::HAS_METHOD);
+        assert_eq!(rel.from_label, "Trait");
+        assert_eq!(rel.to_label, "Function");
+        assert_eq!(rel.from_id, "crate::MyTrait");
+        assert_eq!(rel.to_id, "crate::MyTrait::my_method");
+        assert!(rel.properties.contains_key("is_required"));
+    }
+
+    #[test]
+    fn test_has_method_properties() {
+        let required = RelationshipBuilder::create_has_method(
+            "crate::MyTrait",
+            "crate::MyTrait::required_method",
+            true,
+        );
+        match required.properties.get("is_required") {
+            Some(PropertyValue::Bool(v)) => assert!(*v),
+            other => panic!("is_required should be Bool(true), got {:?}", other),
+        }
+
+        let provided = RelationshipBuilder::create_has_method(
+            "crate::MyTrait",
+            "crate::MyTrait::provided_method",
+            false,
+        );
+        match provided.properties.get("is_required") {
+            Some(PropertyValue::Bool(v)) => assert!(!*v),
+            other => panic!("is_required should be Bool(false), got {:?}", other),
+        }
     }
 
     #[test]

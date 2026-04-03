@@ -8,22 +8,26 @@
 //! 5. **Graph** - Build Neo4j relationship graph
 //! 6. **Embed** - Create vector embeddings
 
-pub mod stages;
-pub mod runner;
-pub mod memory_accountant;
-pub mod streaming_runner;
 pub mod circuit_breaker;
+pub mod memory_accountant;
 pub mod resilience;
+pub mod runner;
+pub mod stages;
+pub mod streaming_runner;
 
-pub use stages::{PipelineStage, StageResult, StageError, StageStatus, parse_item_type, parse_visibility};
-pub use runner::PipelineRunner;
-pub use memory_accountant::{MemoryAccountant, MemoryGuard, channel_capacity};
-pub use streaming_runner::StreamingPipelineRunner;
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState};
-pub use resilience::{
-    MemoryPressure, MemoryWatchdog, SpillStore, DegradationTier,
-    CheckpointManager, Checkpoint, ResilienceCoordinator,
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
 };
+pub use memory_accountant::{channel_capacity, MemoryAccountant, MemoryGuard};
+pub use resilience::{
+    Checkpoint, CheckpointManager, DegradationTier, MemoryPressure, MemoryWatchdog,
+    ResilienceCoordinator, SpillStore,
+};
+pub use runner::PipelineRunner;
+pub use stages::{
+    parse_item_type, parse_visibility, PipelineStage, StageError, StageResult, StageStatus,
+};
+pub use streaming_runner::StreamingPipelineRunner;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -53,25 +57,25 @@ impl std::fmt::Display for PipelineId {
 pub struct PipelineConfig {
     /// Path to the crate or workspace to process
     pub crate_path: PathBuf,
-    
+
     /// Database connection URL
     pub database_url: String,
-    
+
     /// Neo4j connection URL (optional)
     pub neo4j_url: Option<String>,
-    
+
     /// Embedding service URL (optional)
     pub embedding_url: Option<String>,
-    
+
     /// Which stages to run (None = all stages)
     pub stages: Option<Vec<String>>,
-    
+
     /// Dry run mode - don't write to databases
     pub dry_run: bool,
-    
+
     /// Continue on non-fatal errors
     pub continue_on_error: bool,
-    
+
     /// Maximum concurrent operations
     pub max_concurrency: usize,
 }
@@ -80,7 +84,8 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             crate_path: PathBuf::from("."),
-            database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL environment variable must be set"),
+            database_url: std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL environment variable must be set"),
             neo4j_url: None,
             embedding_url: None,
             stages: None,
@@ -96,10 +101,10 @@ impl Default for PipelineConfig {
 pub struct PipelineContext {
     /// Unique identifier for this pipeline run
     pub id: PipelineId,
-    
+
     /// Configuration
     pub config: PipelineConfig,
-    
+
     /// Shared state between stages
     pub state: Arc<RwLock<PipelineState>>,
 }
@@ -113,7 +118,7 @@ impl PipelineContext {
             state: Arc::new(RwLock::new(PipelineState::default())),
         }
     }
-    
+
     /// Create with a specific ID (for resuming runs)
     pub fn with_id(id: Uuid, config: PipelineConfig) -> Self {
         Self {
@@ -241,14 +246,7 @@ impl std::fmt::Display for PipelineStatus {
 }
 
 /// Stage names in execution order
-pub const STAGE_NAMES: &[&str] = &[
-    "expand",
-    "parse", 
-    "typecheck",
-    "extract",
-    "graph",
-    "embed",
-];
+pub const STAGE_NAMES: &[&str] = &["expand", "parse", "typecheck", "extract", "graph", "embed"];
 
 /// Check if a stage should run based on config
 pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
@@ -261,7 +259,7 @@ pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     /// Helper to create a PipelineConfig for testing (no DATABASE_URL required)
     fn test_config() -> PipelineConfig {
         PipelineConfig {
@@ -275,13 +273,13 @@ mod tests {
             max_concurrency: 4,
         }
     }
-    
+
     #[test]
     fn test_pipeline_id_default() {
         let id = PipelineId::default();
         assert!(!id.0.is_nil());
     }
-    
+
     #[test]
     fn test_should_run_stage() {
         let mut config = test_config();

@@ -623,6 +623,6 @@ rust-brain is architecturally well-designed — the triple-storage pattern (Grap
 ### Remaining Critical Gaps
 1. **Test coverage** (Gap 2) — Core parsing and graph modules have 27+ unit tests, but typecheck resolver, DualParser fallback, API handlers, and embedding clients remain untested.
 2. **Cross-DB aggregation** (Gap 5) — `POST /tools/aggregate_search` endpoint now exists but full cross-database orchestration (Qdrant → Postgres → Neo4j → aggregated response) needs validation.
-3. **TypecheckStage bug** (see `docs/issues/ISSUE-001`) — `call_sites` and `trait_implementations` tables remain empty due to state clear bug in ParseStage.
+3. ~~**TypecheckStage bug**~~ (RESOLVED — see `docs/issues/ISSUE-001`) — Fixed in commit `316cb7d`. `call_sites` now has 99,654 rows, `trait_implementations` has 29,738 rows. Snapshot v2 includes full call graph data (227K CALLS edges).
 
 The query planner (Gap 14) is the most exciting future piece — it would complete the analogy by adding the "query optimizer" that makes a database engine truly intelligent about access paths.

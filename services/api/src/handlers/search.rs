@@ -10,17 +10,14 @@
 //! Postgres keyword search when Ollama is unavailable, instead of returning
 //! a hard error.
 
-use axum::{
-    extract::State,
-    Json,
-};
+use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use super::{default_limit, CalleeInfo, CallerInfo};
 use crate::errors::AppError;
-use crate::neo4j::{get_callers_from_neo4j, get_callees_from_neo4j};
+use crate::neo4j::{get_callees_from_neo4j, get_callers_from_neo4j};
 use crate::state::AppState;
-use super::{CallerInfo, CalleeInfo, default_limit, default_true};
 
 // =============================================================================
 // Request/Response Types
@@ -88,7 +85,7 @@ pub struct AggregateSearchRequest {
     #[serde(default)]
     pub score_threshold: Option<f32>,
     /// Include caller/callee graph context for each result
-    #[serde(default)]
+    #[serde(default = "super::default_true")]
     pub include_graph: bool,
     /// Include full source body from Postgres
     #[serde(default)]
@@ -214,11 +211,11 @@ pub async fn search_semantic(
 
             let search_url = format!(
                 "{}/collections/{}/points/search",
-                state.config.qdrant_host,
-                state.config.collection_name
+                state.config.qdrant_host, state.config.collection_name
             );
 
-            let response = state.http_client
+            let response = state
+                .http_client
                 .post(&search_url)
                 .json(&search_request)
                 .send()
@@ -228,7 +225,10 @@ pub async fn search_semantic(
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                return Err(AppError::Qdrant(format!("Qdrant search failed: {} - {}", status, body)));
+                return Err(AppError::Qdrant(format!(
+                    "Qdrant search failed: {} - {}",
+                    status, body
+                )));
             }
 
             let search_result: serde_json::Value = response
@@ -246,7 +246,10 @@ pub async fn search_semantic(
         }
         Err(ollama_err) => {
             // Fallback: keyword search via Postgres when Ollama is unavailable
-            debug!("Ollama unavailable ({}), falling back to keyword search", ollama_err);
+            debug!(
+                "Ollama unavailable ({}), falling back to keyword search",
+                ollama_err
+            );
             keyword_search_fallback(&state, &req.query, req.limit).await
         }
     }
@@ -288,19 +291,21 @@ async fn keyword_search_fallback(
     let results: Vec<SearchResult> = rows
         .into_iter()
         .enumerate()
-        .map(|(i, (fqn, name, kind, file_path, start_line, end_line, signature, docstring))| {
-            SearchResult {
-                fqn,
-                name,
-                kind,
-                file_path,
-                start_line: start_line as u32,
-                end_line: end_line as u32,
-                score: 1.0 - (i as f32 * 0.01), // decreasing pseudo-score for ranking display
-                snippet: signature,
-                docstring,
-            }
-        })
+        .map(
+            |(i, (fqn, name, kind, file_path, start_line, end_line, signature, docstring))| {
+                SearchResult {
+                    fqn,
+                    name,
+                    kind,
+                    file_path,
+                    start_line: start_line as u32,
+                    end_line: end_line as u32,
+                    score: 1.0 - (i as f32 * 0.01), // decreasing pseudo-score for ranking display
+                    snippet: signature,
+                    docstring,
+                }
+            },
+        )
         .collect();
 
     let total = results.len();
@@ -343,11 +348,11 @@ pub async fn aggregate_search(
 
     let search_url = format!(
         "{}/collections/{}/points/search",
-        state.config.qdrant_host,
-        state.config.collection_name
+        state.config.qdrant_host, state.config.collection_name
     );
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .post(&search_url)
         .json(&search_request)
         .send()
@@ -357,7 +362,10 @@ pub async fn aggregate_search(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Qdrant(format!("Qdrant search failed: {} - {}", status, body)));
+        return Err(AppError::Qdrant(format!(
+            "Qdrant search failed: {} - {}",
+            status, body
+        )));
     }
 
     let search_result: serde_json::Value = response
@@ -371,7 +379,8 @@ pub async fn aggregate_search(
     let mut aggregated = Vec::with_capacity(qdrant_results.len());
 
     for result in &qdrant_results {
-        let enriched = enrich_search_result(&state, result, req.include_graph, req.include_source).await;
+        let enriched =
+            enrich_search_result(&state, result, req.include_graph, req.include_source).await;
         aggregated.push(enriched);
     }
 
@@ -392,7 +401,8 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
         "input": text,
     });
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .post(format!("{}/api/embed", state.config.ollama_host))
         .json(&request)
         .send()
@@ -402,7 +412,10 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Ollama(format!("Ollama embedding failed: {} - {}", status, body)));
+        return Err(AppError::Ollama(format!(
+            "Ollama embedding failed: {} - {}",
+            status, body
+        )));
     }
 
     let result: serde_json::Value = response
@@ -410,7 +423,8 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
         .await
         .map_err(|e| AppError::Ollama(format!("Failed to parse Ollama response: {}", e)))?;
 
-    let embedding = result.get("embeddings")
+    let embedding = result
+        .get("embeddings")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|v| v.as_array())
@@ -443,24 +457,38 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                 .filter_map(|r| {
                     let payload = r.get("payload")?;
                     // Qdrant payload uses "item_type" not "kind"
-                    let kind = payload.get("item_type")
+                    let kind = payload
+                        .get("item_type")
                         .and_then(|v| v.as_str())
                         .or_else(|| payload.get("kind").and_then(|v| v.as_str()))
                         .unwrap_or("unknown")
                         .to_string();
                     // file_path may not exist in all payloads
-                    let file_path = payload.get("file_path")
+                    let file_path = payload
+                        .get("file_path")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     // start_line/end_line are stored as i64 in Qdrant
-                    let start_line = payload.get("start_line")
+                    let start_line = payload
+                        .get("start_line")
                         .and_then(|v| v.as_i64())
-                        .or_else(|| payload.get("start_line").and_then(|v| v.as_u64()).map(|n| n as i64))
+                        .or_else(|| {
+                            payload
+                                .get("start_line")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as i64)
+                        })
                         .unwrap_or(0) as u32;
-                    let end_line = payload.get("end_line")
+                    let end_line = payload
+                        .get("end_line")
                         .and_then(|v| v.as_i64())
-                        .or_else(|| payload.get("end_line").and_then(|v| v.as_u64()).map(|n| n as i64))
+                        .or_else(|| {
+                            payload
+                                .get("end_line")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as i64)
+                        })
                         .unwrap_or(0) as u32;
                     Some(SearchResult {
                         fqn: payload.get("fqn")?.as_str()?.to_string(),
@@ -470,8 +498,14 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                         start_line,
                         end_line,
                         score: r.get("score")?.as_f64()? as f32,
-                        snippet: payload.get("snippet").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        docstring: payload.get("docstring").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        snippet: payload
+                            .get("snippet")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        docstring: payload
+                            .get("docstring")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                     })
                 })
                 .collect()
@@ -487,7 +521,11 @@ async fn enrich_search_result(
     include_source: bool,
 ) -> AggregatedResult {
     // Query Postgres for full metadata
-    let select_body = if include_source { ", e.body_source" } else { "" };
+    let select_body = if include_source {
+        ", e.body_source"
+    } else {
+        ""
+    };
     let query_str = format!(
         r#"
         SELECT e.visibility, e.signature, e.doc_comment,
@@ -563,18 +601,23 @@ async fn enrich_search_result(
         fqn: result.fqn.clone(),
         name: result.name.clone(),
         kind: result.kind.clone(),
-        file_path: pg_data.as_ref()
+        file_path: pg_data
+            .as_ref()
             .and_then(|d| d.file_path.clone())
             .unwrap_or_else(|| result.file_path.clone()),
-        start_line: pg_data.as_ref()
+        start_line: pg_data
+            .as_ref()
             .map(|d| d.start_line as u32)
             .unwrap_or(result.start_line),
-        end_line: pg_data.as_ref()
+        end_line: pg_data
+            .as_ref()
             .map(|d| d.end_line as u32)
             .unwrap_or(result.end_line),
         visibility: pg_data.as_ref().and_then(|d| d.visibility.clone()),
         signature: pg_data.as_ref().and_then(|d| d.signature.clone()),
-        docstring: pg_data.as_ref().and_then(|d| d.doc_comment.clone())
+        docstring: pg_data
+            .as_ref()
+            .and_then(|d| d.doc_comment.clone())
             .or_else(|| result.docstring.clone()),
         module_path: pg_data.as_ref().and_then(|d| d.module_path.clone()),
         crate_name: pg_data.as_ref().and_then(|d| d.crate_name.clone()),

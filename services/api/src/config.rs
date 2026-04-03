@@ -99,8 +99,7 @@ impl Config {
                 .expect("DATABASE_URL environment variable must be set"),
             neo4j_uri: std::env::var("NEO4J_URI")
                 .unwrap_or_else(|_| "bolt://neo4j:7687".to_string()),
-            neo4j_user: std::env::var("NEO4J_USER")
-                .unwrap_or_else(|_| "neo4j".to_string()),
+            neo4j_user: std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
             neo4j_password: std::env::var("NEO4J_PASSWORD")
                 .expect("NEO4J_PASSWORD environment variable must be set"),
             qdrant_host: std::env::var("QDRANT_HOST")
@@ -114,8 +113,7 @@ impl Config {
                 .unwrap_or(768),
             collection_name: std::env::var("QDRANT_COLLECTION")
                 .unwrap_or_else(|_| "code_embeddings".to_string()),
-            chat_model: std::env::var("CHAT_MODEL")
-                .unwrap_or_else(|_| "codellama:7b".to_string()),
+            chat_model: std::env::var("CHAT_MODEL").unwrap_or_else(|_| "codellama:7b".to_string()),
             port: std::env::var("API_PORT")
                 .map(|s| s.parse().unwrap_or(8080))
                 .unwrap_or(8080),
