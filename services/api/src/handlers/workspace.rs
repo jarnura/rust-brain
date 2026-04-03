@@ -216,7 +216,7 @@ pub async fn get_workspace(
     Ok(Json(workspace))
 }
 
-/// `DELETE /workspaces/:id` — archive a workspace and clean up clone directory.
+/// `DELETE /workspaces/:id` — archive a workspace and clean up clone directory and Docker volume.
 ///
 /// Returns `204 No Content` on success, `404` if not found.
 pub async fn delete_workspace(
@@ -245,15 +245,24 @@ pub async fn delete_workspace(
         info!(
             workspace_id = %id,
             clone_path = ?workspace.clone_path,
-            "Workspace archived — triggering clone dir cleanup"
+            volume_name = ?workspace.volume_name,
+            "Workspace archived — triggering clone dir and volume cleanup"
         );
-        if let Some(clone_path) = workspace.clone_path {
-            tokio::spawn(async move {
-                if let Err(e) = tokio::fs::remove_dir_all(&clone_path).await {
-                    warn!("Failed to remove clone dir {}: {}", clone_path, e);
+        let clone_path = workspace.clone_path;
+        let volume_name = workspace.volume_name;
+        let docker = state.docker.clone();
+        tokio::spawn(async move {
+            if let Some(path) = clone_path {
+                if let Err(e) = tokio::fs::remove_dir_all(&path).await {
+                    warn!("Failed to remove clone dir {}: {}", path, e);
                 }
-            });
-        }
+            }
+            if let Some(vol) = volume_name {
+                if let Err(e) = docker.remove_volume(&vol).await {
+                    warn!("Failed to remove Docker volume {}: {}", vol, e);
+                }
+            }
+        });
     }
 
     Ok(StatusCode::NO_CONTENT)
