@@ -44,12 +44,15 @@ pub async fn create_workspace_schema(pool: &PgPool, schema_name: &str) -> anyhow
         .await
         .with_context(|| format!("Failed to create schema '{schema_name}'"))?;
 
-    // Create rustbrain intelligence tables scoped to this schema
-    let ddl = workspace_ddl(schema_name);
-    sqlx::query(&ddl)
-        .execute(pool)
-        .await
-        .with_context(|| format!("Failed to create tables in schema '{schema_name}'"))?;
+    // Create rustbrain intelligence tables scoped to this schema.
+    // Each statement must be executed individually since sqlx does not
+    // support multiple statements in a single `query().execute()` call.
+    for stmt in workspace_ddl_statements(schema_name) {
+        sqlx::query(&stmt)
+            .execute(pool)
+            .await
+            .with_context(|| format!("Failed to create tables in schema '{schema_name}'"))?;
+    }
 
     Ok(())
 }
@@ -72,13 +75,11 @@ fn validate_schema_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Generate the DDL for all rustbrain intelligence tables in the given schema.
-fn workspace_ddl(schema_name: &str) -> String {
-    format!(
-        r#"
-SET LOCAL search_path = {schema_name};
-
-CREATE TABLE IF NOT EXISTS {schema_name}.source_files (
+/// Generate individual DDL statements for the rustbrain intelligence tables.
+fn workspace_ddl_statements(schema_name: &str) -> Vec<String> {
+    vec![
+        format!(
+            r#"CREATE TABLE IF NOT EXISTS {schema_name}.source_files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     path TEXT NOT NULL UNIQUE,
     content TEXT,
@@ -86,9 +87,10 @@ CREATE TABLE IF NOT EXISTS {schema_name}.source_files (
     size_bytes BIGINT,
     last_modified TIMESTAMPTZ,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS {schema_name}.extracted_items (
+)"#
+        ),
+        format!(
+            r#"CREATE TABLE IF NOT EXISTS {schema_name}.extracted_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_file_id UUID REFERENCES {schema_name}.source_files(id) ON DELETE CASCADE,
     fqn TEXT NOT NULL,
@@ -102,24 +104,25 @@ CREATE TABLE IF NOT EXISTS {schema_name}.extracted_items (
     line_end INTEGER,
     extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (fqn, item_type)
-);
-
-CREATE INDEX IF NOT EXISTS idx_{schema_name}_extracted_items_fqn
-    ON {schema_name}.extracted_items(fqn);
-
-CREATE TABLE IF NOT EXISTS {schema_name}.call_sites (
+)"#
+        ),
+        format!(
+            "CREATE INDEX IF NOT EXISTS idx_{schema_name}_extracted_items_fqn ON {schema_name}.extracted_items(fqn)"
+        ),
+        format!(
+            r#"CREATE TABLE IF NOT EXISTS {schema_name}.call_sites (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     caller_fqn TEXT NOT NULL,
     callee_fqn TEXT NOT NULL,
     source_file_id UUID REFERENCES {schema_name}.source_files(id) ON DELETE CASCADE,
     line_number INTEGER,
     extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_{schema_name}_call_sites_caller
-    ON {schema_name}.call_sites(caller_fqn);
-"#
-    )
+)"#
+        ),
+        format!(
+            "CREATE INDEX IF NOT EXISTS idx_{schema_name}_call_sites_caller ON {schema_name}.call_sites(caller_fqn)"
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -170,19 +173,20 @@ mod tests {
     }
 
     #[test]
-    fn workspace_ddl_contains_create_schema() {
-        let ddl = workspace_ddl("ws_abcdef12");
-        assert!(ddl.contains("ws_abcdef12.source_files"));
-        assert!(ddl.contains("ws_abcdef12.extracted_items"));
-        assert!(ddl.contains("ws_abcdef12.call_sites"));
-        assert!(ddl.contains("CREATE TABLE IF NOT EXISTS"));
-        assert!(ddl.contains("CREATE INDEX IF NOT EXISTS"));
+    fn workspace_ddl_contains_all_tables() {
+        let stmts = workspace_ddl_statements("ws_abcdef12");
+        let joined = stmts.join("\n");
+        assert!(joined.contains("ws_abcdef12.source_files"));
+        assert!(joined.contains("ws_abcdef12.extracted_items"));
+        assert!(joined.contains("ws_abcdef12.call_sites"));
+        assert!(joined.contains("CREATE TABLE IF NOT EXISTS"));
+        assert!(joined.contains("CREATE INDEX IF NOT EXISTS"));
     }
 
     #[test]
     fn workspace_ddl_does_not_leak_other_schemas() {
-        let ddl = workspace_ddl("ws_abcdef12");
-        // Should only reference the target schema, not public or others
-        assert!(!ddl.contains("public."));
+        let stmts = workspace_ddl_statements("ws_abcdef12");
+        let joined = stmts.join("\n");
+        assert!(!joined.contains("public."));
     }
 }
