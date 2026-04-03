@@ -22,6 +22,14 @@ const ALLOWED_TABLES: &[&str] = &[
     "ingestion_runs",
     "audit_events",
     "repositories",
+    // Added in RUSA-65: tables introduced by migrations after RUSA-61
+    "workspaces",
+    "executions",
+    "agent_events",
+    "validator_runs",
+    "eval_cases",
+    "bench_runs",
+    "bench_case_results",
 ];
 
 /// Mutating SQL keywords that must be rejected (checked as whole tokens).
@@ -331,6 +339,27 @@ mod tests {
             assert!(
                 validate_query(&query).is_ok(),
                 "Should allow table: {}",
+                table
+            );
+        }
+    }
+
+    #[test]
+    fn test_allows_new_tables_added_rusa65() {
+        let new_tables = [
+            "workspaces",
+            "executions",
+            "agent_events",
+            "validator_runs",
+            "eval_cases",
+            "bench_runs",
+            "bench_case_results",
+        ];
+        for table in new_tables {
+            let query = format!("SELECT * FROM {}", table);
+            assert!(
+                validate_query(&query).is_ok(),
+                "Should allow new table: {}",
                 table
             );
         }
