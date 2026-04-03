@@ -22,3 +22,6 @@ services/api/static/test.html
 
 # Agent worktrees
 .worktrees/
+
+# TypeScript build artifacts
+*.tsbuildinfo
