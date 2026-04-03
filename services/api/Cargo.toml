@@ -60,3 +60,6 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio = { version = "1.37", features = ["full"] }
 serde_json = "1.0"
 futures-util = "0.3"
+# Temp file and env helpers for unit tests
+tempfile = "3"
+temp-env = "0.3"

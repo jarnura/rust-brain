@@ -184,7 +184,9 @@ async fn test_aggregate_search_missing_query() {
 #[ignore]
 async fn test_get_function_not_found() {
     let resp = client()
-        .get(format!("{BASE}/tools/get_function?fqn=nonexistent::fake::fn"))
+        .get(format!(
+            "{BASE}/tools/get_function?fqn=nonexistent::fake::fn"
+        ))
         .send()
         .await
         .expect("GET /tools/get_function failed");
@@ -325,7 +327,9 @@ async fn test_find_usages_of_type_missing_param() {
 #[ignore]
 async fn test_get_module_tree_happy_path() {
     let resp = client()
-        .get(format!("{BASE}/tools/get_module_tree?crate_name=rustbrain_ingestion"))
+        .get(format!(
+            "{BASE}/tools/get_module_tree?crate_name=rustbrain_ingestion"
+        ))
         .send()
         .await
         .expect("GET /tools/get_module_tree failed");
@@ -398,7 +402,8 @@ async fn test_query_graph_both_fields_missing() {
 
     // Neither 'query' nor 'query_name' provided → 400
     assert_eq!(
-        resp.status(), 400,
+        resp.status(),
+        400,
         "missing both query fields should return 400, got {}",
         resp.status()
     );
@@ -412,7 +417,9 @@ async fn test_query_graph_both_fields_missing() {
 #[ignore]
 async fn test_find_calls_with_type_happy_path() {
     let resp = client()
-        .get(format!("{BASE}/tools/find_calls_with_type?type_name=String"))
+        .get(format!(
+            "{BASE}/tools/find_calls_with_type?type_name=String"
+        ))
         .send()
         .await
         .expect("GET /tools/find_calls_with_type failed");
@@ -447,7 +454,9 @@ async fn test_find_calls_with_type_missing_param() {
 async fn test_find_trait_impls_for_type_happy_path() {
     // Parameter is `type_name`, not `type_fqn`
     let resp = client()
-        .get(format!("{BASE}/tools/find_trait_impls_for_type?type_name=String"))
+        .get(format!(
+            "{BASE}/tools/find_trait_impls_for_type?type_name=String"
+        ))
         .send()
         .await
         .expect("GET /tools/find_trait_impls_for_type failed");
@@ -737,7 +746,11 @@ async fn test_tasks_crud_lifecycle() {
         .send()
         .await
         .expect("PUT /api/tasks/:id bad transition failed");
-    assert_eq!(bad_resp.status(), 400, "invalid transition should return 400");
+    assert_eq!(
+        bad_resp.status(),
+        400,
+        "invalid transition should return 400"
+    );
     let bad_body: Value = bad_resp.json().await.unwrap();
     assert_eq!(bad_body["code"], "BAD_REQUEST");
 
@@ -748,7 +761,11 @@ async fn test_tasks_crud_lifecycle() {
         .send()
         .await
         .expect("PUT /api/tasks/:id escalate failed");
-    assert_eq!(escalate_resp.status(), 200, "escalated is always a valid transition");
+    assert_eq!(
+        escalate_resp.status(),
+        200,
+        "escalated is always a valid transition"
+    );
 
     // GET non-existent task
     let missing_resp = client

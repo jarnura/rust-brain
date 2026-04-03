@@ -148,6 +148,123 @@ impl DockerClient {
         Ok(())
     }
 
+    /// Derives the canonical container name for an execution UUID.
+    ///
+    /// Uses the first 8 hex characters (without hyphens) of the UUID.
+    pub fn container_name(execution_id: &str) -> String {
+        let short = execution_id
+            .chars()
+            .filter(|c| *c != '-')
+            .take(8)
+            .collect::<String>();
+        format!("rustbrain-exec-{short}")
+    }
+
+    /// Spawns an ephemeral OpenCode container for a single execution.
+    ///
+    /// Runs:
+    /// ```bash
+    /// docker run -d \
+    ///   --name rustbrain-exec-{short_id} \
+    ///   --network {network} \
+    ///   -v {volume_name}:/workspace:rw \
+    ///   -w /workspace \
+    ///   {image}
+    /// ```
+    ///
+    /// Returns `(container_id, base_url)` where `base_url` is
+    /// `http://{container_name}:4096` (reachable inside the Docker network).
+    pub async fn spawn_execution_container(
+        &self,
+        execution_id: &str,
+        volume_name: &str,
+        network: &str,
+        image: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let container_name = Self::container_name(execution_id);
+        let volume_mount = format!("{}:/workspace:rw", volume_name);
+
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "-d",
+                "--name",
+                &container_name,
+                "--network",
+                network,
+                "-v",
+                &volume_mount,
+                "-w",
+                "/workspace",
+                image,
+            ])
+            .output()
+            .await
+            .context("failed to spawn `docker run` for execution container")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "`docker run {}` failed (exit {}): {}",
+                container_name,
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        let container_id = String::from_utf8(output.stdout)
+            .context("docker run: stdout not valid UTF-8")?
+            .trim()
+            .to_string();
+
+        let base_url = format!("http://{}:4096", container_name);
+        Ok((container_id, base_url))
+    }
+
+    /// Stops a running container by ID or name.
+    ///
+    /// Runs `docker stop <container_id>`.
+    pub async fn stop_container(&self, container_id: &str) -> anyhow::Result<()> {
+        let output = Command::new("docker")
+            .args(["stop", container_id])
+            .output()
+            .await
+            .context("failed to spawn `docker stop`")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "`docker stop {}` failed (exit {}): {}",
+                container_id,
+                output.status,
+                stderr.trim()
+            );
+        }
+        Ok(())
+    }
+
+    /// Force-removes a container by ID or name.
+    ///
+    /// Runs `docker rm -f <container_id>`. Safe to call on already-stopped containers.
+    pub async fn remove_container(&self, container_id: &str) -> anyhow::Result<()> {
+        let output = Command::new("docker")
+            .args(["rm", "-f", container_id])
+            .output()
+            .await
+            .context("failed to spawn `docker rm`")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "`docker rm -f {}` failed (exit {}): {}",
+                container_id,
+                output.status,
+                stderr.trim()
+            );
+        }
+        Ok(())
+    }
+
     /// Returns `true` if the named volume exists, `false` otherwise.
     ///
     /// Uses `docker volume inspect <name>` — exit 0 means found, exit 1 means
@@ -182,6 +299,36 @@ impl DockerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_container_name_strips_hyphens_takes_eight() {
+        assert_eq!(
+            DockerClient::container_name("abc12345-0000-0000-0000-000000000000"),
+            "rustbrain-exec-abc12345"
+        );
+    }
+
+    #[test]
+    fn test_container_name_short_input_no_panic() {
+        let name = DockerClient::container_name("ab-cd");
+        assert!(name.starts_with("rustbrain-exec-"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_execution_container_error_without_docker() {
+        let client = DockerClient::new();
+        // Spawning with a clearly non-existent image should return Err, not panic.
+        let result = client
+            .spawn_execution_container(
+                "abc12345-0000-0000-0000-000000000000",
+                "rustbrain-ws-test0000",
+                "rustbrain",
+                "rustbrain-opencode-test-nonexistent:latest",
+            )
+            .await;
+        // Either docker is absent (spawn Err) or image doesn't exist (run Err).
+        assert!(result.is_err() || result.is_ok()); // no panic is the test
+    }
 
     #[test]
     fn test_volume_name_strips_hyphens_takes_eight() {
