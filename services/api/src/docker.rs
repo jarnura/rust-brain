@@ -368,10 +368,10 @@ mod tests {
         let result = client
             .volume_exists("rustbrain-ws-definitely-does-not-exist-xyz")
             .await;
-        match result {
-            Ok(exists) => assert!(!exists),
-            Err(_) => {} // docker not available in this env
+        if let Ok(exists) = result {
+            assert!(!exists);
         }
+        // If docker is absent, the spawn error is returned (Err, not panic)
     }
 
     #[tokio::test]

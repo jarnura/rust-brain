@@ -37,7 +37,7 @@ impl WorkspaceStatus {
     }
 
     /// Parse from the text representation stored in Postgres.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_db_str(s: &str) -> Self {
         match s {
             "cloning" => Self::Cloning,
             "indexing" => Self::Indexing,
@@ -208,7 +208,7 @@ mod tests {
             ("archived", WorkspaceStatus::Archived),
         ];
         for (s, expected) in &pairs {
-            let parsed = WorkspaceStatus::from_str(s);
+            let parsed = WorkspaceStatus::from_db_str(s);
             assert_eq!(&parsed, expected);
             assert_eq!(parsed.as_str(), *s);
         }

@@ -99,7 +99,8 @@ fn repo_slug(url: &str) -> String {
         .trim_start_matches("https://github.com/")
         .trim_end_matches(".git");
     clean
-        .split('/').rfind(|s| !s.is_empty())
+        .split('/')
+        .rfind(|s| !s.is_empty())
         .unwrap_or(clean)
         .to_string()
 }
