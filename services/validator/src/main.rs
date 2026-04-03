@@ -26,6 +26,8 @@ use tracing::info;
 use crate::comparator::{compare, parse_diff};
 use crate::executor::ExecutorParams;
 use crate::github::GithubClient;
+use crate::judge::{JudgeClient, JudgeInput};
+use crate::models::RunResult;
 use crate::opencode::OpenCodeClient;
 
 // =============================================================================
@@ -114,13 +116,41 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Validate that all required environment variables are present.
+///
+/// Fails fast at startup rather than panicking mid-run.
+fn validate_required_env_vars() -> Result<()> {
+    let required = ["LITELLM_BASE_URL", "LITELLM_API_KEY", "DATABASE_URL"];
+    let missing: Vec<&str> = required
+        .iter()
+        .filter(|&&k| std::env::var(k).is_err())
+        .copied()
+        .collect();
+
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "Missing required environment variables: {}",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
 async fn run_validate(args: ValidateArgs) -> Result<()> {
+    validate_required_env_vars()?;
+
     let github = GithubClient::from_env();
     let opencode = OpenCodeClient::new(
         args.opencode_url.clone(),
         args.opencode_user.clone(),
         args.opencode_pass.clone(),
     );
+    let judge = JudgeClient::from_env().context("Failed to initialise LLM judge client")?;
+
+    let db_url = std::env::var("DATABASE_URL").expect("validated above");
+    let pool = sqlx::PgPool::connect(&db_url)
+        .await
+        .context("Failed to connect to Postgres")?;
 
     info!(repo = %args.repo, pr_number = args.pr_number, runs = args.runs, "Starting validation");
 
@@ -153,8 +183,16 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
         "Expected diff parsed"
     );
 
-    // Step 4: Run the agent N times and compare each run
-    let mut run_results = Vec::new();
+    // Build linked issue descriptions for the judge from the PR's closing issues.
+    let linked_issues: Vec<String> = pr_context
+        .closing_issues
+        .iter()
+        .map(|i| format!("#{}: {}", i.number, i.title))
+        .collect();
+
+    // Step 4: Run the agent N times, judge each run, collect RunResults
+    let mut run_results: Vec<RunResult> = Vec::new();
+
     for run_idx in 0..args.runs {
         info!(run = run_idx, total = args.runs, "Starting executor run");
 
@@ -186,10 +224,75 @@ async fn run_validate(args: ValidateArgs) -> Result<()> {
             print_comparison_human(run_idx, &comparison);
         }
 
-        run_results.push(comparison);
+        // Step 5: LLM judge evaluation for this run
+        let repo_context = format!(
+            "Structural comparison metrics — file_precision: {:.2}, file_recall: {:.2}, line_similarity: {:.4}",
+            comparison.file_precision, comparison.file_recall, comparison.line_similarity,
+        );
+
+        let judge_input = JudgeInput {
+            pr_description: requirements.text.clone(),
+            linked_issues: linked_issues.clone(),
+            expected_diff: expected_diff_str.clone(),
+            actual_diff: actual_diff_str,
+            repo_context,
+            inverted: args.inverted,
+        };
+
+        let judge_output = judge
+            .evaluate(&judge_input)
+            .await
+            .with_context(|| format!("LLM judge evaluation failed for run {run_idx}"))?;
+
+        info!(
+            run = run_idx,
+            composite = judge_output.composite,
+            pass = judge_output.pass,
+            "Judge evaluation complete"
+        );
+
+        run_results.push(RunResult {
+            run_index: run_idx,
+            dimensions: judge_output.dimensions,
+            composite: judge_output.composite,
+            pass: judge_output.pass,
+            tokens_used: 0,
+            cost_usd: 0.0,
+        });
     }
 
-    info!("Validation complete");
+    // Step 6: Aggregate scores across all runs
+    let validation = scorer::aggregate(
+        args.repo.clone(),
+        args.pr_number,
+        run_results,
+        args.inverted,
+    );
+
+    info!(
+        mean_composite = validation.mean_composite,
+        std_dev = validation.std_dev,
+        pass = validation.pass,
+        "Aggregation complete"
+    );
+
+    // Step 7: Persist to Postgres
+    let run_ids = storage::save_run(&pool, &validation)
+        .await
+        .context("Failed to persist validation result to Postgres")?;
+
+    info!(
+        run_ids = ?run_ids,
+        first_id = ?run_ids.first(),
+        "Validation persisted to validator_runs"
+    );
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&validation)?);
+    } else {
+        print_validation_summary(&validation, &run_ids);
+    }
+
     Ok(())
 }
 
@@ -235,5 +338,19 @@ fn print_comparison_human(run_idx: u8, c: &crate::models::ComparisonResult) {
     println!("  Line similarity: {:.4}", c.line_similarity);
     if !c.non_rust_files.is_empty() {
         println!("  Non-Rust files : {}", c.non_rust_files.join(", "));
+    }
+}
+
+fn print_validation_summary(v: &crate::models::ValidationResult, run_ids: &[uuid::Uuid]) {
+    println!("\n=== Validation Summary ===");
+    println!("  Repo           : {}", v.repo);
+    println!("  PR             : #{}", v.pr_number);
+    println!("  Runs           : {}", v.runs.len());
+    println!("  Mean composite : {:.3}", v.mean_composite);
+    println!("  Std dev        : {:.3}", v.std_dev);
+    println!("  Pass           : {}", if v.pass { "YES" } else { "NO" });
+    println!("  Inverted       : {}", v.inverted);
+    if let Some(first_id) = run_ids.first() {
+        println!("  Run batch ID   : {first_id}");
     }
 }
