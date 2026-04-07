@@ -62,9 +62,8 @@ pub struct FileNode {
     pub name: String,
     /// Full path relative to the workspace clone root.
     pub path: String,
-    /// `"file"` or `"directory"`.
-    #[serde(rename = "type")]
-    pub node_type: String,
+    /// `true` for directories, `false` for files.
+    pub is_dir: bool,
     /// Child nodes (omitted for files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<FileNode>,
@@ -540,7 +539,7 @@ fn build_tree(path: &std::path::Path, root: &std::path::Path) -> std::io::Result
         return Ok(FileNode {
             name,
             path: rel_path,
-            node_type: "file".to_string(),
+            is_dir: false,
             children: vec![],
         });
     }
@@ -569,7 +568,7 @@ fn build_tree(path: &std::path::Path, root: &std::path::Path) -> std::io::Result
     Ok(FileNode {
         name,
         path: rel_path,
-        node_type: "directory".to_string(),
+        is_dir: true,
         children,
     })
 }
@@ -650,10 +649,10 @@ mod tests {
         std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
 
         let tree = build_tree(tmp.path(), tmp.path()).unwrap();
-        assert_eq!(tree.node_type, "directory");
+        assert!(tree.is_dir);
         assert_eq!(tree.children.len(), 1);
         assert_eq!(tree.children[0].name, "main.rs");
-        assert_eq!(tree.children[0].node_type, "file");
+        assert!(!tree.children[0].is_dir);
         assert_eq!(tree.children[0].path, "main.rs");
     }
 
@@ -695,7 +694,7 @@ mod tests {
         let node = FileNode {
             name: "main.rs".to_string(),
             path: "main.rs".to_string(),
-            node_type: "file".to_string(),
+            is_dir: false,
             children: vec![],
         };
         let json = serde_json::to_value(&node).unwrap();
@@ -708,11 +707,11 @@ mod tests {
         let node = FileNode {
             name: "src".to_string(),
             path: "src".to_string(),
-            node_type: "directory".to_string(),
+            is_dir: true,
             children: vec![FileNode {
                 name: "main.rs".to_string(),
                 path: "src/main.rs".to_string(),
-                node_type: "file".to_string(),
+                is_dir: false,
                 children: vec![],
             }],
         };
