@@ -73,11 +73,73 @@ pub struct CaseRunResult {
 // Internal: validator subprocess output
 // =============================================================================
 
-/// JSON structure emitted by `validator validate --json` per run.
-///
-/// The validator prints one JSON object per line (one per `--runs N` run).
+/// Per-dimension score from the LLM judge.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DimensionScore {
+    /// Dimension name (e.g., "File Precision").
+    dimension: String,
+    /// Score from 1.0 to 5.0.
+    score: f32,
+    /// Judge's reasoning for this score.
+    #[serde(default)]
+    reasoning: String,
+}
+
+/// Result of a single validator run (matches validator's RunResult).
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct ValidatorRunResult {
+    /// Zero-indexed run number.
+    run_index: u8,
+    /// Per-dimension scores from the LLM judge.
+    dimensions: Vec<DimensionScore>,
+    /// Weighted composite score (1.0–5.0).
+    composite: f32,
+    /// Whether this run passed the threshold.
+    pass: bool,
+    /// Approximate tokens used.
+    #[serde(default)]
+    tokens_used: u32,
+    /// Estimated cost in USD.
+    #[serde(default)]
+    cost_usd: f32,
+}
+
+/// Full validation result from the validator (matches validator's ValidationResult).
 #[derive(Debug, Deserialize)]
-struct ValidatorJsonLine {
+#[allow(dead_code)]
+struct ValidatorOutput {
+    /// UUID assigned at save time (optional).
+    #[serde(default)]
+    id: Option<uuid::Uuid>,
+    /// GitHub repository in `owner/repo` form.
+    #[serde(default)]
+    repo: String,
+    /// PR number that was validated.
+    #[serde(default)]
+    pr_number: u32,
+    /// Individual run results.
+    runs: Vec<ValidatorRunResult>,
+    /// Mean composite score across all runs.
+    mean_composite: f32,
+    /// Standard deviation of composite scores.
+    #[serde(default)]
+    std_dev: f32,
+    /// Overall pass/fail.
+    pass: bool,
+    /// True when PR was expected to be rejected.
+    #[serde(default)]
+    inverted: bool,
+    /// Total cost across all runs.
+    #[serde(default)]
+    cost_usd: f32,
+}
+
+/// Legacy JSON structure for backward compatibility.
+///
+/// Used when validator outputs structural comparison only (pre-RUSA-59).
+#[derive(Debug, Deserialize)]
+struct LegacyComparisonResult {
     /// Fraction of actual files that match expected files (0.0 – 1.0).
     file_precision: f64,
     /// Fraction of expected files present in actual diff (0.0 – 1.0).
@@ -86,7 +148,7 @@ struct ValidatorJsonLine {
     line_similarity: f64,
 }
 
-impl ValidatorJsonLine {
+impl LegacyComparisonResult {
     /// Compute a composite score in `[0.0, 1.0]` from the structural metrics.
     ///
     /// Weights: file_precision 30%, file_recall 30%, line_similarity 40%.
@@ -319,24 +381,26 @@ async fn run_case(
 
     for run_idx in 0..runs_per_case {
         match run_validator(config, &case.repo, case.pr, inverted).await {
-            Ok((composite, pass, cost_usd)) => {
+            Ok(output) => {
                 let bench_case_result_id = store_case_result(
                     pool,
                     bench_run_id,
                     &case.id,
                     run_idx as i16,
-                    composite,
-                    pass,
-                    cost_usd,
+                    output.composite,
+                    output.pass,
+                    output.cost_usd,
+                    &output.dimensions,
                 )
                 .await?;
 
                 info!(
                     case_id = %case.id,
                     run_idx,
-                    composite,
-                    pass,
-                    cost_usd,
+                    composite = output.composite,
+                    pass = output.pass,
+                    cost_usd = output.cost_usd,
+                    dimensions = output.dimensions.len(),
                     "Case run stored"
                 );
 
@@ -344,9 +408,9 @@ async fn run_case(
                     eval_case_id: case.id.clone(),
                     run_index: run_idx as u8,
                     bench_case_result_id,
-                    composite,
-                    pass,
-                    cost_usd,
+                    composite: output.composite,
+                    pass: output.pass,
+                    cost_usd: output.cost_usd,
                 });
             }
             Err(e) => {
@@ -356,7 +420,6 @@ async fn run_case(
                     error = %e,
                     "Validator run failed — marking as failed result"
                 );
-                // Store a zero-score placeholder so the run is counted
                 let bench_case_result_id = store_case_result(
                     pool,
                     bench_run_id,
@@ -365,6 +428,7 @@ async fn run_case(
                     0.0,
                     false,
                     0.0,
+                    &[],
                 )
                 .await?;
                 results.push(CaseRunResult {
@@ -384,13 +448,13 @@ async fn run_case(
 
 /// Invoke the `validator validate` binary for one PR and parse the JSON output.
 ///
-/// Returns `(composite, pass, cost_usd)`.
+/// Returns parsed output including composite, pass, cost, and dimension scores.
 async fn run_validator(
     config: &RunConfig,
     repo: &str,
     pr: u32,
     inverted: bool,
-) -> Result<(f64, bool, f64)> {
+) -> Result<ParsedValidatorOutput> {
     let mut cmd = tokio::process::Command::new(&config.validator_bin);
     cmd.args([
         "validate",
@@ -434,27 +498,61 @@ async fn run_validator(
     parse_validator_output(&stdout, inverted)
 }
 
-/// Parse the validator's JSON output (one JSON object per line, one per run).
+/// Parsed output from the validator containing all result data.
+#[derive(Debug, Clone)]
+struct ParsedValidatorOutput {
+    /// Weighted composite score (0.0–1.0 for legacy, 1.0–5.0 for new format).
+    composite: f64,
+    /// Whether this run passed.
+    pass: bool,
+    /// Estimated cost in USD.
+    cost_usd: f64,
+    /// Per-dimension scores from the LLM judge (empty for legacy output).
+    dimensions: Vec<DimensionScore>,
+}
+
+/// Parse the validator's JSON output.
 ///
-/// We take the first line; each invocation uses `--runs 1`.
-fn parse_validator_output(stdout: &str, inverted: bool) -> Result<(f64, bool, f64)> {
-    let line = stdout
+/// Tries to parse as `ValidatorOutput` (new format with judge scores) first,
+/// then falls back to `LegacyComparisonResult` (structural metrics only).
+fn parse_validator_output(stdout: &str, inverted: bool) -> Result<ParsedValidatorOutput> {
+    let json_lines: Vec<&str> = stdout
         .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .ok_or_else(|| anyhow::anyhow!("No JSON output from validator:\n{stdout}"))?;
+        .filter(|l| l.trim_start().starts_with('{'))
+        .collect();
 
-    let parsed: ValidatorJsonLine =
-        serde_json::from_str(line.trim()).context("Parsing validator JSON output")?;
+    if json_lines.is_empty() {
+        anyhow::bail!("No JSON output from validator:\n{stdout}");
+    }
 
-    let composite = parsed.composite();
-    let pass = parsed.pass(inverted);
+    // Try parsing as ValidatorOutput (new format) - the last JSON line
+    if let Some(last_line) = json_lines.last() {
+        if let Ok(validation) = serde_json::from_str::<ValidatorOutput>(last_line.trim()) {
+            if let Some(run) = validation.runs.first() {
+                return Ok(ParsedValidatorOutput {
+                    composite: run.composite as f64,
+                    pass: run.pass,
+                    cost_usd: run.cost_usd as f64,
+                    dimensions: run.dimensions.clone(),
+                });
+            }
+        }
+    }
 
-    // Cost estimation: validator runs are free in structural-comparison mode
-    // (no LLM calls in the ComparisonResult path); set to 0.0 unless a future
-    // judge-integrated output includes a cost field.
-    let cost_usd = 0.0f64;
+    // Fall back to LegacyComparisonResult (old format) - the first JSON line
+    if let Some(first_line) = json_lines.first() {
+        let legacy: LegacyComparisonResult =
+            serde_json::from_str(first_line.trim()).context("Parsing validator JSON output")?;
 
-    Ok((composite, pass, cost_usd))
+        return Ok(ParsedValidatorOutput {
+            composite: legacy.composite(),
+            pass: legacy.pass(inverted),
+            cost_usd: 0.0,
+            dimensions: Vec::new(),
+        });
+    }
+
+    anyhow::bail!("Failed to parse validator output as either new or legacy format")
 }
 
 // =============================================================================
@@ -586,6 +684,7 @@ async fn finalize_bench_run(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn store_case_result(
     pool: &PgPool,
     bench_run_id: Uuid,
@@ -594,12 +693,16 @@ async fn store_case_result(
     composite: f64,
     pass: bool,
     cost_usd: f64,
+    dimensions: &[DimensionScore],
 ) -> Result<Uuid> {
+    let dimension_json =
+        serde_json::to_value(dimensions).context("Failed to serialize dimension scores")?;
+
     let (id,) = sqlx::query_as::<_, (Uuid,)>(
         r#"
         INSERT INTO bench_case_results
-            (bench_run_id, eval_case_id, run_index, composite, pass, cost_usd)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (bench_run_id, eval_case_id, run_index, composite, pass, cost_usd, dimension_scores)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         "#,
     )
@@ -609,6 +712,7 @@ async fn store_case_result(
     .bind(composite)
     .bind(pass)
     .bind(cost_usd)
+    .bind(dimension_json)
     .fetch_one(pool)
     .await
     .with_context(|| format!("Storing case result for case {eval_case_id} run {run_index}"))?;
@@ -625,11 +729,11 @@ mod tests {
     use super::*;
 
     // -------------------------------------------------------------------------
-    // ValidatorJsonLine scoring
+    // LegacyComparisonResult scoring (backward compatibility)
     // -------------------------------------------------------------------------
 
-    fn make_line(fp: f64, fr: f64, ls: f64) -> ValidatorJsonLine {
-        ValidatorJsonLine {
+    fn make_legacy_line(fp: f64, fr: f64, ls: f64) -> LegacyComparisonResult {
+        LegacyComparisonResult {
             file_precision: fp,
             file_recall: fr,
             line_similarity: ls,
@@ -637,21 +741,20 @@ mod tests {
     }
 
     #[test]
-    fn composite_zero_on_empty_diff() {
-        let line = make_line(0.0, 0.0, 0.0);
+    fn legacy_composite_zero_on_empty_diff() {
+        let line = make_legacy_line(0.0, 0.0, 0.0);
         assert!((line.composite() - 0.0).abs() < 1e-9);
     }
 
     #[test]
-    fn composite_one_on_perfect_match() {
-        let line = make_line(1.0, 1.0, 1.0);
+    fn legacy_composite_one_on_perfect_match() {
+        let line = make_legacy_line(1.0, 1.0, 1.0);
         assert!((line.composite() - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn composite_weighted_correctly() {
-        // 0.30 * 0.8 + 0.30 * 0.6 + 0.40 * 0.5 = 0.24 + 0.18 + 0.20 = 0.62
-        let line = make_line(0.8, 0.6, 0.5);
+    fn legacy_composite_weighted_correctly() {
+        let line = make_legacy_line(0.8, 0.6, 0.5);
         let expected = 0.30 * 0.8 + 0.30 * 0.6 + 0.40 * 0.5;
         assert!(
             (line.composite() - expected).abs() < 1e-9,
@@ -662,54 +765,121 @@ mod tests {
     }
 
     #[test]
-    fn pass_normal_above_threshold() {
-        let line = make_line(0.7, 0.7, 0.7);
-        // composite = 0.7 >= 0.50 → pass
+    fn legacy_pass_normal_above_threshold() {
+        let line = make_legacy_line(0.7, 0.7, 0.7);
         assert!(line.pass(false));
     }
 
     #[test]
-    fn fail_normal_below_threshold() {
-        let line = make_line(0.2, 0.2, 0.2);
-        // composite = 0.2 < 0.50 → fail
+    fn legacy_fail_normal_below_threshold() {
+        let line = make_legacy_line(0.2, 0.2, 0.2);
         assert!(!line.pass(false));
     }
 
     #[test]
-    fn pass_inverted_below_threshold() {
-        let line = make_line(0.1, 0.1, 0.1);
-        // composite = 0.1 < 0.35 → pass (correctly rejected)
+    fn legacy_pass_inverted_below_threshold() {
+        let line = make_legacy_line(0.1, 0.1, 0.1);
         assert!(line.pass(true));
     }
 
     #[test]
-    fn fail_inverted_above_threshold() {
-        let line = make_line(0.8, 0.8, 0.8);
-        // composite = 0.8 >= 0.35 → fail (should have been rejected but wasn't)
+    fn legacy_fail_inverted_above_threshold() {
+        let line = make_legacy_line(0.8, 0.8, 0.8);
         assert!(!line.pass(true));
     }
 
     // -------------------------------------------------------------------------
-    // parse_validator_output
+    // parse_validator_output - new format (ValidatorOutput)
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn parses_valid_json_line() {
-        let stdout =
-            r#"{"file_precision":0.8,"file_recall":0.6,"line_similarity":0.7,"non_rust_files":[]}"#;
-        let (composite, pass, cost) = parse_validator_output(stdout, false).unwrap();
-        let expected_composite = 0.30 * 0.8 + 0.30 * 0.6 + 0.40 * 0.7;
-        assert!((composite - expected_composite).abs() < 1e-9);
-        assert!(pass); // composite > 0.50
-        assert_eq!(cost, 0.0);
+    fn make_validator_output_json() -> String {
+        serde_json::json!({
+            "id": null,
+            "repo": "org/repo",
+            "pr_number": 42,
+            "runs": [{
+                "run_index": 0,
+                "dimensions": [
+                    {"dimension": "File Precision", "score": 4.0, "reasoning": "good"},
+                    {"dimension": "File Recall", "score": 3.0, "reasoning": "ok"},
+                    {"dimension": "Logical Equivalence", "score": 4.0, "reasoning": "good"},
+                    {"dimension": "Code Quality", "score": 5.0, "reasoning": "excellent"},
+                    {"dimension": "Edge Case Handling", "score": 3.0, "reasoning": "ok"},
+                    {"dimension": "Approach Validity", "score": 4.0, "reasoning": "good"}
+                ],
+                "composite": 3.95,
+                "pass": true,
+                "tokens_used": 1200,
+                "cost_usd": 0.012
+            }],
+            "mean_composite": 3.95,
+            "std_dev": 0.0,
+            "pass": true,
+            "inverted": false,
+            "cost_usd": 0.012
+        })
+        .to_string()
     }
 
     #[test]
-    fn parses_json_with_preamble_lines() {
+    fn parses_new_validator_output_format() {
+        let stdout = make_validator_output_json();
+        let result = parse_validator_output(&stdout, false).unwrap();
+        assert!((result.composite - 3.95).abs() < 1e-4);
+        assert!(result.pass);
+        assert!((result.cost_usd - 0.012).abs() < 1e-6);
+        assert_eq!(result.dimensions.len(), 6);
+        assert_eq!(result.dimensions[0].dimension, "File Precision");
+        assert!((result.dimensions[0].score - 4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn parses_new_format_with_preamble() {
+        let output = make_validator_output_json();
+        let stdout = format!("INFO starting\n{}\n", output);
+        let result = parse_validator_output(&stdout, false).unwrap();
+        assert!((result.composite - 3.95).abs() < 1e-4);
+    }
+
+    #[test]
+    fn parses_new_format_with_both_outputs() {
+        let legacy =
+            r#"{"file_precision":0.8,"file_recall":0.6,"line_similarity":0.7,"non_rust_files":[]}"#;
+        let new_format = make_validator_output_json();
+        let stdout = format!("{}\n{}\n", legacy, new_format);
+        let result = parse_validator_output(&stdout, false).unwrap();
+        assert!(
+            (result.composite - 3.95).abs() < 1e-4,
+            "Should use new format when both present"
+        );
+        assert_eq!(result.dimensions.len(), 6);
+    }
+
+    // -------------------------------------------------------------------------
+    // parse_validator_output - legacy format (backward compatibility)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn parses_legacy_json_line() {
+        let stdout =
+            r#"{"file_precision":0.8,"file_recall":0.6,"line_similarity":0.7,"non_rust_files":[]}"#;
+        let result = parse_validator_output(stdout, false).unwrap();
+        let expected_composite = 0.30 * 0.8 + 0.30 * 0.6 + 0.40 * 0.7;
+        assert!((result.composite - expected_composite).abs() < 1e-9);
+        assert!(result.pass);
+        assert_eq!(result.cost_usd, 0.0);
+        assert!(
+            result.dimensions.is_empty(),
+            "Legacy format has no dimensions"
+        );
+    }
+
+    #[test]
+    fn parses_legacy_json_with_preamble_lines() {
         let stdout = "INFO starting\n{\"file_precision\":0.0,\"file_recall\":0.0,\"line_similarity\":0.0,\"non_rust_files\":[]}\n";
-        let (composite, pass, _) = parse_validator_output(stdout, false).unwrap();
-        assert!((composite - 0.0).abs() < 1e-9);
-        assert!(!pass);
+        let result = parse_validator_output(stdout, false).unwrap();
+        assert!((result.composite - 0.0).abs() < 1e-9);
+        assert!(!result.pass);
     }
 
     #[test]
