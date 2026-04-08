@@ -109,6 +109,9 @@ pub async fn execute_workspace(
         timeout_secs: execution.timeout_config_secs as u32,
         public_host: state.config.public_host.clone(),
         keep_alive_secs: state.config.container_keep_alive_secs,
+        ready_timeout_secs: state.config.opencode_ready_timeout_secs,
+        opencode_config_host_path: state.config.opencode_config_host_path.clone(),
+        mcp_sse_url: Some(state.config.mcp_sse_url.clone()),
     };
 
     tokio::spawn(async move {

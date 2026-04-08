@@ -23,6 +23,32 @@
 use anyhow::{anyhow, bail, Context};
 use tokio::process::Command;
 
+/// Configuration passed to [`DockerClient::spawn_execution_container`].
+#[derive(Debug, Clone)]
+pub struct ExecutionConfig<'a> {
+    /// UUID of the execution (used to derive the container name).
+    pub execution_id: &'a str,
+    /// Docker named volume containing the cloned workspace repo.
+    ///
+    /// Mounted read-write at `/workspace/target-repo` inside the container,
+    /// matching the entrypoint's `TARGET_REPO_PATH` default.
+    pub volume_name: &'a str,
+    /// Docker network the execution container joins (e.g. `rustbrain`).
+    pub network: &'a str,
+    /// Docker image to run (e.g. `opencode:latest`).
+    pub image: &'a str,
+    /// When true, publish port 4096 to a random host port for external access.
+    pub publish_port: bool,
+    /// Host-side path to the OpenCode config directory.
+    ///
+    /// When set, two bind mounts are added:
+    /// - `{path}/opencode.json` → `/home/opencode/.config/opencode/opencode.json:ro`
+    /// - `{path}/.opencode` → `/home/opencode/.config/opencode/.opencode:ro`
+    pub opencode_config_host_path: Option<&'a str>,
+    /// MCP-SSE URL injected as `MCP_SSE_URL` env var into the container.
+    pub mcp_sse_url: Option<&'a str>,
+}
+
 /// Configuration passed to [`DockerClient::run_ingestion`].
 #[derive(Debug, Clone)]
 pub struct IngestionConfig<'a> {
@@ -192,6 +218,10 @@ impl DockerClient {
 
     /// Spawns an ephemeral OpenCode container for a single execution.
     ///
+    /// Mounts the workspace volume at `/workspace/target-repo` (matching the
+    /// entrypoint's `TARGET_REPO_PATH` default) and optionally bind-mounts
+    /// OpenCode configuration files for LLM provider and agent definitions.
+    ///
     /// When `publish_port` is `true`, the container's port 4096 is published to
     /// a random host port (`-p 0:4096`). The mapped host port is returned so
     /// callers can construct a public endpoint reachable from outside Docker
@@ -202,14 +232,27 @@ impl DockerClient {
     /// - `mapped_host_port` is `Some(port)` when `publish_port` is true
     pub async fn spawn_execution_container(
         &self,
-        execution_id: &str,
-        volume_name: &str,
-        network: &str,
-        image: &str,
-        publish_port: bool,
+        cfg: &ExecutionConfig<'_>,
     ) -> anyhow::Result<(String, String, Option<u16>)> {
-        let container_name = Self::container_name(execution_id);
-        let volume_mount = format!("{}:/workspace:rw", volume_name);
+        let container_name = Self::container_name(cfg.execution_id);
+        let volume_mount = format!("{}:/workspace/target-repo:rw", cfg.volume_name);
+
+        // Pre-compute optional mount/env strings so we can borrow them in args.
+        let config_json_mount = cfg.opencode_config_host_path.map(|p| {
+            format!(
+                "{}/opencode.json:/home/opencode/.config/opencode/opencode.json:ro",
+                p
+            )
+        });
+        let agents_mount = cfg.opencode_config_host_path.map(|p| {
+            format!(
+                "{}/.opencode:/home/opencode/.config/opencode/.opencode:ro",
+                p
+            )
+        });
+        let mcp_env = cfg
+            .mcp_sse_url
+            .map(|url| format!("MCP_SSE_URL={}", url));
 
         let mut args = vec![
             "run",
@@ -217,20 +260,33 @@ impl DockerClient {
             "--name",
             &container_name,
             "--network",
-            network,
+            cfg.network,
             "-v",
             &volume_mount,
             "-w",
             "/workspace",
         ];
 
+        if let Some(ref mount) = config_json_mount {
+            args.push("-v");
+            args.push(mount);
+        }
+        if let Some(ref mount) = agents_mount {
+            args.push("-v");
+            args.push(mount);
+        }
+        if let Some(ref env) = mcp_env {
+            args.push("-e");
+            args.push(env);
+        }
+
         let port_binding = "0:4096".to_string();
-        if publish_port {
+        if cfg.publish_port {
             args.push("-p");
             args.push(&port_binding);
         }
 
-        args.push(image);
+        args.push(cfg.image);
 
         let output = Command::new("docker")
             .args(&args)
@@ -255,7 +311,7 @@ impl DockerClient {
 
         let internal_url = format!("http://{}:4096", container_name);
 
-        let mapped_port = if publish_port {
+        let mapped_port = if cfg.publish_port {
             self.get_mapped_port(&container_id, 4096).await.ok()
         } else {
             None
@@ -503,16 +559,17 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_execution_container_error_without_docker() {
         let client = DockerClient::new();
+        let cfg = ExecutionConfig {
+            execution_id: "abc12345-0000-0000-0000-000000000000",
+            volume_name: "rustbrain-ws-test0000",
+            network: "rustbrain",
+            image: "rustbrain-opencode-test-nonexistent:latest",
+            publish_port: false,
+            opencode_config_host_path: None,
+            mcp_sse_url: None,
+        };
         // Spawning with a clearly non-existent image should return Err, not panic.
-        let result = client
-            .spawn_execution_container(
-                "abc12345-0000-0000-0000-000000000000",
-                "rustbrain-ws-test0000",
-                "rustbrain",
-                "rustbrain-opencode-test-nonexistent:latest",
-                false,
-            )
-            .await;
+        let result = client.spawn_execution_container(&cfg).await;
         // Either docker is absent (spawn Err) or image doesn't exist (run Err).
         assert!(result.is_err() || result.is_ok()); // no panic is the test
     }

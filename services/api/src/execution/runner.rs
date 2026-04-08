@@ -24,7 +24,7 @@ use super::models::{
     set_container_expires_at, set_container_id, set_runtime_info, set_session_id,
     timeout_execution,
 };
-use crate::docker::DockerClient;
+use crate::docker::{DockerClient, ExecutionConfig};
 use crate::opencode::OpenCodeClient;
 
 // =============================================================================
@@ -102,6 +102,13 @@ pub struct RunParams {
     /// Keep-alive TTL in seconds. When > 0, the container is kept alive for this
     /// duration after successful execution instead of being removed immediately.
     pub keep_alive_secs: u64,
+    /// Container readiness timeout in seconds (default: 60).
+    pub ready_timeout_secs: u32,
+    /// Host-side path to the OpenCode config directory for bind-mounting
+    /// `opencode.json` and `.opencode/agents/` into execution containers.
+    pub opencode_config_host_path: Option<String>,
+    /// MCP-SSE URL passed to execution containers as an environment variable.
+    pub mcp_sse_url: Option<String>,
 }
 
 // =============================================================================
@@ -186,14 +193,18 @@ async fn run_execution_inner(
 
     // 1. Spawn container (publish port when public_host is configured)
     let publish_port = params.public_host.is_some();
+    let exec_id_str = exec_id.to_string();
+    let exec_cfg = ExecutionConfig {
+        execution_id: &exec_id_str,
+        volume_name: &params.volume_name,
+        network: &params.docker_network,
+        image: &params.opencode_image,
+        publish_port,
+        opencode_config_host_path: params.opencode_config_host_path.as_deref(),
+        mcp_sse_url: params.mcp_sse_url.as_deref(),
+    };
     let (container_id, internal_url, mapped_port) = match docker
-        .spawn_execution_container(
-            &exec_id.to_string(),
-            &params.volume_name,
-            &params.docker_network,
-            &params.opencode_image,
-            publish_port,
-        )
+        .spawn_execution_container(&exec_cfg)
         .await
     {
         Ok(tuple) => tuple,
@@ -232,21 +243,38 @@ async fn run_execution_inner(
         "Container started"
     );
 
-    // 2. Wait for OpenCode to be ready (up to 30 s)
+    // 2. Wait for OpenCode to be ready (configurable timeout with retry)
     let opencode = OpenCodeClient::new(
         internal_url.clone(),
         params.opencode_user,
         params.opencode_pass,
     );
-    if !wait_for_container(&opencode, 30, Duration::from_secs(1)).await {
-        warn!(execution_id = %exec_id, "OpenCode container did not become ready");
-        let _ = fail_execution(
-            &pool,
-            exec_id,
-            "OpenCode container did not become ready within 30 s",
-        )
-        .await;
-        return Err(Some(container_id));
+    let start = std::time::Instant::now();
+    let ready =
+        wait_for_container(&opencode, params.ready_timeout_secs, Duration::from_secs(1)).await;
+    let elapsed = start.elapsed();
+
+    if ready {
+        info!(execution_id = %exec_id, elapsed_ms = elapsed.as_millis() as u64, "Container ready");
+    } else {
+        info!(execution_id = %exec_id, elapsed_ms = elapsed.as_millis() as u64, "Primary readiness check failed, retrying after 5s backoff");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if !opencode.health_check().await.unwrap_or(false) {
+            let total = start.elapsed();
+            warn!(execution_id = %exec_id, elapsed_ms = total.as_millis() as u64, "Container readiness failed after retry");
+            let _ = fail_execution(
+                &pool,
+                exec_id,
+                &format!(
+                    "OpenCode container did not become ready within {}s (+5s retry)",
+                    params.ready_timeout_secs
+                ),
+            )
+            .await;
+            return Err(Some(container_id));
+        }
+        let total = start.elapsed();
+        info!(execution_id = %exec_id, elapsed_ms = total.as_millis() as u64, "Container ready after retry");
     }
 
     // 3. Create an OpenCode session
@@ -486,12 +514,16 @@ mod tests {
             timeout_secs: 7200,
             public_host: None,
             keep_alive_secs: 0,
+            ready_timeout_secs: 60,
+            opencode_config_host_path: None,
+            mcp_sse_url: None,
         };
         assert_eq!(p.volume_name, "rustbrain-ws-abc12345");
         assert_eq!(p.docker_network, "rustbrain");
         assert_eq!(p.timeout_secs, 7200);
         assert!(p.public_host.is_none());
         assert_eq!(p.keep_alive_secs, 0);
+        assert_eq!(p.ready_timeout_secs, 60);
     }
 
     #[test]
@@ -507,8 +539,17 @@ mod tests {
             timeout_secs: 7200,
             public_host: None,
             keep_alive_secs: 1800,
+            ready_timeout_secs: 90,
+            opencode_config_host_path: Some("/opt/configs/opencode".into()),
+            mcp_sse_url: Some("http://mcp-sse:3001/sse".into()),
         };
         assert_eq!(p.keep_alive_secs, 1800);
+        assert_eq!(p.ready_timeout_secs, 90);
+        assert_eq!(
+            p.opencode_config_host_path.as_deref(),
+            Some("/opt/configs/opencode")
+        );
+        assert_eq!(p.mcp_sse_url.as_deref(), Some("http://mcp-sse:3001/sse"));
     }
 
     #[test]

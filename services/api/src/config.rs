@@ -102,6 +102,25 @@ pub struct Config {
     /// When `0` (the default), containers are removed immediately after the
     /// execution finishes. Set via `RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS`.
     pub container_keep_alive_secs: u64,
+    /// Container readiness timeout in seconds.
+    ///
+    /// How long to wait for an OpenCode container to become ready before
+    /// considering the execution failed. Defaults to 60 seconds.
+    /// Override via `OPENCODE_READY_TIMEOUT_SECS`.
+    pub opencode_ready_timeout_secs: u32,
+    /// Host-side path to the OpenCode config directory.
+    ///
+    /// When set, execution containers bind-mount `opencode.json` (LLM provider
+    /// config) and `.opencode/` (agent definitions) from this directory. Without
+    /// this, spawned containers have no LLM provider and no agent prompts.
+    /// Override via `OPENCODE_CONFIG_HOST_PATH`.
+    pub opencode_config_host_path: Option<String>,
+    /// MCP-SSE URL passed to execution containers as an environment variable.
+    ///
+    /// Allows OpenCode agents to discover rust-brain code intelligence tools.
+    /// Defaults to `http://mcp-sse:3001/sse` (Docker-network reachable).
+    /// Override via `MCP_SSE_URL`.
+    pub mcp_sse_url: String,
 }
 
 impl Config {
@@ -128,6 +147,9 @@ impl Config {
     /// | `EXECUTION_TIMEOUT_SECS` | no | `7200` |
     /// | `RUSTBRAIN_PUBLIC_HOST` | no | _(none)_ |
     /// | `RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS` | no | `0` |
+    /// | `OPENCODE_READY_TIMEOUT_SECS` | no | `60` |
+    /// | `OPENCODE_CONFIG_HOST_PATH` | no | _(none)_ |
+    /// | `MCP_SSE_URL` | no | `http://mcp-sse:3001/sse` |
     ///
     /// # Panics
     ///
@@ -177,6 +199,14 @@ impl Config {
             container_keep_alive_secs: std::env::var("RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS")
                 .map(|s| s.parse().unwrap_or(0))
                 .unwrap_or(0),
+            opencode_ready_timeout_secs: std::env::var("OPENCODE_READY_TIMEOUT_SECS")
+                .map(|s| s.parse().unwrap_or(60))
+                .unwrap_or(60),
+            opencode_config_host_path: std::env::var("OPENCODE_CONFIG_HOST_PATH")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            mcp_sse_url: std::env::var("MCP_SSE_URL")
+                .unwrap_or_else(|_| "http://mcp-sse:3001/sse".to_string()),
         }
     }
 }
@@ -209,10 +239,18 @@ mod tests {
             execution_timeout_secs: 7200,
             public_host: None,
             container_keep_alive_secs: 0,
+            opencode_ready_timeout_secs: 60,
+            opencode_config_host_path: Some("/opt/rustbrain/configs/opencode".to_string()),
+            mcp_sse_url: "http://mcp-sse:3001/sse".to_string(),
         };
 
         assert_eq!(config.embedding_dimensions, 768);
         assert_eq!(config.port, 8080);
         assert_eq!(config.embedding_model, "nomic-embed-text");
+        assert_eq!(
+            config.opencode_config_host_path.as_deref(),
+            Some("/opt/rustbrain/configs/opencode")
+        );
+        assert_eq!(config.mcp_sse_url, "http://mcp-sse:3001/sse");
     }
 }
