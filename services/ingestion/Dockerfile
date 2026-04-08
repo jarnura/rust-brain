@@ -61,17 +61,25 @@ RUN apt-get update && apt-get install -y \
 # Install cargo-expand (pinned version for Rust 1.85 compatibility)
 RUN cargo install cargo-expand@1.0.105 --locked
 
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash rustbrain
+
 WORKDIR /workspace
 
 # Copy the binary
 COPY --from=builder /build/target/release/rustbrain-ingestion /usr/local/bin/
 
-# Create directory for mounted repos
-RUN mkdir -p /workspace/target-repo
+# Create directories for mounted repos and cache, set ownership for non-root user
+RUN mkdir -p /workspace/target-repo \
+    && mkdir -p /tmp/rustbrain-expand-cache \
+    && chown -R rustbrain:rustbrain /workspace /tmp/rustbrain-expand-cache
 
 # Set environment
 ENV RUST_LOG=info,rustbrain_ingestion=debug
 # DATABASE_URL must be passed at runtime via docker-compose or -e flag
+
+# Switch to non-root user
+USER rustbrain
 
 # Default command
 ENTRYPOINT ["rustbrain-ingestion"]

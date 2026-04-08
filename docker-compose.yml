@@ -435,9 +435,9 @@ services:
     image: rustbrain-ingestion:latest
     container_name: rustbrain-ingestion
     volumes:
-      - ${HOME}/.cargo/registry:/root/.cargo/registry:ro  # Share cargo cache
-      - ${HOME}/.cargo/git:/root/.cargo/git:ro            # Share git cache
-      - rustbrain-expand-cache:/tmp/rustbrain-expand-cache  # Persist expand cache
+      - ${HOME}/.cargo/registry:/home/rustbrain/.cargo/registry:ro
+      - ${HOME}/.cargo/git:/home/rustbrain/.cargo/git:ro
+      - rustbrain-expand-cache:/tmp/rustbrain-expand-cache
       # NOTE: target-repo is mounted via `docker compose run -v` in ingest.sh
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
