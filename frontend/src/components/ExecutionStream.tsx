@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { openExecutionStream } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
-import type { AgentEvent, EventPhase } from '../types'
+import type { AgentEvent } from '../types'
 
 // ─── Phase styling ────────────────────────────────────────────────────────────
 
@@ -9,6 +9,7 @@ const PHASE_STYLES: Record<string, { bg: string; text: string; label: string }> 
   init: { bg: 'bg-dark-700', text: 'text-dark-300', label: 'INIT' },
   planning: { bg: 'bg-purple-900', text: 'text-purple-300', label: 'PLANNING' },
   reasoning: { bg: 'bg-blue-900', text: 'text-blue-300', label: 'REASONING' },
+  phase_change: { bg: 'bg-indigo-900', text: 'text-indigo-300', label: 'PHASE' },
   tool_call: { bg: 'bg-yellow-900', text: 'text-yellow-300', label: 'TOOL' },
   tool_result: { bg: 'bg-yellow-900/60', text: 'text-yellow-200', label: 'RESULT' },
   file_edit: { bg: 'bg-green-900', text: 'text-green-300', label: 'FILE' },
@@ -16,8 +17,8 @@ const PHASE_STYLES: Record<string, { bg: string; text: string; label: string }> 
   error: { bg: 'bg-red-900', text: 'text-red-300', label: 'ERROR' },
 }
 
-function phaseBadge(phase: EventPhase | null) {
-  const style = (phase ? PHASE_STYLES[phase] : null) ?? PHASE_STYLES.init
+function phaseBadge(eventType: string) {
+  const style = PHASE_STYLES[eventType] ?? PHASE_STYLES.init
   return (
     <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide ${style.bg} ${style.text} shrink-0`}>
       {style.label}
@@ -33,6 +34,7 @@ function eventSummary(event: AgentEvent): string {
     if ('tool' in c && typeof c.tool === 'string') return `${c.tool}(…)`
     if ('path' in c && typeof c.path === 'string') return c.path
     if ('summary' in c && typeof c.summary === 'string') return c.summary
+    if ('phase' in c && typeof c.phase === 'string') return c.phase
     return JSON.stringify(c)
   }
   return String(c)
@@ -114,9 +116,9 @@ export function ExecutionStream() {
       <div className="flex-1 overflow-y-auto space-y-1 font-mono text-xs">
         {streamEvents.map((event) => (
           <div key={event.id} className="flex items-start gap-2 py-0.5">
-            {phaseBadge(event.phase)}
+            {phaseBadge(event.event_type)}
             <span className="text-dark-300 shrink-0 tabular-nums">
-              {new Date(event.ts).toLocaleTimeString('en-US', { hour12: false })}
+              {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
             </span>
             <span className="text-dark-200 break-all">{eventSummary(event)}</span>
           </div>

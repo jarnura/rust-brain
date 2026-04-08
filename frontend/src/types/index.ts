@@ -77,10 +77,9 @@ export type EventPhase =
 export interface AgentEvent {
   id: number
   execution_id: string
-  phase: EventPhase | null
+  timestamp: string
   event_type: string
   content: Record<string, unknown>
-  ts: string
 }
 
 // ─── Diff ─────────────────────────────────────────────────────────────────────
