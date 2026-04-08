@@ -106,6 +106,7 @@ pub async fn execute_workspace(
         opencode_image: state.config.opencode_image.clone(),
         opencode_user: state.config.opencode_auth_user.clone(),
         opencode_pass: state.config.opencode_auth_pass.clone(),
+        timeout_secs: execution.timeout_config_secs as u32,
     };
 
     tokio::spawn(async move {
@@ -193,7 +194,7 @@ pub async fn stream_events(
                 let data = serde_json::to_string(event).unwrap_or_default();
                 yield Ok(Event::default()
                     .id(event.id.to_string())
-                    .event(&event.event_type)
+                    .event("agent_event")
                     .data(data));
                 last_event_id = event.id;
             }
@@ -212,7 +213,7 @@ pub async fn stream_events(
                                 let data = serde_json::to_string(event).unwrap_or_default();
                                 yield Ok(Event::default()
                                     .id(event.id.to_string())
-                                    .event(&event.event_type)
+                                    .event("agent_event")
                                     .data(data));
                             }
                         }

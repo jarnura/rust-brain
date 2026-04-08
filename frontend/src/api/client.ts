@@ -58,8 +58,11 @@ export function getWorkspace(id: string): Promise<Workspace> {
   return get(`/workspaces/${id}`)
 }
 
-export function listFiles(id: string): Promise<FileNode[]> {
-  return get(`/workspaces/${id}/files`)
+export async function listFiles(id: string): Promise<FileNode[]> {
+  const root = await get<FileNode | FileNode[]>(`/workspaces/${id}/files`)
+  // API returns a single root FileNode; extract its children as the tree.
+  if (Array.isArray(root)) return root
+  return root.children ?? []
 }
 
 // ─── Execution API ────────────────────────────────────────────────────────────
@@ -79,8 +82,9 @@ export function getExecution(id: string): Promise<Execution> {
   return get(`/executions/${id}`)
 }
 
-export function listExecutions(workspaceId: string): Promise<Execution[]> {
-  return get(`/workspaces/${workspaceId}/executions`)
+export async function listExecutions(workspaceId: string): Promise<Execution[]> {
+  const data = await get<Execution[]>(`/workspaces/${workspaceId}/executions`)
+  return Array.isArray(data) ? data : []
 }
 
 // ─── Diff / Commit / Reset ────────────────────────────────────────────────────
@@ -122,7 +126,7 @@ export function openExecutionStream(
   // Track reconnect attempts for graceful back-off
   let closed = false
 
-  es.onmessage = (e) => {
+  const handleMessage = (e: MessageEvent) => {
     if (closed) return
     try {
       const data = JSON.parse(e.data as string) as unknown
@@ -131,6 +135,12 @@ export function openExecutionStream(
       // non-JSON keepalive comment — ignore
     }
   }
+
+  // Listen for typed "agent_event" SSE events (what the backend actually sends)
+  es.addEventListener('agent_event', handleMessage)
+
+  // Also keep onmessage as fallback for generic/unnamed SSE messages
+  es.onmessage = handleMessage
 
   es.addEventListener('done', () => {
     if (!closed) {
