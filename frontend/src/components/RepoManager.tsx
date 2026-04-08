@@ -75,8 +75,9 @@ export function RepoManager() {
     try {
       const ws = await listWorkspaces()
       setWorkspaces(ws)
-    } catch {
-      // ignore
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh workspaces')
     }
   }
 

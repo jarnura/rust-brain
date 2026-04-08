@@ -1,16 +1,6 @@
-import { useEffect } from 'react'
-import { listWorkspaces } from '../api/client'
 import { RepoManager } from '../components/RepoManager'
-import { useWorkspaceStore } from '../store/workspace'
 
 export function WorkspaceList() {
-  const { setWorkspaces } = useWorkspaceStore()
-
-  useEffect(() => {
-    listWorkspaces()
-      .then(setWorkspaces)
-      .catch(() => {})
-  }, [setWorkspaces])
 
   return (
     <div className="flex-1 flex items-start justify-center p-8 overflow-y-auto">

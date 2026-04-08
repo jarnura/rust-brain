@@ -10,6 +10,22 @@ export function WorkspaceDetail() {
 
   const workspace = workspaces.find((w) => w.id === activeWorkspaceId)
 
+  if (!workspace) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-dark-400 text-sm mb-4">Workspace not found.</p>
+          <button
+            onClick={() => setActiveWorkspaceId(null)}
+            className="px-4 py-2 bg-dark-800 hover:bg-dark-700 rounded text-sm text-dark-200 transition-colors"
+          >
+            Back to Workspaces
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 flex min-h-0 overflow-hidden">
       {/* Left: file tree */}
