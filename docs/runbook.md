@@ -9,6 +9,7 @@ Operational guide for starting, stopping, monitoring, and troubleshooting the ru
 | Start all services | `bash scripts/start.sh` |
 | Stop all services | `bash scripts/stop.sh` |
 | Health check | `bash scripts/healthcheck.sh` |
+| E2E smoke test | `bash scripts/smoke-test.sh` |
 | View logs | `docker-compose logs -f [service]` |
 | Reset all data | `docker-compose down -v && bash scripts/start.sh` |
 
@@ -124,6 +125,35 @@ Postgres             ✓ OK (localhost:5432)
 Neo4j Bolt           ✓ OK (localhost:7687)
 Qdrant gRPC          ✓ OK (localhost:6334)
 ```
+
+### E2E Smoke Test
+
+The smoke test validates the full pipeline end-to-end — not just port availability, but actual data queries across all three stores, MCP tool invocation, and cross-DB aggregate search.
+
+```bash
+bash scripts/smoke-test.sh
+```
+
+**Checks performed (9 total):**
+
+| # | Check | What It Validates |
+|---|-------|-------------------|
+| 1 | Postgres query | `extracted_items` count > 0 via `pg_query` |
+| 2 | Neo4j query | Total graph node count > 0 via `query_graph` |
+| 3 | Qdrant health | Vector store healthy with points > 0 via `/health` |
+| 4 | Semantic search | `search_semantic` returns results for a known query |
+| 5 | MCP SSE bridge | SSE endpoint returns a valid session ID |
+| 6 | Aggregate search | Cross-DB fan-out returns real code results |
+| 7 | Trait graph query | `MATCH (n:Trait) RETURN count(n)` > 0 |
+| 8 | API health | `/health` status is healthy |
+| 9 | OpenCode health | OpenCode dependency reports healthy |
+
+**When to run:**
+- After every `docker compose up`
+- In CI on PRs touching `configs/opencode/`, `services/mcp/`, `services/api/`
+- Before any release tag
+
+**Exit codes:** 0 = all pass, non-zero = number of failures.
 
 ### Manual Health Checks
 
@@ -432,6 +462,71 @@ docker-compose restart prometheus grafana
 bash scripts/stop.sh && bash scripts/start.sh
 ```
 
+### 11. Cross-Store Consistency Failure
+
+**Symptoms:**
+- Prometheus alert `ConsistencyCheckFailed` fires (severity: critical)
+- Grafana "Cross-Store Consistency" dashboard shows red status
+- `/health/consistency` returns HTTP 503
+
+**Diagnosis:**
+```bash
+# Check aggregate health
+curl -s http://localhost:8088/health/consistency | jq '.'
+
+# Detailed per-crate report
+curl -s "http://localhost:8088/api/consistency?detail=full" | jq '.'
+
+# Check a specific crate
+curl -s "http://localhost:8088/api/consistency?crate=my_crate&detail=full" | jq '.'
+```
+
+**Common inconsistency patterns:**
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Neo4j count < Postgres count | Graph stage incomplete or failed | Re-run Graph stage |
+| Qdrant count < Postgres count | Embed stage incomplete or failed | Re-run Embed stage |
+| Neo4j count > Postgres count | Orphaned graph nodes from deleted source | Re-ingest the crate |
+| Qdrant count > Postgres count | Orphaned embeddings from deleted source | Re-ingest the crate |
+
+**Recovery — Selective Stage Re-Run:**
+
+```bash
+# Re-run Graph stage only (skips expand/parse/typecheck/extract)
+bash scripts/ingest.sh --from-stage graph /path/to/crate
+
+# Re-run Embed stage only (skips everything up to embedding)
+bash scripts/ingest.sh --from-stage embed /path/to/crate
+
+# Re-run Graph + Embed stages
+bash scripts/ingest.sh --from-stage graph /path/to/crate
+```
+
+**Recovery — Full Re-Ingestion:**
+
+```bash
+# Nuclear option: re-ingest from scratch (safe — idempotent writes)
+bash scripts/ingest.sh /path/to/crate
+```
+
+**Verification after recovery:**
+
+```bash
+# Confirm consistency is restored
+curl -s http://localhost:8088/health/consistency | jq '.status'
+# Expected: "healthy"
+
+# Check detailed counts match
+curl -s "http://localhost:8088/api/consistency?crate=my_crate" | jq '.store_counts'
+# All three counts should match
+```
+
+**Monitoring:**
+- Grafana dashboard: `http://localhost:3000/d/rustbrain-consistency`
+- Prometheus alerts: `http://localhost:9090/alerts`
+- The blackbox exporter probes `/health/consistency` every 15 seconds
+
 ## Resetting Data
 
 ### Reset All Data
@@ -481,6 +576,108 @@ docker-compose down -v grafana_data
 docker-compose up -d grafana
 ```
 
+## OpenCode Developer Agent Write Workflow
+
+The developer agent in OpenCode needs write access to create and modify files. A git-based workflow provides isolated write access:
+
+### How It Works
+
+1. On container start, git is configured with `GIT_USER_NAME` and `GIT_USER_EMAIL`
+2. The entrypoint script clones or copies the target repo to `/workspace/target-repo-work` (excluding `target/` and `node_modules/` to avoid build artifact permission issues)
+3. An initial commit is created from the copied source
+4. A feature branch is created (e.g., `opencode/changes-20260408-120000`)
+5. Developer agent works in the writable clone
+6. Changes are committed to the feature branch for review
+
+If the container restarts and the work directory already has commits (persistent volume), setup is skipped and the agent continues from where it left off.
+
+### Required Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TARGET_REPO_URL` | (none) | Optional URL to clone instead of copying from `TARGET_REPO_PATH` |
+| `TARGET_REPO_PATH` | (none) | Host path to the mounted repo (read-only source) |
+| `OPENCODE_WORK_DIR` | `/workspace/target-repo-work` | Writable directory inside container |
+| `GIT_USER_NAME` | `OpenCode Developer` | Git author name for commits |
+| `GIT_USER_EMAIL` | `opencode@rustbrain.local` | Git author email for commits |
+| `FEATURE_BRANCH_PREFIX` | `opencode` | Prefix for feature branches |
+| `GH_TOKEN` | (none) | GitHub token for private repos and pushing |
+
+### Configuration in .env
+
+```bash
+# Source repo (mounted read-only)
+TARGET_REPO_PATH=/home/user/projects/hyperswitch
+
+# Or clone from URL (overrides TARGET_REPO_PATH)
+TARGET_REPO_URL=https://github.com/juspay/hyperswitch
+
+# Git identity
+GIT_USER_NAME="Your Name"
+GIT_USER_EMAIL="your@email.com"
+
+# For private repos or pushing changes
+GH_TOKEN=ghp_xxxx
+```
+
+### Verifying Write Access
+
+```bash
+# Check the work directory was created
+docker exec rustbrain-opencode ls -la /workspace/target-repo-work
+
+# Verify git config
+docker exec rustbrain-opencode git config user.name
+docker exec rustbrain-opencode git config user.email
+
+# Check the feature branch
+docker exec rustbrain-opencode git branch
+```
+
+### Troubleshooting
+
+**Issue: Work directory is empty**
+
+The target repo must be available either via `TARGET_REPO_URL` or mounted at `TARGET_REPO_PATH`:
+
+```bash
+# Check if source repo is mounted
+docker exec rustbrain-opencode ls -la /workspace/target-repo
+
+# Check logs for clone/copy errors
+docker logs rustbrain-opencode 2>&1 | head -50
+```
+
+**Issue: Git push fails**
+
+Ensure `GH_TOKEN` is set with repo write permissions:
+
+```bash
+# Test token access
+curl -H "Authorization: token $GH_TOKEN" https://api.github.com/user
+
+# Check if token is passed to container
+docker exec rustbrain-opencode env | grep GH_TOKEN
+```
+
+**Issue: Feature branch not created**
+
+Check entrypoint script execution:
+
+```bash
+# View startup logs
+docker logs rustbrain-opencode 2>&1 | grep -A5 "feature branch"
+```
+
+### Resetting OpenCode Work Directory
+
+To wipe the work directory and start fresh:
+
+```bash
+docker compose down -v opencode_work
+docker compose up -d opencode
+```
+
 ## Port Reference Table
 
 | Service | Port | Protocol | Purpose |
@@ -495,6 +692,7 @@ docker-compose up -d grafana
 | Prometheus | 9090 | HTTP | Metrics & UI |
 | Grafana | 3000 | HTTP | Dashboards |
 | Node Exporter | 9100 | HTTP | Host metrics |
+| Blackbox Exporter | 9115 | HTTP | HTTP probe service |
 | Tool API | 8088 | HTTP | REST API + Playground |
 | MCP SSE | 3001 | HTTP/SSE | MCP streaming transport |
 | OpenCode | 4096 | HTTP | IDE integration |
