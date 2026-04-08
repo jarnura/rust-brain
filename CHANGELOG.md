@@ -4,6 +4,93 @@ All notable changes to the rust-brain project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+#### Workspace Management System
+- Workspace module with DB migrations and REST endpoints for project isolation
+- DockerClient for per-workspace volume orchestration
+- Workspace clone, diff, commit, reset, and SSE stream endpoints
+- GitHub client for repository access without local checkout
+- Workspace archiving with automatic Docker volume cleanup
+
+#### Execution Engine
+- OpenCode container manager with orchestrator flow and event bridge
+- Container lifecycle management for sandboxed code execution
+- Multi-agent system configuration for autonomous development
+
+#### Benchmarker/Validator Services
+- Validator service with LLM-as-judge and composite scorer
+- Benchmarker dashboard with run management and CI integration
+- Validator runs migration and REST query endpoints
+- Full validation pipeline: extractor → preparator → executor → comparator
+
+#### MCP Tools (5 new tools)
+- `pg_query` — Read-only SQL queries against Postgres
+- `context_store` — Persistent context management
+- `status_check` — Service health verification
+- `task_update` — Task status tracking
+- `aggregate_search` — Cross-database search (Qdrant + Postgres + Neo4j)
+
+#### React Frontend/Playground
+- React Editor Playground with Vite + React 18 + Tailwind
+- Mobile-responsive navigation with drawer
+- Call Sites tab for turbofish analysis
+- Session persistence and management for chat
+
+#### Snapshot Distribution System
+- Zero-ingestion onboarding with pre-built snapshots
+- Auto-split snapshots for GitHub Releases (>2GB support)
+- Snapshot optimization (5.5GB → 3.0GB by excluding expanded_source)
+- Cross-platform macOS compatibility
+
+#### Docker Integration Improvements
+- Non-root user support in API container
+- Docker CLI installation for workspace volume management
+- Docker socket access for container orchestration
+- IPv6 resolution fixes for healthchecks
+
+#### Additional Features
+- Chat streaming with SSE support
+- Neo4j placeholder nodes for relationship targets
+- Memory-bounded streaming pipeline with bounded channels
+- Comprehensive monitoring system for ingestion pipeline
+- GPU embedding support with qwen3-embedding:4b (2560 dimensions)
+
+### Changed
+
+- Increased chat timeout from 2 to 10 minutes for long-running conversations
+- Switched embedding model from CodeLlama to qwen3-embedding:4b (2560 dimensions)
+- Multi-agent config moved to global OpenCode configuration
+- Call graph construction improvements (7 bugs fixed in FQN identity pipeline)
+- Embed stage now loads items from database when pipeline state unavailable
+
+### Fixed
+
+- Doc comment extraction using Tree-sitter byte ranges
+- MCP Server API URL in Docker (api → rustbrain-api)
+- Embed stage database fallback for standalone execution
+- aggregate_search MCP tool deserialization of callers/callees
+- Chat UI streaming state corruption across multi-turn conversations
+- Callers/callees display in detail panel for impl blocks
+- Neo4j restore volume name resolution
+- macOS compatibility for snapshot workflow and Docker setup
+
+### Security
+
+- Hardened Cypher injection prevention
+- Added request limits and rate limiting
+- Security audit remediation for code quality
+
+### Documentation
+
+- Added INGESTION_GUIDE.md with comprehensive walkthrough
+- Updated MCP documentation for new typecheck tools
+- Corrected endpoint counts and MCP tool counts
+- Added Quick Start snapshot section to README
+- Comprehensive documentation audit and remediation
+
 ## [0.2.0] - 2026-03-15
 
 ### Fixed

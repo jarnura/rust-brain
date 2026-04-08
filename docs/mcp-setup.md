@@ -283,6 +283,208 @@ For Claude Code, add to your global MCP configuration:
 }
 ```
 
+## Cursor Configuration
+
+[Cursor](https://cursor.sh/) is an AI-powered code editor with MCP support. Configure rust-brain for code intelligence:
+
+### Option A: Project-Level Config
+
+Create `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "rust-brain": {
+      "url": "http://localhost:3001/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+### Option B: Global Config
+
+Add to your Cursor settings:
+
+**macOS/Linux:** `~/.cursor/mcp.json`
+**Windows:** `%APPDATA%\Cursor\User\globalStorage\mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "rust-brain": {
+      "url": "http://localhost:3001/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+### Using rust-brain in Cursor
+
+1. Open a Rust project in Cursor
+2. Use the AI chat (Cmd+L / Ctrl+L)
+3. Ask questions like:
+   - "Find all callers of `process_payment`"
+   - "Where is `PaymentRequest` used?"
+   - "Show implementations of the `Serialize` trait"
+
+Cursor will automatically use rust-brain tools when querying about the codebase.
+
+## OpenCode Configuration
+
+[OpenCode](https://github.com/opencode-ai/opencode) is a browser-based AI IDE with native MCP support. rust-brain integrates directly with OpenCode.
+
+### Option A: Project-Level Config
+
+Create `opencode.json` in your project root:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "rust-brain": {
+        "type": "sse",
+        "url": "http://localhost:3001/sse"
+      }
+    }
+  },
+  "agents": {
+    "explorer": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "Use rust-brain tools to explore the codebase. Prefer search_semantic for natural language queries, get_callers for dependency analysis, and get_trait_impls for polymorphism questions.",
+      "tools": {
+        "allow": ["mcp_rustbrain_*"]
+      }
+    }
+  }
+}
+```
+
+### Option B: Global Config
+
+Add to your global OpenCode configuration:
+
+**macOS/Linux:** `~/.config/opencode/config.json`
+**Windows:** `%APPDATA%\opencode\config.json`
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "rust-brain": {
+        "type": "sse",
+        "url": "http://localhost:3001/sse"
+      }
+    }
+  }
+}
+```
+
+### Multi-Agent Setup
+
+For autonomous development workflows, configure multiple agents:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "rust-brain": {
+        "type": "sse",
+        "url": "http://localhost:3001/sse"
+      }
+    }
+  },
+  "agents": {
+    "orchestrator": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "Coordinate between explorer, developer, and reviewer agents. Use rust-brain for architecture decisions.",
+      "tools": {
+        "allow": ["mcp_rustbrain_search_semantic", "mcp_rustbrain_get_function", "mcp_rustbrain_aggregate_search"]
+      }
+    },
+    "explorer": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "Explore codebase using rust-brain tools. Answer questions about code structure and dependencies.",
+      "tools": {
+        "allow": ["mcp_rustbrain_*"]
+      }
+    },
+    "developer": {
+      "model": "claude-sonnet-4-20250514",
+      "systemPrompt": "Implement features and fix bugs. Use rust-brain to understand existing code patterns.",
+      "tools": {
+        "allow": ["mcp_rustbrain_search_semantic", "mcp_rustbrain_get_function", "mcp_rustbrain_get_callers", "mcp_rustbrain_find_usages_of_type"]
+      }
+    }
+  }
+}
+```
+
+### Running OpenCode with rust-brain
+
+1. Start rust-brain services:
+   ```bash
+   docker compose up -d
+   ./scripts/healthcheck.sh
+   ```
+
+2. Start OpenCode (included in rust-brain stack):
+   ```bash
+   # OpenCode runs at http://localhost:4096
+   ```
+
+3. In OpenCode, agents can now use rust-brain tools for code intelligence
+
+### OpenCode Tool Naming
+
+OpenCode prefixes MCP tool names with `mcp_rustbrain_`:
+
+| Original Tool | OpenCode Tool Name |
+|---------------|-------------------|
+| `search_semantic` | `mcp_rustbrain_search_semantic` |
+| `get_function` | `mcp_rustbrain_get_function` |
+| `get_callers` | `mcp_rustbrain_get_callers` |
+| `get_trait_impls` | `mcp_rustbrain_get_trait_impls` |
+| `find_usages_of_type` | `mcp_rustbrain_find_usages_of_type` |
+| `get_module_tree` | `mcp_rustbrain_get_module_tree` |
+| `query_graph` | `mcp_rustbrain_query_graph` |
+| `find_calls_with_type` | `mcp_rustbrain_find_calls_with_type` |
+| `find_trait_impls_for_type` | `mcp_rustbrain_find_trait_impls_for_type` |
+| `pg_query` | `mcp_rustbrain_pg_query` |
+| `aggregate_search` | `mcp_rustbrain_aggregate_search` |
+| `context_store` | `mcp_rustbrain_context_store` |
+| `status_check` | `mcp_rustbrain_status_check` |
+| `task_update` | `mcp_rustbrain_task_update` |
+
+## Cline Configuration
+
+[Cline](https://github.com/cline/cline) is a VS Code extension for autonomous coding with MCP support.
+
+### VS Code Settings
+
+Add to your VS Code `settings.json`:
+
+**macOS/Linux:** `~/.config/Code/User/settings.json`
+**Windows:** `%APPDATA%\Code\User\settings.json`
+
+```json
+{
+  "cline.mcpServers": {
+    "rust-brain": {
+      "type": "sse",
+      "url": "http://localhost:3001/sse"
+    }
+  }
+}
+```
+
+### Using rust-brain in Cline
+
+1. Open VS Code in a Rust project
+2. Open Cline sidebar (Cmd+Shift+P → "Cline: Open")
+3. Cline will use rust-brain tools when you ask about the codebase
+
 ## Environment Variables
 
 Configure the MCP server via environment variables in `.env`:
