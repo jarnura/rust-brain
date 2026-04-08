@@ -38,6 +38,7 @@ export function PromptInput() {
         workspace_id: activeWorkspaceId,
         prompt: prompt.trim(),
         branch_name: branch.trim() || null,
+        session_id: null,
         status: 'pending',
         container_id: null,
         exit_code: null,
