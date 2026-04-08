@@ -165,6 +165,20 @@ services:
         limits:
           memory: 128M
 
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: rustbrain-blackbox-exporter
+    ports:
+      - "${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+    volumes:
+      - ./configs/prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
   node-exporter:
     image: prom/node-exporter:v1.8.0
     container_name: rustbrain-node-exporter
@@ -184,6 +198,7 @@ services:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -261,6 +276,7 @@ services:
       INGESTION_IMAGE: ${INGESTION_IMAGE:-rustbrain-ingestion:latest}
       OPENCODE_IMAGE: ${OPENCODE_IMAGE:-rustbrain-opencode:latest}
       DOCKER_NETWORK: ${DOCKER_NETWORK:-rustbrain_rustbrain-net}
+      RUSTBRAIN_PUBLIC_HOST: ${RUSTBRAIN_PUBLIC_HOST:-}
     networks:
       rustbrain-net:
         aliases:
