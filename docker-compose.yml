@@ -390,18 +390,27 @@ services:
       LITELLM_BASE_URL: ${LITELLM_BASE_URL}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
       CHAT_MODEL: ${CHAT_MODEL:-glm-latest}
+      # Git-based write workflow configuration
+      TARGET_REPO_URL: ${TARGET_REPO_URL:-}
+      TARGET_REPO_PATH: /workspace/target-repo
+      OPENCODE_WORK_DIR: ${OPENCODE_WORK_DIR:-/workspace/target-repo-work}
+      GIT_USER_NAME: ${GIT_USER_NAME:-OpenCode Developer}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-opencode@rustbrain.local}
+      FEATURE_BRANCH_PREFIX: ${FEATURE_BRANCH_PREFIX:-opencode}
+      GH_TOKEN: ${GH_TOKEN:-}
     volumes:
       - opencode_data:/home/opencode/.local/share/opencode
       - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
       - ./configs/opencode/.opencode:/home/opencode/.config/opencode/.opencode:ro
       - ./:/home/opencode/projects/rust-brain:ro
-      - ${TARGET_REPO_PATH:-.}:/workspace/target-repo:ro  # Ingested project (e.g. hyperswitch)
+      - ${TARGET_REPO_PATH:-.}:/workspace/target-repo:ro
+      - opencode_work:/workspace/target-repo-work
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4096/ || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 600s
     depends_on:
       mcp-sse:
         condition: service_healthy
@@ -512,4 +521,5 @@ volumes:
   prometheus_data:
   grafana_data:
   opencode_data:
+  opencode_work:
   rustbrain-expand-cache:

@@ -197,7 +197,12 @@
           "rg *": "allow",
           "ls *": "allow",
           "cargo check*": "allow",
-          "cargo clippy*": "allow"
+          "cargo clippy*": "allow",
+          "git status": "allow",
+          "git diff*": "allow",
+          "git add*": "allow",
+          "git commit*": "allow",
+          "git log*": "allow"
         },
         "webfetch": "deny",
         "task": {
