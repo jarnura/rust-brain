@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { openExecutionStream } from '../api/client'
+import { API_BASE, openExecutionStream } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 import type { AgentEvent } from '../types'
 
@@ -75,9 +75,7 @@ export function ExecutionStream() {
       () => {
         setStreamDone(true)
         // Refresh execution status
-        fetch(
-          `${import.meta.env.VITE_API_BASE_URL ?? `${window.location.protocol}//${window.location.hostname}:8088`}/executions/${activeExecutionId}`,
-        )
+        fetch(`${API_BASE}/executions/${activeExecutionId}`)
           .then((r) => r.json())
           .then((exec) => upsertExecution(exec as Parameters<typeof upsertExecution>[0]))
           .catch(() => {})

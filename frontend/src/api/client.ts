@@ -9,10 +9,13 @@ import type {
   Workspace,
 } from '../types'
 
-// Resolve API base from env or default to same-host port 8088
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ??
-  `${window.location.protocol}//${window.location.hostname}:8088`
+// Resolve API base: use env override if set, otherwise derive from the
+// current page hostname so the playground works from any device (Tailscale, LAN, etc.)
+const envBase = import.meta.env.VITE_API_BASE_URL as string | undefined
+export const API_BASE =
+  envBase && !envBase.includes('localhost')
+    ? envBase
+    : `${window.location.protocol}//${window.location.hostname}:8088`
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createWorkspace, listWorkspaces } from '../api/client'
+import { API_BASE, createWorkspace, listWorkspaces } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 import type { Workspace } from '../types'
 
@@ -27,9 +27,7 @@ export function RepoManager() {
   function pollWorkspace(id: string) {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(
-          `${import.meta.env.VITE_API_BASE_URL ?? `${window.location.protocol}//${window.location.hostname}:8088`}/workspaces/${id}`,
-        )
+        const res = await fetch(`${API_BASE}/workspaces/${id}`)
         if (!res.ok) return
         const ws = (await res.json()) as Workspace
         upsertWorkspace(ws)
