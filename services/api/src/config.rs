@@ -83,6 +83,19 @@ pub struct Config {
     /// Defaults to `rustbrain-ingestion:latest`.
     /// Override via `INGESTION_IMAGE` env var.
     pub ingestion_image: String,
+    /// Default execution timeout in seconds.
+    ///
+    /// Applied when no per-execution timeout is specified.
+    /// Defaults to 7200 (2 hours).
+    /// Override via `EXECUTION_TIMEOUT_SECS` env var.
+    pub execution_timeout_secs: u32,
+    /// Public hostname or IP for execution containers.
+    ///
+    /// When set, execution containers publish their port to a random host port
+    /// and the public endpoint is constructed as `http://{public_host}:{mapped_port}`.
+    /// This makes containers reachable from Tailscale-connected devices.
+    /// Override via `RUSTBRAIN_PUBLIC_HOST` env var.
+    pub public_host: Option<String>,
 }
 
 impl Config {
@@ -106,6 +119,7 @@ impl Config {
     /// | `OPENCODE_AUTH_PASS` | no | _(none)_ |
     /// | `DOCKER_NETWORK` | no | `rustbrain` |
     /// | `OPENCODE_IMAGE` | no | `opencode:latest` |
+    /// | `EXECUTION_TIMEOUT_SECS` | no | `7200` |
     ///
     /// # Panics
     ///
@@ -146,6 +160,12 @@ impl Config {
                 .unwrap_or_else(|_| "/tmp/rustbrain-clones".to_string()),
             ingestion_image: std::env::var("INGESTION_IMAGE")
                 .unwrap_or_else(|_| "rustbrain-ingestion:latest".to_string()),
+            execution_timeout_secs: std::env::var("EXECUTION_TIMEOUT_SECS")
+                .map(|s| s.parse().unwrap_or(7200))
+                .unwrap_or(7200),
+            public_host: std::env::var("RUSTBRAIN_PUBLIC_HOST")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
@@ -175,6 +195,8 @@ mod tests {
             opencode_image: "opencode:latest".to_string(),
             workspace_host_clone_root: "/tmp/rustbrain-clones".to_string(),
             ingestion_image: "rustbrain-ingestion:latest".to_string(),
+            execution_timeout_secs: 7200,
+            public_host: None,
         };
 
         assert_eq!(config.embedding_dimensions, 768);

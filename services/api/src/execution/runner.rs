@@ -92,6 +92,11 @@ pub struct RunParams {
     pub opencode_pass: Option<String>,
     /// Timeout in seconds for the entire execution (default: from config, typically 7200).
     pub timeout_secs: u32,
+    /// Public hostname or IP for constructing externally-reachable container URLs.
+    ///
+    /// When set, the container's port is published to a random host port and the
+    /// public endpoint is `http://{public_host}:{mapped_port}`.
+    pub public_host: Option<String>,
 }
 
 // =============================================================================
@@ -152,17 +157,19 @@ async fn run_execution_inner(
 ) -> Result<String, Option<String>> {
     let exec_id = params.execution_id;
 
-    // 1. Spawn container
-    let (container_id, base_url) = match docker
+    // 1. Spawn container (publish port when public_host is configured)
+    let publish_port = params.public_host.is_some();
+    let (container_id, internal_url, mapped_port) = match docker
         .spawn_execution_container(
             &exec_id.to_string(),
             &params.volume_name,
             &params.docker_network,
             &params.opencode_image,
+            publish_port,
         )
         .await
     {
-        Ok(pair) => pair,
+        Ok(tuple) => tuple,
         Err(e) => {
             let error_msg = classify_container_error(&e.to_string());
             warn!(execution_id = %exec_id, error = %error_msg, "Container spawn failed");
@@ -183,10 +190,27 @@ async fn run_execution_inner(
         warn!(execution_id = %exec_id, error = %e, "Failed to persist container_id");
     }
 
-    info!(execution_id = %exec_id, container_id = %container_id, base_url = %base_url, "Container started");
+    // Build public endpoint for external access (e.g. Tailscale)
+    let public_endpoint = params
+        .public_host
+        .as_ref()
+        .zip(mapped_port)
+        .map(|(host, port)| format!("http://{}:{}", host, port));
+
+    info!(
+        execution_id = %exec_id,
+        container_id = %container_id,
+        internal_url = %internal_url,
+        public_endpoint = ?public_endpoint,
+        "Container started"
+    );
 
     // 2. Wait for OpenCode to be ready (up to 30 s)
-    let opencode = OpenCodeClient::new(base_url, params.opencode_user, params.opencode_pass);
+    let opencode = OpenCodeClient::new(
+        internal_url.clone(),
+        params.opencode_user,
+        params.opencode_pass,
+    );
     if !wait_for_container(&opencode, 30, Duration::from_secs(1)).await {
         warn!(execution_id = %exec_id, "OpenCode container did not become ready");
         let _ = fail_execution(
@@ -199,32 +223,38 @@ async fn run_execution_inner(
     }
 
     // 3. Create an OpenCode session
-    let (session_id, workspace_path) = match opencode.create_session(Some("rustbrain-execution")).await {
-        Ok(s) => {
-            if let Err(e) = set_session_id(&pool, exec_id, &s.id).await {
-                warn!(execution_id = %exec_id, error = %e, "Failed to persist session_id");
+    let (session_id, workspace_path) =
+        match opencode.create_session(Some("rustbrain-execution")).await {
+            Ok(s) => {
+                if let Err(e) = set_session_id(&pool, exec_id, &s.id).await {
+                    warn!(execution_id = %exec_id, error = %e, "Failed to persist session_id");
+                }
+                let dir = s.directory.clone();
+                (s.id, dir)
             }
-            let dir = s.directory.clone();
-            (s.id, dir)
-        }
-        Err(e) => {
-            warn!(execution_id = %exec_id, error = %e, "Failed to create OpenCode session");
-            let _ = fail_execution(
-                &pool,
-                exec_id,
-                &format!("OpenCode session creation failed: {e}"),
-            )
-            .await;
-            return Err(Some(container_id));
-        }
-    };
+            Err(e) => {
+                warn!(execution_id = %exec_id, error = %e, "Failed to create OpenCode session");
+                let _ = fail_execution(
+                    &pool,
+                    exec_id,
+                    &format!("OpenCode session creation failed: {e}"),
+                )
+                .await;
+                return Err(Some(container_id));
+            }
+        };
 
     // 3b. Persist runtime info for the UI panel
+    // Use public endpoint for opencode_endpoint so the UI can reach the container
+    // from outside Docker (e.g. via Tailscale). Falls back to internal URL.
+    let endpoint_for_db = public_endpoint
+        .as_deref()
+        .unwrap_or_else(|| opencode.base_url());
     if let Err(e) = set_runtime_info(
         &pool,
         exec_id,
         &params.volume_name,
-        opencode.base_url(),
+        endpoint_for_db,
         workspace_path.as_deref(),
     )
     .await
@@ -427,10 +457,12 @@ mod tests {
             opencode_user: None,
             opencode_pass: None,
             timeout_secs: 7200,
+            public_host: None,
         };
         assert_eq!(p.volume_name, "rustbrain-ws-abc12345");
         assert_eq!(p.docker_network, "rustbrain");
         assert_eq!(p.timeout_secs, 7200);
+        assert!(p.public_host.is_none());
     }
 
     #[test]

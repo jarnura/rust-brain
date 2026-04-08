@@ -8,7 +8,7 @@
 //! ## Volume naming
 //!
 //! All workspace volumes follow the pattern `rustbrain-ws-{workspace_id_short}`,
-//! where `workspace_id_short` is the first 8 characters of the workspace UUID.
+//! where `workspace_id_short` is the first 12 characters of the workspace UUID.
 //!
 //! ## Labels
 //!
@@ -86,7 +86,7 @@ impl DockerClient {
 
     /// Derives the canonical volume name for a workspace UUID.
     ///
-    /// Uses the first 8 characters of the UUID string (without hyphens at
+    /// Uses the first 12 characters of the UUID string (without hyphens at
     /// that position).
     ///
     /// # Example
@@ -95,13 +95,13 @@ impl DockerClient {
     /// use rustbrain_api::docker::DockerClient;
     ///
     /// let name = DockerClient::volume_name("abc12345-0000-0000-0000-000000000000");
-    /// assert_eq!(name, "rustbrain-ws-abc12345");
+    /// assert_eq!(name, "rustbrain-ws-abc123450000");
     /// ```
     pub fn volume_name(workspace_id: &str) -> String {
         let short = workspace_id
             .chars()
             .filter(|c| *c != '-')
-            .take(8)
+            .take(12)
             .collect::<String>();
         format!("rustbrain-ws-{short}")
     }
@@ -128,7 +128,13 @@ impl DockerClient {
         // support it, so we omit the size option and rely on external disk
         // monitoring instead.
         let output = Command::new("docker")
-            .args(["volume", "create", "--label", "rustbrain.workspace=true", name])
+            .args([
+                "volume",
+                "create",
+                "--label",
+                "rustbrain.workspace=true",
+                name,
+            ])
             .output()
             .await
             .context("failed to spawn `docker volume create`")?;
@@ -174,54 +180,60 @@ impl DockerClient {
 
     /// Derives the canonical container name for an execution UUID.
     ///
-    /// Uses the first 8 hex characters (without hyphens) of the UUID.
+    /// Uses the first 12 hex characters (without hyphens) of the UUID.
     pub fn container_name(execution_id: &str) -> String {
         let short = execution_id
             .chars()
             .filter(|c| *c != '-')
-            .take(8)
+            .take(12)
             .collect::<String>();
         format!("rustbrain-exec-{short}")
     }
 
     /// Spawns an ephemeral OpenCode container for a single execution.
     ///
-    /// Runs:
-    /// ```bash
-    /// docker run -d \
-    ///   --name rustbrain-exec-{short_id} \
-    ///   --network {network} \
-    ///   -v {volume_name}:/workspace:rw \
-    ///   -w /workspace \
-    ///   {image}
-    /// ```
+    /// When `publish_port` is `true`, the container's port 4096 is published to
+    /// a random host port (`-p 0:4096`). The mapped host port is returned so
+    /// callers can construct a public endpoint reachable from outside Docker
+    /// (e.g. via Tailscale).
     ///
-    /// Returns `(container_id, base_url)` where `base_url` is
-    /// `http://{container_name}:4096` (reachable inside the Docker network).
+    /// Returns `(container_id, internal_url, mapped_host_port)` where:
+    /// - `internal_url` is `http://{container_name}:4096` (Docker-network only)
+    /// - `mapped_host_port` is `Some(port)` when `publish_port` is true
     pub async fn spawn_execution_container(
         &self,
         execution_id: &str,
         volume_name: &str,
         network: &str,
         image: &str,
-    ) -> anyhow::Result<(String, String)> {
+        publish_port: bool,
+    ) -> anyhow::Result<(String, String, Option<u16>)> {
         let container_name = Self::container_name(execution_id);
         let volume_mount = format!("{}:/workspace:rw", volume_name);
 
+        let mut args = vec![
+            "run",
+            "-d",
+            "--name",
+            &container_name,
+            "--network",
+            network,
+            "-v",
+            &volume_mount,
+            "-w",
+            "/workspace",
+        ];
+
+        let port_binding = "0:4096".to_string();
+        if publish_port {
+            args.push("-p");
+            args.push(&port_binding);
+        }
+
+        args.push(image);
+
         let output = Command::new("docker")
-            .args([
-                "run",
-                "-d",
-                "--name",
-                &container_name,
-                "--network",
-                network,
-                "-v",
-                &volume_mount,
-                "-w",
-                "/workspace",
-                image,
-            ])
+            .args(&args)
             .output()
             .await
             .context("failed to spawn `docker run` for execution container")?;
@@ -241,8 +253,53 @@ impl DockerClient {
             .trim()
             .to_string();
 
-        let base_url = format!("http://{}:4096", container_name);
-        Ok((container_id, base_url))
+        let internal_url = format!("http://{}:4096", container_name);
+
+        let mapped_port = if publish_port {
+            self.get_mapped_port(&container_id, 4096).await.ok()
+        } else {
+            None
+        };
+
+        Ok((container_id, internal_url, mapped_port))
+    }
+
+    /// Queries the host port mapped to a container's internal port.
+    ///
+    /// Runs `docker port <container_id> <internal_port>` and parses the output
+    /// (e.g. `0.0.0.0:32768`) to extract the host port number.
+    async fn get_mapped_port(&self, container_id: &str, internal_port: u16) -> anyhow::Result<u16> {
+        let output = Command::new("docker")
+            .args(["port", container_id, &internal_port.to_string()])
+            .output()
+            .await
+            .context("failed to spawn `docker port`")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "`docker port {} {}` failed (exit {}): {}",
+                container_id,
+                internal_port,
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        // Output format: "0.0.0.0:32768\n" or "[::]:32768\n"
+        // Take the first line, split on ':', take the last segment.
+        let stdout =
+            String::from_utf8(output.stdout).context("docker port: stdout not valid UTF-8")?;
+        let port_str = stdout
+            .lines()
+            .next()
+            .and_then(|line| line.rsplit(':').next())
+            .ok_or_else(|| anyhow!("unexpected `docker port` output: {}", stdout.trim()))?;
+
+        port_str.trim().parse::<u16>().context(format!(
+            "failed to parse mapped port from: {}",
+            port_str.trim()
+        ))
     }
 
     /// Stops a running container by ID or name.
@@ -430,10 +487,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_container_name_strips_hyphens_takes_eight() {
+    fn test_container_name_strips_hyphens_takes_twelve() {
         assert_eq!(
             DockerClient::container_name("abc12345-0000-0000-0000-000000000000"),
-            "rustbrain-exec-abc12345"
+            "rustbrain-exec-abc123450000"
         );
     }
 
@@ -453,6 +510,7 @@ mod tests {
                 "rustbrain-ws-test0000",
                 "rustbrain",
                 "rustbrain-opencode-test-nonexistent:latest",
+                false,
             )
             .await;
         // Either docker is absent (spawn Err) or image doesn't exist (run Err).
@@ -460,12 +518,12 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_name_strips_hyphens_takes_eight() {
+    fn test_volume_name_strips_hyphens_takes_twelve() {
         // UUID: abc12345-0000-0000-0000-000000000000
-        // After stripping hyphens: abc123450000...  → first 8 = "abc12345"
+        // After stripping hyphens: abc123450000...  → first 12 = "abc123450000"
         assert_eq!(
             DockerClient::volume_name("abc12345-0000-0000-0000-000000000000"),
-            "rustbrain-ws-abc12345"
+            "rustbrain-ws-abc123450000"
         );
     }
 
