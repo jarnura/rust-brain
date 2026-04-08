@@ -1,6 +1,7 @@
 import { DiffViewer } from '../components/DiffViewer'
 import { ExecutionStream } from '../components/ExecutionStream'
 import { PromptInput } from '../components/PromptInput'
+import { RuntimeInfoPanel } from '../components/RuntimeInfoPanel'
 import { SessionHistory } from '../components/SessionHistory'
 import { WorkspaceView } from '../components/WorkspaceView'
 import { useWorkspaceStore } from '../store/workspace'
@@ -57,6 +58,9 @@ export function WorkspaceDetail() {
         <div className="px-4 py-3 border-b border-dark-800">
           <PromptInput />
         </div>
+
+        {/* Collapsible runtime info */}
+        <RuntimeInfoPanel />
 
         {/* SSE stream */}
         <div className="flex-1 overflow-hidden flex flex-col px-4 py-3 min-h-0">
