@@ -24,6 +24,12 @@ pub struct Execution {
     pub session_id: Option<String>,
     /// Docker container ID running OpenCode for this execution.
     pub container_id: Option<String>,
+    /// Docker volume name containing the workspace source (e.g. `rustbrain-ws-abc12345`).
+    pub volume_name: Option<String>,
+    /// OpenCode container endpoint URL (e.g. `http://rustbrain-exec-<id>:4096`).
+    pub opencode_endpoint: Option<String>,
+    /// Session working directory inside the OpenCode container.
+    pub workspace_path: Option<String>,
     /// `running` | `completed` | `failed` | `aborted` | `timeout`
     pub status: String,
     /// Current agent phase: `orchestrating` | `researching` | `planning` | `developing`
@@ -71,6 +77,7 @@ pub async fn create_execution(
         INSERT INTO executions (workspace_id, prompt, branch_name, timeout_config_secs)
         VALUES ($1, $2, $3, $4)
         RETURNING id, workspace_id, prompt, branch_name, session_id, container_id,
+                  volume_name, opencode_endpoint, workspace_path,
                   status, agent_phase, started_at, completed_at, diff_summary, error,
                   timeout_config_secs
         "#,
@@ -89,6 +96,7 @@ pub async fn get_execution(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Exe
     let row = sqlx::query_as::<_, Execution>(
         r#"
         SELECT id, workspace_id, prompt, branch_name, session_id, container_id,
+               volume_name, opencode_endpoint, workspace_path,
                status, agent_phase, started_at, completed_at, diff_summary, error,
                timeout_config_secs
         FROM executions
@@ -106,6 +114,7 @@ pub async fn list_executions(pool: &PgPool, workspace_id: Uuid) -> anyhow::Resul
     let rows = sqlx::query_as::<_, Execution>(
         r#"
         SELECT id, workspace_id, prompt, branch_name, session_id, container_id,
+               volume_name, opencode_endpoint, workspace_path,
                status, agent_phase, started_at, completed_at, diff_summary, error,
                timeout_config_secs
         FROM executions
@@ -144,6 +153,32 @@ pub async fn set_session_id(
         .bind(session_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// Store runtime info (volume, endpoint, workspace path) for a running execution.
+pub async fn set_runtime_info(
+    pool: &PgPool,
+    execution_id: Uuid,
+    volume_name: &str,
+    opencode_endpoint: &str,
+    workspace_path: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE executions
+        SET volume_name = $2,
+            opencode_endpoint = $3,
+            workspace_path = $4
+        WHERE id = $1
+        "#,
+    )
+    .bind(execution_id)
+    .bind(volume_name)
+    .bind(opencode_endpoint)
+    .bind(workspace_path)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -232,6 +267,48 @@ pub async fn list_timed_out_executions(
     Ok(rows)
 }
 
+/// List all running executions for a workspace with their container IDs.
+///
+/// Used by workspace teardown to stop active containers before cleanup.
+pub async fn list_running_executions_for_workspace(
+    pool: &PgPool,
+    workspace_id: Uuid,
+) -> anyhow::Result<Vec<(Uuid, Option<String>)>> {
+    let rows: Vec<(Uuid, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, container_id
+        FROM executions
+        WHERE workspace_id = $1 AND status = 'running'
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Abort all running executions for a workspace.
+///
+/// Sets status to 'aborted' and records a cleanup message.
+pub async fn abort_executions_for_workspace(
+    pool: &PgPool,
+    workspace_id: Uuid,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        r#"
+        UPDATE executions
+        SET status = 'aborted',
+            completed_at = NOW(),
+            error = 'Workspace archived'
+        WHERE workspace_id = $1 AND status = 'running'
+        "#,
+    )
+    .bind(workspace_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 // =============================================================================
 // AgentEvent CRUD
 // =============================================================================
@@ -315,6 +392,9 @@ mod tests {
             branch_name: Some("fix/branch".into()),
             session_id: Some("ses_abc".into()),
             container_id: Some("abc123".into()),
+            volume_name: Some("rustbrain-ws-abc12345".into()),
+            opencode_endpoint: Some("http://rustbrain-exec-abc:4096".into()),
+            workspace_path: Some("/workspace".into()),
             status: "running".into(),
             agent_phase: Some("researching".into()),
             started_at: Utc::now(),
@@ -327,6 +407,9 @@ mod tests {
         assert_eq!(json["status"], "running");
         assert_eq!(json["agent_phase"], "researching");
         assert_eq!(json["container_id"], "abc123");
+        assert_eq!(json["volume_name"], "rustbrain-ws-abc12345");
+        assert_eq!(json["opencode_endpoint"], "http://rustbrain-exec-abc:4096");
+        assert_eq!(json["workspace_path"], "/workspace");
     }
 
     #[test]
@@ -354,5 +437,17 @@ mod tests {
         // Default timeout should be 7200 when None passed to create_execution
         let timeout = p.timeout_config_secs.unwrap_or(7200);
         assert_eq!(timeout, 7200);
+    }
+
+    #[test]
+    fn create_execution_params_with_branch() {
+        let p = CreateExecutionParams {
+            workspace_id: Uuid::new_v4(),
+            prompt: "fix the bug".into(),
+            branch_name: Some("fix/issue-123".into()),
+            timeout_config_secs: Some(3600),
+        };
+        assert_eq!(p.branch_name.as_deref(), Some("fix/issue-123"));
+        assert_eq!(p.timeout_config_secs, Some(3600));
     }
 }

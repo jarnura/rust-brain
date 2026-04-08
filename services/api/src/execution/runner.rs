@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::models::{
     complete_execution, fail_execution, insert_agent_event, set_agent_phase, set_container_id,
-    set_session_id,
+    set_runtime_info, set_session_id, timeout_execution,
 };
 use crate::docker::DockerClient;
 use crate::opencode::OpenCodeClient;
@@ -90,6 +90,8 @@ pub struct RunParams {
     pub opencode_user: Option<String>,
     /// Optional Basic Auth password for the spawned OpenCode container.
     pub opencode_pass: Option<String>,
+    /// Timeout in seconds for the entire execution (default: from config, typically 7200).
+    pub timeout_secs: u32,
 }
 
 // =============================================================================
@@ -102,8 +104,53 @@ pub struct RunParams {
 /// they do not propagate to the caller.
 pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams) {
     let exec_id = params.execution_id;
+    let timeout_secs = params.timeout_secs;
+    let timeout_duration = Duration::from_secs(timeout_secs as u64);
 
-    info!(execution_id = %exec_id, "Spawning OpenCode container");
+    info!(execution_id = %exec_id, timeout_secs = timeout_secs, "Spawning OpenCode container");
+
+    let result = tokio::time::timeout(
+        timeout_duration,
+        run_execution_inner(pool.clone(), docker.clone(), params),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(container_id)) => {
+            cleanup_container(&docker, &container_id, exec_id).await;
+        }
+        Ok(Err(container_id_opt)) => {
+            if let Some(cid) = container_id_opt {
+                cleanup_container(&docker, &cid, exec_id).await;
+            }
+        }
+        Err(_) => {
+            warn!(execution_id = %exec_id, "Execution timed out after {}s", timeout_secs);
+            let _ = timeout_execution(&pool, exec_id).await;
+            let _ = insert_agent_event(
+                &pool,
+                exec_id,
+                "error",
+                json!({ "error": format!("Execution timed out after {}s", timeout_secs) }),
+            )
+            .await;
+            if let Ok(Some(exec)) = super::models::get_execution(&pool, exec_id).await {
+                if let Some(cid) = exec.container_id {
+                    cleanup_container(&docker, &cid, exec_id).await;
+                }
+            }
+        }
+    }
+}
+
+/// Inner execution logic returning container_id for cleanup.
+/// Returns `Ok(container_id)` on success, `Err(Some(container_id))` on failure.
+async fn run_execution_inner(
+    pool: PgPool,
+    docker: DockerClient,
+    params: RunParams,
+) -> Result<String, Option<String>> {
+    let exec_id = params.execution_id;
 
     // 1. Spawn container
     let (container_id, base_url) = match docker
@@ -117,9 +164,17 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
     {
         Ok(pair) => pair,
         Err(e) => {
-            warn!(execution_id = %exec_id, error = %e, "Container spawn failed");
-            let _ = fail_execution(&pool, exec_id, &format!("Container spawn failed: {e}")).await;
-            return;
+            let error_msg = classify_container_error(&e.to_string());
+            warn!(execution_id = %exec_id, error = %error_msg, "Container spawn failed");
+            let _ = insert_agent_event(
+                &pool,
+                exec_id,
+                "error",
+                json!({ "stage": "container_spawn", "error": &error_msg }),
+            )
+            .await;
+            let _ = fail_execution(&pool, exec_id, &error_msg).await;
+            return Err(None);
         }
     };
 
@@ -140,17 +195,17 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
             "OpenCode container did not become ready within 30 s",
         )
         .await;
-        cleanup_container(&docker, &container_id, exec_id).await;
-        return;
+        return Err(Some(container_id));
     }
 
     // 3. Create an OpenCode session
-    let session_id = match opencode.create_session(Some("rustbrain-execution")).await {
+    let (session_id, workspace_path) = match opencode.create_session(Some("rustbrain-execution")).await {
         Ok(s) => {
             if let Err(e) = set_session_id(&pool, exec_id, &s.id).await {
                 warn!(execution_id = %exec_id, error = %e, "Failed to persist session_id");
             }
-            s.id
+            let dir = s.directory.clone();
+            (s.id, dir)
         }
         Err(e) => {
             warn!(execution_id = %exec_id, error = %e, "Failed to create OpenCode session");
@@ -160,10 +215,22 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
                 &format!("OpenCode session creation failed: {e}"),
             )
             .await;
-            cleanup_container(&docker, &container_id, exec_id).await;
-            return;
+            return Err(Some(container_id));
         }
     };
+
+    // 3b. Persist runtime info for the UI panel
+    if let Err(e) = set_runtime_info(
+        &pool,
+        exec_id,
+        &params.volume_name,
+        opencode.base_url(),
+        workspace_path.as_deref(),
+    )
+    .await
+    {
+        warn!(execution_id = %exec_id, error = %e, "Failed to persist runtime info");
+    }
 
     // 4. Drive each agent phase
     let full_prompt = &params.prompt;
@@ -196,8 +263,7 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
                 .await;
                 let _ =
                     fail_execution(&pool, exec_id, &format!("Phase '{phase}' failed: {e}")).await;
-                cleanup_container(&docker, &container_id, exec_id).await;
-                return;
+                return Err(Some(container_id));
             }
         }
     }
@@ -223,8 +289,7 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
 
     info!(execution_id = %exec_id, "Execution completed successfully");
 
-    // 7. Clean up container
-    cleanup_container(&docker, &container_id, exec_id).await;
+    Ok(container_id)
 }
 
 // =============================================================================
@@ -275,6 +340,46 @@ async fn bridge_message(
     }
 }
 
+fn classify_container_error(error: &str) -> String {
+    let error_lower = error.to_lowercase();
+    if error_lower.contains("port is already allocated")
+        || error_lower.contains("bind: address already in use")
+    {
+        "Port conflict: container could not start because a required port is already in use. \
+         Check for conflicting Docker containers or services."
+            .to_string()
+    } else if error_lower.contains("no such image")
+        || error_lower.contains("image") && error_lower.contains("not found")
+    {
+        "Image not found: the OpenCode Docker image is not available. \
+         Pull or build the image before starting executions."
+            .to_string()
+    } else if error_lower.contains("oom")
+        || error_lower.contains("out of memory")
+        || error_lower.contains("memory")
+    {
+        "Out of memory: container was killed due to memory limits. \
+         Consider increasing Docker memory allocation or reducing workload size."
+            .to_string()
+    } else if error_lower.contains("network") && error_lower.contains("not found") {
+        "Network not found: the Docker network does not exist. \
+         Create it with `docker network create rustbrain`."
+            .to_string()
+    } else if error_lower.contains("volume") && error_lower.contains("not found") {
+        "Volume not found: the workspace volume does not exist. \
+         Ensure the workspace was properly initialized."
+            .to_string()
+    } else if error_lower.contains("permission denied") {
+        "Permission denied: Docker socket access denied. \
+         Ensure the user is in the docker group or run with appropriate privileges."
+            .to_string()
+    } else if error_lower.contains("connection refused") || error_lower.contains("cannot connect") {
+        "Docker daemon unreachable: ensure Docker is running and accessible.".to_string()
+    } else {
+        format!("Container spawn failed: {}", error.trim())
+    }
+}
+
 /// Stop and remove the OpenCode container, logging any errors.
 async fn cleanup_container(docker: &DockerClient, container_id: &str, execution_id: Uuid) {
     if let Err(e) = docker.remove_container(container_id).await {
@@ -321,8 +426,46 @@ mod tests {
             opencode_image: "opencode:latest".into(),
             opencode_user: None,
             opencode_pass: None,
+            timeout_secs: 7200,
         };
         assert_eq!(p.volume_name, "rustbrain-ws-abc12345");
         assert_eq!(p.docker_network, "rustbrain");
+        assert_eq!(p.timeout_secs, 7200);
+    }
+
+    #[test]
+    fn classify_port_conflict_error() {
+        let msg = classify_container_error("Error: port is already allocated");
+        assert!(msg.starts_with("Port conflict"));
+    }
+
+    #[test]
+    fn classify_image_not_found_error() {
+        let msg = classify_container_error("docker: no such image: opencode:latest");
+        assert!(msg.starts_with("Image not found"));
+    }
+
+    #[test]
+    fn classify_oom_error() {
+        let msg = classify_container_error("OOMKilled");
+        assert!(msg.starts_with("Out of memory"));
+    }
+
+    #[test]
+    fn classify_network_not_found_error() {
+        let msg = classify_container_error("Error: network rustbrain not found");
+        assert!(msg.starts_with("Network not found"));
+    }
+
+    #[test]
+    fn classify_permission_denied_error() {
+        let msg = classify_container_error("permission denied while trying to connect");
+        assert!(msg.starts_with("Permission denied"));
+    }
+
+    #[test]
+    fn classify_unknown_error() {
+        let msg = classify_container_error("something weird happened");
+        assert!(msg.contains("something weird happened"));
     }
 }
