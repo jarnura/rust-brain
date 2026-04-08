@@ -96,6 +96,12 @@ pub struct Config {
     /// This makes containers reachable from Tailscale-connected devices.
     /// Override via `RUSTBRAIN_PUBLIC_HOST` env var.
     pub public_host: Option<String>,
+    /// How long (in seconds) to keep execution containers alive after successful
+    /// completion, allowing users to debug via the mapped host port.
+    ///
+    /// When `0` (the default), containers are removed immediately after the
+    /// execution finishes. Set via `RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS`.
+    pub container_keep_alive_secs: u64,
 }
 
 impl Config {
@@ -120,6 +126,8 @@ impl Config {
     /// | `DOCKER_NETWORK` | no | `rustbrain` |
     /// | `OPENCODE_IMAGE` | no | `opencode:latest` |
     /// | `EXECUTION_TIMEOUT_SECS` | no | `7200` |
+    /// | `RUSTBRAIN_PUBLIC_HOST` | no | _(none)_ |
+    /// | `RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS` | no | `0` |
     ///
     /// # Panics
     ///
@@ -166,6 +174,9 @@ impl Config {
             public_host: std::env::var("RUSTBRAIN_PUBLIC_HOST")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            container_keep_alive_secs: std::env::var("RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS")
+                .map(|s| s.parse().unwrap_or(0))
+                .unwrap_or(0),
         }
     }
 }
@@ -197,6 +208,7 @@ mod tests {
             ingestion_image: "rustbrain-ingestion:latest".to_string(),
             execution_timeout_secs: 7200,
             public_host: None,
+            container_keep_alive_secs: 0,
         };
 
         assert_eq!(config.embedding_dimensions, 768);

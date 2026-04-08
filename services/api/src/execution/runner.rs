@@ -13,14 +13,16 @@
 
 use std::time::Duration;
 
+use chrono;
 use serde_json::json;
 use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::models::{
-    complete_execution, fail_execution, insert_agent_event, set_agent_phase, set_container_id,
-    set_runtime_info, set_session_id, timeout_execution,
+    complete_execution, fail_execution, insert_agent_event, set_agent_phase,
+    set_container_expires_at, set_container_id, set_runtime_info, set_session_id,
+    timeout_execution,
 };
 use crate::docker::DockerClient;
 use crate::opencode::OpenCodeClient;
@@ -97,6 +99,9 @@ pub struct RunParams {
     /// When set, the container's port is published to a random host port and the
     /// public endpoint is `http://{public_host}:{mapped_port}`.
     pub public_host: Option<String>,
+    /// Keep-alive TTL in seconds. When > 0, the container is kept alive for this
+    /// duration after successful execution instead of being removed immediately.
+    pub keep_alive_secs: u64,
 }
 
 // =============================================================================
@@ -110,6 +115,7 @@ pub struct RunParams {
 pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams) {
     let exec_id = params.execution_id;
     let timeout_secs = params.timeout_secs;
+    let keep_alive_secs = params.keep_alive_secs;
     let timeout_duration = Duration::from_secs(timeout_secs as u64);
 
     info!(execution_id = %exec_id, timeout_secs = timeout_secs, "Spawning OpenCode container");
@@ -122,7 +128,28 @@ pub async fn run_execution(pool: PgPool, docker: DockerClient, params: RunParams
 
     match result {
         Ok(Ok(container_id)) => {
-            cleanup_container(&docker, &container_id, exec_id).await;
+            if keep_alive_secs > 0 {
+                let expires_at =
+                    chrono::Utc::now() + chrono::Duration::seconds(keep_alive_secs as i64);
+                if let Err(e) = set_container_expires_at(&pool, exec_id, expires_at).await {
+                    warn!(execution_id = %exec_id, error = %e, "Failed to set container_expires_at");
+                }
+                let _ = insert_agent_event(
+                    &pool,
+                    exec_id,
+                    "container_kept_alive",
+                    json!({ "expires_at": expires_at.to_rfc3339(), "keep_alive_secs": keep_alive_secs }),
+                )
+                .await;
+                info!(
+                    execution_id = %exec_id,
+                    container_id = %container_id,
+                    keep_alive_secs = keep_alive_secs,
+                    "Container kept alive for debugging"
+                );
+            } else {
+                cleanup_container(&docker, &container_id, exec_id).await;
+            }
         }
         Ok(Err(container_id_opt)) => {
             if let Some(cid) = container_id_opt {
@@ -458,11 +485,30 @@ mod tests {
             opencode_pass: None,
             timeout_secs: 7200,
             public_host: None,
+            keep_alive_secs: 0,
         };
         assert_eq!(p.volume_name, "rustbrain-ws-abc12345");
         assert_eq!(p.docker_network, "rustbrain");
         assert_eq!(p.timeout_secs, 7200);
         assert!(p.public_host.is_none());
+        assert_eq!(p.keep_alive_secs, 0);
+    }
+
+    #[test]
+    fn run_params_keep_alive_set() {
+        let p = RunParams {
+            execution_id: Uuid::new_v4(),
+            volume_name: "rustbrain-ws-abc12345".into(),
+            prompt: "fix the bug".into(),
+            docker_network: "rustbrain".into(),
+            opencode_image: "opencode:latest".into(),
+            opencode_user: None,
+            opencode_pass: None,
+            timeout_secs: 7200,
+            public_host: None,
+            keep_alive_secs: 1800,
+        };
+        assert_eq!(p.keep_alive_secs, 1800);
     }
 
     #[test]

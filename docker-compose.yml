@@ -277,6 +277,7 @@ services:
       OPENCODE_IMAGE: ${OPENCODE_IMAGE:-rustbrain-opencode:latest}
       DOCKER_NETWORK: ${DOCKER_NETWORK:-rustbrain_rustbrain-net}
       RUSTBRAIN_PUBLIC_HOST: ${RUSTBRAIN_PUBLIC_HOST:-}
+      RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS: ${CONTAINER_KEEP_ALIVE_SECS:-0}
     networks:
       rustbrain-net:
         aliases:

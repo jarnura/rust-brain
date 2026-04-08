@@ -108,6 +108,7 @@ pub async fn execute_workspace(
         opencode_pass: state.config.opencode_auth_pass.clone(),
         timeout_secs: execution.timeout_config_secs as u32,
         public_host: state.config.public_host.clone(),
+        keep_alive_secs: state.config.container_keep_alive_secs,
     };
 
     tokio::spawn(async move {

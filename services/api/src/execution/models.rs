@@ -39,6 +39,9 @@ pub struct Execution {
     pub diff_summary: Option<serde_json::Value>,
     pub error: Option<String>,
     pub timeout_config_secs: i32,
+    /// When set, the execution container should be kept alive until this timestamp.
+    /// After expiry the sweeper removes the container and clears this field.
+    pub container_expires_at: Option<DateTime<Utc>>,
 }
 
 /// A single event emitted by an agent during an execution.
@@ -79,7 +82,7 @@ pub async fn create_execution(
         RETURNING id, workspace_id, prompt, branch_name, session_id, container_id,
                   volume_name, opencode_endpoint, workspace_path,
                   status, agent_phase, started_at, completed_at, diff_summary, error,
-                  timeout_config_secs
+                  timeout_config_secs, container_expires_at
         "#,
     )
     .bind(params.workspace_id)
@@ -98,7 +101,7 @@ pub async fn get_execution(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Exe
         SELECT id, workspace_id, prompt, branch_name, session_id, container_id,
                volume_name, opencode_endpoint, workspace_path,
                status, agent_phase, started_at, completed_at, diff_summary, error,
-               timeout_config_secs
+               timeout_config_secs, container_expires_at
         FROM executions
         WHERE id = $1
         "#,
@@ -116,7 +119,7 @@ pub async fn list_executions(pool: &PgPool, workspace_id: Uuid) -> anyhow::Resul
         SELECT id, workspace_id, prompt, branch_name, session_id, container_id,
                volume_name, opencode_endpoint, workspace_path,
                status, agent_phase, started_at, completed_at, diff_summary, error,
-               timeout_config_secs
+               timeout_config_secs, container_expires_at
         FROM executions
         WHERE workspace_id = $1
         ORDER BY started_at DESC
@@ -267,6 +270,67 @@ pub async fn list_timed_out_executions(
     Ok(rows)
 }
 
+/// Set the keep-alive expiry timestamp for an execution container.
+///
+/// Called by the runner when `keep_alive_secs > 0` on the success path.
+pub async fn set_container_expires_at(
+    pool: &PgPool,
+    execution_id: Uuid,
+    expires_at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE executions
+        SET container_expires_at = $2
+        WHERE id = $1
+        "#,
+    )
+    .bind(execution_id)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// List executions whose keep-alive has expired but whose containers are still running.
+///
+/// Returns `(execution_id, container_id)` pairs for the sweeper to clean up.
+pub async fn list_expired_keepalive_executions(
+    pool: &PgPool,
+) -> anyhow::Result<Vec<(Uuid, Option<String>)>> {
+    let rows: Vec<(Uuid, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, container_id
+        FROM executions
+        WHERE container_expires_at IS NOT NULL
+          AND container_expires_at <= NOW()
+          AND container_id IS NOT NULL
+          AND status IN ('completed', 'running')
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Clear the container_id and container_expires_at fields for an execution.
+///
+/// Called by the sweeper after removing an expired keep-alive container.
+pub async fn clear_container_id(pool: &PgPool, execution_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE executions
+        SET container_id = NULL,
+            container_expires_at = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(execution_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// List all running executions for a workspace with their container IDs.
 ///
 /// Used by workspace teardown to stop active containers before cleanup.
@@ -402,6 +466,7 @@ mod tests {
             diff_summary: None,
             error: None,
             timeout_config_secs: 7200,
+            container_expires_at: None,
         };
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["status"], "running");
