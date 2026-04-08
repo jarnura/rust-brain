@@ -46,6 +46,12 @@ async fn playground_redirect() -> Redirect {
     Redirect::permanent("/playground/")
 }
 
+/// Serve the legacy vanilla JS playground
+async fn classic_playground() -> axum::response::Html<&'static str> {
+    let html = include_str!("../static/classic.html");
+    axum::response::Html(html)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing (stdout + optional LOG_FILE; format via LOG_FORMAT env var)
@@ -94,11 +100,11 @@ async fn main() -> anyhow::Result<()> {
         config.opencode_auth_pass.clone(),
     );
 
-    // Create workspace manager (shares the same Postgres pool)
-    let workspace_manager = workspace::WorkspaceManager::new(pg_pool.clone());
-
     // Create Docker client
     let docker = DockerClient::new();
+
+    // Create workspace manager (shares the same Postgres pool and Docker client)
+    let workspace_manager = workspace::WorkspaceManager::new(pg_pool.clone(), docker.clone());
 
     // Create app state
     let state = AppState {
@@ -150,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/snapshot", get(handlers::health::snapshot_info))
         // Playground (static file serving)
         .route("/playground", get(playground_redirect))
+        .route("/playground/classic", get(classic_playground))
         .nest_service(
             "/playground/",
             ServeDir::new("static").append_index_html_on_directories(true),
@@ -211,6 +218,15 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/ingestion/progress",
             get(handlers::ingestion::ingestion_progress),
+        )
+        // Cross-store consistency checker
+        .route(
+            "/api/consistency",
+            get(handlers::consistency::check_consistency),
+        )
+        .route(
+            "/health/consistency",
+            get(handlers::consistency::health_consistency),
         )
         // Validator run results
         .route("/validator/runs", get(handlers::validator::list_runs))
@@ -302,7 +318,11 @@ async fn main() -> anyhow::Result<()> {
     info!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

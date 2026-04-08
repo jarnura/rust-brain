@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>rust-brain</title>
+
+  <!-- CDN: D3.js v7 -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+
+  <!-- CDN: highlight.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js"></script>
+
+  <!-- CDN: marked.js -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+
+  <!-- Google Fonts: Space Grotesk + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Local styles -->
+  <link rel="stylesheet" href="css/playground.css?v=20260329-retro">
+
+  <style>
+    /* ── Boot Sequence Overlay ── */
+    .boot-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      background: #050508;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.6s ease, visibility 0.6s ease;
+    }
+    .boot-overlay.dismissed {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    /* ── THE BOLD TYPOGRAPHIC MOMENT ── */
+    .hero-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(48px, 10vw, 120px);
+      font-weight: 700;
+      line-height: 0.9;
+      letter-spacing: -0.04em;
+      color: transparent;
+      background: linear-gradient(135deg, #00f0ff 0%, #8855ff 40%, #ff00aa 70%, #00f0ff 100%);
+      background-size: 300% 300%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      animation: hero-gradient 4s ease infinite, hero-enter 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+      text-align: center;
+      user-select: none;
+      position: relative;
+    }
+
+    /* Diagonal slash through the title */
+    .hero-title::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: -5%;
+      width: 110%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #00f0ff, transparent);
+      transform: rotate(-3deg);
+      opacity: 0;
+      animation: slash-reveal 0.4s ease 1.2s forwards;
+    }
+
+    .hero-subtitle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: clamp(11px, 1.5vw, 14px);
+      color: #5c5a78;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      margin-top: 16px;
+      opacity: 0;
+      animation: hero-sub-enter 0.6s ease 0.6s forwards;
+    }
+
+    .hero-version {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: #363a5c;
+      margin-top: 32px;
+      opacity: 0;
+      animation: hero-sub-enter 0.4s ease 1.0s forwards;
+      letter-spacing: 0.1em;
+    }
+
+    /* Boot progress bar */
+    .boot-progress {
+      width: 200px;
+      height: 2px;
+      background: #1a1b2e;
+      border-radius: 1px;
+      margin-top: 40px;
+      overflow: hidden;
+      opacity: 0;
+      animation: hero-sub-enter 0.3s ease 0.8s forwards;
+    }
+    .boot-progress__bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #00f0ff, #8855ff);
+      border-radius: 1px;
+      transition: width 0.3s ease;
+      box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+    }
+
+    @keyframes hero-gradient {
+      0%   { background-position: 0% 50%; }
+      50%  { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
+    @keyframes hero-enter {
+      0%   { opacity: 0; transform: translateY(40px) scale(0.9); filter: blur(8px); }
+      100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+    }
+
+    @keyframes hero-sub-enter {
+      0%   { opacity: 0; transform: translateY(10px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes slash-reveal {
+      0%   { opacity: 0; width: 0; }
+      100% { opacity: 0.6; width: 110%; }
+    }
+
+    /* ── Diagonal grid decoration (background) ── */
+    .boot-grid {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(135deg, transparent 49.5%, rgba(0, 240, 255, 0.03) 49.5%, rgba(0, 240, 255, 0.03) 50.5%, transparent 50.5%),
+        linear-gradient(45deg, transparent 49.5%, rgba(136, 85, 255, 0.02) 49.5%, rgba(136, 85, 255, 0.02) 50.5%, transparent 50.5%);
+      background-size: 60px 60px;
+      opacity: 0;
+      animation: hero-sub-enter 1s ease 0.3s forwards;
+    }
+
+    /* ── Asymmetric corner marks ── */
+    .corner-mark {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      opacity: 0;
+      animation: hero-sub-enter 0.4s ease 1.4s forwards;
+    }
+    .corner-mark--tl { top: 24px; left: 24px; border-top: 1px solid #252740; border-left: 1px solid #252740; }
+    .corner-mark--tr { top: 24px; right: 24px; border-top: 1px solid #252740; border-right: 1px solid #252740; }
+    .corner-mark--bl { bottom: 24px; left: 24px; border-bottom: 1px solid #252740; border-left: 1px solid #252740; }
+    .corner-mark--br { bottom: 24px; right: 24px; border-bottom: 1px solid #252740; border-right: 1px solid #252740; }
+
+    /* Corner mark accent dot */
+    .corner-mark::after {
+      content: '';
+      position: absolute;
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: #00f0ff;
+      box-shadow: 0 0 6px #00f0ff;
+    }
+    .corner-mark--tl::after { top: -1px; left: -1px; }
+    .corner-mark--tr::after { top: -1px; right: -1px; }
+    .corner-mark--bl::after { bottom: -1px; left: -1px; }
+    .corner-mark--br::after { bottom: -1px; right: -1px; }
+
+    /* Cross-nav link */
+    .switch-link {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 9999;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: #5c5a78;
+      text-decoration: none;
+      padding: 8px 12px;
+      background: rgba(10, 10, 15, 0.8);
+      border: 1px solid #252740;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+    }
+    .switch-link:hover {
+      color: #00f0ff;
+      border-color: #00f0ff;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Switch to Editor Playground link -->
+  <a href="/playground/" class="switch-link">Switch to Editor Playground →</a>
+
+  <!-- ══════════════════════════════════════════════════════
+       BOOT SEQUENCE — The memorable first impression
+       ══════════════════════════════════════════════════════ -->
+  <div class="boot-overlay" id="boot-overlay">
+    <div class="boot-grid"></div>
+    <div class="corner-mark corner-mark--tl"></div>
+    <div class="corner-mark corner-mark--tr"></div>
+    <div class="corner-mark corner-mark--bl"></div>
+    <div class="corner-mark corner-mark--br"></div>
+
+    <div class="hero-title" id="hero-title">rust<br>brain</div>
+    <div class="hero-subtitle">code intelligence system</div>
+    <div class="hero-version">sys.v2.0 // retro-futuristic interface</div>
+    <div class="boot-progress">
+      <div class="boot-progress__bar" id="boot-progress-bar"></div>
+    </div>
+  </div>
+
+  <!-- Mobile nav checkbox (CSS-only drawer) -->
+  <input type="checkbox" id="mobile-nav" aria-hidden="true">
+  <label for="mobile-nav" class="mobile-nav-backdrop" aria-hidden="true"></label>
+
+  <!-- Command Palette Overlay -->
+  <div id="cmd-palette" class="cmd-palette" role="dialog" aria-label="Command palette" hidden>
+    <div class="cmd-palette__backdrop"></div>
+    <div class="cmd-palette__modal">
+      <input id="cmd-input" class="cmd-palette__input" type="text" placeholder="// search tabs, actions…" autocomplete="off">
+      <ul id="cmd-list" class="cmd-palette__list" role="listbox"></ul>
+    </div>
+  </div>
+
+  <!-- App Shell: sidebar + main + detail -->
+  <div class="app-shell" id="app-shell" style="opacity: 0;">
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar__header">
+        <span class="sidebar__logo">🧠</span>
+        <span class="sidebar__title">RUST-BRAIN</span>
+        <button class="sidebar__toggle" id="sidebar-toggle" title="Collapse sidebar (Cmd+/)">‹</button>
+      </div>
+
+      <nav class="sidebar__nav" id="sidebar-nav">
+        <button class="sidebar__item active" data-tab="dashboard">
+          <span class="sidebar__icon">⊞</span><span class="sidebar__label">Dashboard</span>
+        </button>
+        <button class="sidebar__item" data-tab="search">
+          <span class="sidebar__icon">⌕</span><span class="sidebar__label">Search</span>
+        </button>
+        <button class="sidebar__item" data-tab="callgraph">
+          <span class="sidebar__icon">⬡</span><span class="sidebar__label">Call Graph</span>
+        </button>
+        <button class="sidebar__item" data-tab="chat">
+          <span class="sidebar__icon">◉</span><span class="sidebar__label">Chat</span>
+        </button>
+        <button class="sidebar__item" data-tab="cypher">
+          <span class="sidebar__icon">⌥</span><span class="sidebar__label">Cypher</span>
+        </button>
+        <button class="sidebar__item" data-tab="types">
+          <span class="sidebar__icon">T</span><span class="sidebar__label">Types</span>
+        </button>
+        <button class="sidebar__item" data-tab="traits">
+          <span class="sidebar__icon">◈</span><span class="sidebar__label">Traits</span>
+        </button>
+        <button class="sidebar__item" data-tab="modules">
+          <span class="sidebar__icon">⊟</span><span class="sidebar__label">Modules</span>
+        </button>
+        <button class="sidebar__item" data-tab="audit">
+          <span class="sidebar__icon">≡</span><span class="sidebar__label">Audit</span>
+        </button>
+        <button class="sidebar__item" data-tab="gaps">
+          <span class="sidebar__icon">△</span><span class="sidebar__label">Gaps</span>
+        </button>
+      </nav>
+
+      <div class="sidebar__footer">
+        <span id="sidebar-status" class="status-dot status-unknown"></span>
+        <span class="sidebar__status-label" id="sidebar-status-label">BOOTING…</span>
+      </div>
+    </aside>
+
+    <!-- Resizer: sidebar <-> main -->
+    <div class="resizer resizer--left" id="resizer-left" title="Drag to resize"></div>
+
+    <!-- Main Panel -->
+    <main class="main-panel" id="main-panel">
+      <!-- Tab Bar -->
+      <div class="tab-bar" id="tab-bar" role="tablist">
+        <label for="mobile-nav" class="mobile-nav-toggle" aria-label="Open navigation" title="Open navigation">☰</label>
+        <button class="tab-bar__tab active" role="tab" data-tab="dashboard" aria-selected="true">Dashboard</button>
+        <button class="tab-bar__tab" role="tab" data-tab="search" aria-selected="false">Search</button>
+        <button class="tab-bar__tab" role="tab" data-tab="callgraph" aria-selected="false">Call Graph</button>
+        <button class="tab-bar__tab" role="tab" data-tab="chat" aria-selected="false">Chat</button>
+        <button class="tab-bar__tab" role="tab" data-tab="cypher" aria-selected="false">Cypher</button>
+        <button class="tab-bar__tab" role="tab" data-tab="types" aria-selected="false">Types</button>
+        <button class="tab-bar__tab" role="tab" data-tab="traits" aria-selected="false">Traits</button>
+        <button class="tab-bar__tab" role="tab" data-tab="modules" aria-selected="false">Modules</button>
+        <button class="tab-bar__tab" role="tab" data-tab="audit" aria-selected="false">Audit</button>
+        <button class="tab-bar__tab" role="tab" data-tab="gaps" aria-selected="false">Gaps</button>
+        <div class="tab-bar__spacer"></div>
+        <kbd class="tab-bar__hint" title="Open command palette">⌘K</kbd>
+      </div>
+
+      <!-- Tab Content -->
+      <div class="tab-content" id="tab-content">
+        <div class="tab-pane active" id="pane-dashboard" role="tabpanel"></div>
+        <div class="tab-pane" id="pane-search"    role="tabpanel"></div>
+        <div class="tab-pane" id="pane-callgraph" role="tabpanel"></div>
+        <div class="tab-pane" id="pane-chat"      role="tabpanel"></div>
+        <div class="tab-pane" id="pane-cypher"    role="tabpanel"></div>
+        <div class="tab-pane" id="pane-types"     role="tabpanel"></div>
+        <div class="tab-pane" id="pane-traits"    role="tabpanel"></div>
+        <div class="tab-pane" id="pane-callsites" role="tabpanel"></div>
+        <div class="tab-pane" id="pane-modules"   role="tabpanel"></div>
+        <div class="tab-pane" id="pane-audit"     role="tabpanel"></div>
+        <div class="tab-pane" id="pane-gaps"      role="tabpanel"></div>
+      </div>
+    </main>
+
+    <!-- Resizer: main <-> detail -->
+    <div class="resizer resizer--right" id="resizer-right" title="Drag to resize"></div>
+
+    <!-- Detail Panel -->
+    <aside class="detail-panel" id="detail-panel">
+      <div class="detail-panel__header">
+        <span class="detail-panel__title" id="detail-title">Detail</span>
+        <button class="detail-panel__close" id="detail-close" title="Close detail">✕</button>
+      </div>
+      <div class="detail-panel__body" id="detail-body">
+        <p class="detail-panel__empty">Select an item to inspect it.</p>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Local JS (module) -->
+  <script type="module" src="js/playground.js?v=20260329-retro"></script>
+</body>
+</html>
