@@ -48,7 +48,7 @@ pub mod typecheck;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use pipeline::{PipelineConfig, PipelineRunner, StageStatus};
+use pipeline::{read_crate_name_from_toml, PipelineConfig, PipelineRunner, StageStatus};
 use std::path::PathBuf;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -84,6 +84,11 @@ struct Args {
     /// Available stages: expand, parse, typecheck, extract, graph, embed
     #[arg(short, long, value_delimiter = ',')]
     stages: Option<Vec<String>>,
+
+    /// Skip all stages before this one. The named stage and all subsequent stages run.
+    /// Available values: expand, parse, typecheck, extract, graph, embed
+    #[arg(long, value_parser = ["expand", "parse", "typecheck", "extract", "graph", "embed"])]
+    from_stage: Option<String>,
 
     /// Dry run mode - don't write to databases
     #[arg(long, default_value = "false")]
@@ -127,19 +132,28 @@ async fn main() -> Result<()> {
     info!("rust-brain ingestion service starting...");
     info!("Crate path: {:?}", args.crate_path);
 
+    let crate_name = read_crate_name_from_toml(&args.crate_path);
+    if let Some(ref name) = crate_name {
+        info!("Crate name: {}", name);
+    }
+
     // Build pipeline configuration
     let config = PipelineConfig {
         crate_path: args.crate_path.clone(),
+        crate_name,
         database_url: args.database_url
             .or_else(|| std::env::var("DATABASE_URL").ok())
             .expect("DATABASE_URL must be provided via --database-url flag or DATABASE_URL environment variable"),
         neo4j_url: args.neo4j_url,
         embedding_url: args.embedding_url,
         stages: args.stages,
+        from_stage: args.from_stage,
         dry_run: args.dry_run,
         continue_on_error: !args.fail_fast,
         max_concurrency: args.max_concurrency,
     };
+
+    config.validate().context("Invalid configuration")?;
 
     if args.dry_run {
         info!("Running in DRY RUN mode - no database writes");

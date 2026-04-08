@@ -25,12 +25,13 @@ pub use resilience::{
 };
 pub use runner::PipelineRunner;
 pub use stages::{
-    parse_item_type, parse_visibility, PipelineStage, StageError, StageResult, StageStatus,
+    parse_item_type, parse_visibility, DataLifecycleManager, PipelineStage, StageError,
+    StageResult, StageStatus, StaleCleanupReport,
 };
 pub use streaming_runner::StreamingPipelineRunner;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -58,6 +59,9 @@ pub struct PipelineConfig {
     /// Path to the crate or workspace to process
     pub crate_path: PathBuf,
 
+    /// Name of the crate being processed (extracted from Cargo.toml)
+    pub crate_name: Option<String>,
+
     /// Database connection URL
     pub database_url: String,
 
@@ -69,6 +73,9 @@ pub struct PipelineConfig {
 
     /// Which stages to run (None = all stages)
     pub stages: Option<Vec<String>>,
+
+    /// Start from this stage (skips all previous stages)
+    pub from_stage: Option<String>,
 
     /// Dry run mode - don't write to databases
     pub dry_run: bool,
@@ -84,15 +91,32 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             crate_path: PathBuf::from("."),
+            crate_name: None,
             database_url: std::env::var("DATABASE_URL")
                 .expect("DATABASE_URL environment variable must be set"),
             neo4j_url: None,
             embedding_url: None,
             stages: None,
+            from_stage: None,
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
         }
+    }
+}
+
+impl PipelineConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(ref from_stage) = self.from_stage {
+            if !STAGE_NAMES.contains(&from_stage.as_str()) {
+                anyhow::bail!(
+                    "Invalid from_stage '{}'. Valid values: {}",
+                    from_stage,
+                    STAGE_NAMES.join(", ")
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -159,6 +183,9 @@ pub struct PipelineState {
 
     /// Cross-store references for consistency tracking
     pub store_references: HashMap<String, rustbrain_common::StoreReference>,
+
+    /// Current FQNs extracted during this run (for stale detection)
+    pub current_fqns: HashSet<String>,
 }
 
 /// Information about a source file
@@ -248,6 +275,20 @@ impl std::fmt::Display for PipelineStatus {
 /// Stage names in execution order
 pub const STAGE_NAMES: &[&str] = &["expand", "parse", "typecheck", "extract", "graph", "embed"];
 
+pub fn read_crate_name_from_toml(crate_path: &std::path::Path) -> Option<String> {
+    let cargo_toml = crate_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name") {
+            if let Some(name) = trimmed.split('=').nth(1) {
+                return Some(name.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Check if a stage should run based on config
 pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
     match &config.stages {
@@ -264,10 +305,12 @@ mod tests {
     fn test_config() -> PipelineConfig {
         PipelineConfig {
             crate_path: PathBuf::from("."),
+            crate_name: None,
             database_url: "postgresql://test:test@localhost:5432/test".to_string(),
             neo4j_url: None,
             embedding_url: None,
             stages: None,
+            from_stage: None,
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,

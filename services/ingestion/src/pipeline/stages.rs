@@ -2907,24 +2907,43 @@ impl GraphStage {
     }
 
     /// Load items from the database when parsed_items is not available in state
-    async fn load_items_from_database(&self, database_url: &str) -> Result<Vec<ParsedItemInfo>> {
+    async fn load_items_from_database(
+        &self,
+        database_url: &str,
+        crate_name: Option<&str>,
+    ) -> Result<Vec<ParsedItemInfo>> {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect(database_url)
             .await
             .context("Failed to connect to database for loading items")?;
 
-        let rows = sqlx::query(
-            r#"
-            SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                   start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
-            FROM extracted_items
-            ORDER BY fqn
-            "#
-        )
-        .fetch_all(&pool)
-        .await
-        .context("Failed to query extracted_items")?;
+        let query = if let Some(crate_name) = crate_name {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+                FROM extracted_items
+                WHERE crate_name = $1
+                ORDER BY fqn
+                "#
+            )
+            .bind(crate_name)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+                FROM extracted_items
+                ORDER BY fqn
+                "#,
+            )
+        };
+
+        let rows = query
+            .fetch_all(&pool)
+            .await
+            .context("Failed to query extracted_items")?;
 
         let items: Vec<ParsedItemInfo> = rows
             .into_iter()
@@ -2989,7 +3008,10 @@ impl PipelineStage for GraphStage {
         if parsed_items.is_empty() {
             info!("No parsed items in state, loading from database...");
             match self
-                .load_items_from_database(&ctx.config.database_url)
+                .load_items_from_database(
+                    &ctx.config.database_url,
+                    ctx.config.crate_name.as_deref(),
+                )
                 .await
             {
                 Ok(items) => {
@@ -4481,24 +4503,43 @@ impl EmbedStage {
     }
 
     /// Load items from the database when parsed_items is not available in state
-    async fn load_items_from_database(&self, database_url: &str) -> Result<Vec<ParsedItemInfo>> {
+    async fn load_items_from_database(
+        &self,
+        database_url: &str,
+        crate_name: Option<&str>,
+    ) -> Result<Vec<ParsedItemInfo>> {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect(database_url)
             .await
             .context("Failed to connect to database for loading items")?;
 
-        let rows = sqlx::query(
-            r#"
-            SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                   start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
-            FROM extracted_items
-            ORDER BY fqn
-            "#
-        )
-        .fetch_all(&pool)
-        .await
-        .context("Failed to query extracted_items")?;
+        let query = if let Some(crate_name) = crate_name {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+                FROM extracted_items
+                WHERE crate_name = $1
+                ORDER BY fqn
+                "#
+            )
+            .bind(crate_name)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+                FROM extracted_items
+                ORDER BY fqn
+                "#,
+            )
+        };
+
+        let rows = query
+            .fetch_all(&pool)
+            .await
+            .context("Failed to query extracted_items")?;
 
         let items: Vec<ParsedItemInfo> = rows
             .into_iter()
@@ -4554,7 +4595,10 @@ impl PipelineStage for EmbedStage {
         if parsed_items.is_empty() {
             info!("No parsed items in state, loading from database...");
             match self
-                .load_items_from_database(&ctx.config.database_url)
+                .load_items_from_database(
+                    &ctx.config.database_url,
+                    ctx.config.crate_name.as_deref(),
+                )
                 .await
             {
                 Ok(items) => {
@@ -4910,6 +4954,135 @@ impl DataLifecycleManager {
             .filter(|r| !r.is_fully_synced() && !r.is_orphaned())
             .collect()
     }
+
+    pub async fn cleanup_stale_items(
+        crate_name: &str,
+        current_fqns: &std::collections::HashSet<String>,
+        pool: &PgPool,
+        neo4j_url: Option<&str>,
+        qdrant_url: Option<&str>,
+    ) -> Result<StaleCleanupReport> {
+        let mut report = StaleCleanupReport::default();
+        if current_fqns.is_empty() {
+            info!("No current FQNs - skipping stale cleanup");
+            return Ok(report);
+        }
+        info!(
+            "Starting stale cleanup for crate {} with {} current FQNs",
+            crate_name,
+            current_fqns.len()
+        );
+
+        let existing_fqns: std::collections::HashSet<String> =
+            sqlx::query_scalar("SELECT fqn FROM extracted_items WHERE crate_name = $1")
+                .bind(crate_name)
+                .fetch_all(pool)
+                .await
+                .context("Failed to query existing FQNs for stale cleanup")?
+                .into_iter()
+                .collect();
+
+        let stale_fqns: Vec<String> = existing_fqns.difference(current_fqns).cloned().collect();
+        if stale_fqns.is_empty() {
+            info!("No stale items found for crate {}", crate_name);
+            return Ok(report);
+        }
+        info!(
+            "Found {} stale FQNs for crate {}",
+            stale_fqns.len(),
+            crate_name
+        );
+        report.stale_count = stale_fqns.len();
+
+        if let Some(qdrant) = qdrant_url {
+            let client = reqwest::Client::new();
+            let namespace = uuid::Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                .expect("Invalid namespace UUID");
+            let point_ids: Vec<String> = stale_fqns
+                .iter()
+                .map(|fqn| uuid::Uuid::new_v5(&namespace, fqn.as_bytes()).to_string())
+                .collect();
+            let delete_req = serde_json::json!({ "ids": point_ids });
+            match client
+                .post(format!(
+                    "{}/collections/code_embeddings/points/delete",
+                    qdrant
+                ))
+                .json(&delete_req)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    report.qdrant_deleted = stale_fqns.len();
+                    info!("Deleted {} stale points from Qdrant", stale_fqns.len());
+                }
+                Ok(resp) => {
+                    warn!(
+                        "Qdrant stale delete returned {}: {}",
+                        resp.status(),
+                        resp.text().await.unwrap_or_default()
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to delete stale points from Qdrant: {}", e);
+                    report.errors.push(format!("Qdrant: {}", e));
+                }
+            }
+        }
+
+        if let Some(neo4j) = neo4j_url {
+            match neo4rs::Graph::new(
+                neo4j,
+                std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
+                std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string()),
+            )
+            .await
+            {
+                Ok(graph) => {
+                    let q = neo4rs::query(
+                        "UNWIND $fqns AS fqn MATCH (n {fqn: fqn, crate_name: $crate_name}) DETACH DELETE n"
+                    )
+                    .param("fqns", stale_fqns.clone())
+                    .param("crate_name", crate_name);
+                    match graph.run(q).await {
+                        Ok(_) => {
+                            report.neo4j_deleted = stale_fqns.len();
+                            info!("Deleted {} stale nodes from Neo4j", stale_fqns.len());
+                        }
+                        Err(e) => {
+                            warn!("Failed to delete stale nodes from Neo4j: {}", e);
+                            report.errors.push(format!("Neo4j: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to connect to Neo4j for stale cleanup: {}", e);
+                    report.errors.push(format!("Neo4j connect: {}", e));
+                }
+            }
+        }
+
+        match sqlx::query("DELETE FROM extracted_items WHERE crate_name = $1 AND fqn = ANY($2)")
+            .bind(crate_name)
+            .bind(&stale_fqns)
+            .execute(pool)
+            .await
+        {
+            Ok(result) => {
+                report.postgres_deleted = result.rows_affected() as usize;
+                info!(
+                    "Deleted {} stale items from Postgres",
+                    report.postgres_deleted
+                );
+            }
+            Err(e) => {
+                warn!("Failed to delete stale items from Postgres: {}", e);
+                report.errors.push(format!("Postgres: {}", e));
+            }
+        }
+
+        Ok(report)
+    }
 }
 
 /// Report of data lifecycle operations
@@ -4926,6 +5099,25 @@ pub struct DataLifecycleReport {
 impl DataLifecycleReport {
     pub fn is_successful(&self) -> bool {
         self.errors.is_empty()
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct StaleCleanupReport {
+    pub stale_count: usize,
+    pub postgres_deleted: usize,
+    pub neo4j_deleted: usize,
+    pub qdrant_deleted: usize,
+    pub errors: Vec<String>,
+}
+
+impl StaleCleanupReport {
+    pub fn is_successful(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    pub fn total_deleted(&self) -> usize {
+        self.postgres_deleted + self.neo4j_deleted + self.qdrant_deleted
     }
 }
 

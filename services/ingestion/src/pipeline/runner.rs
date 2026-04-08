@@ -12,6 +12,7 @@ use crate::pipeline::stages::{
 };
 use crate::pipeline::{
     PipelineConfig, PipelineContext, PipelineResult, PipelineStage, PipelineStatus, StageCounts,
+    STAGE_NAMES,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -169,6 +170,22 @@ impl PipelineRunner {
         for stage in &self.stages {
             let stage_name = stage.name();
 
+            if let Some(ref target) = self.ctx.config.from_stage {
+                let target_idx = STAGE_NAMES
+                    .iter()
+                    .position(|s| *s == target.as_str())
+                    .expect("from_stage validated at config construction");
+                let current_idx = STAGE_NAMES
+                    .iter()
+                    .position(|s| *s == stage_name)
+                    .expect("stage name must be in STAGE_NAMES");
+                if current_idx < target_idx {
+                    info!("Skipping stage (from_stage={}): {}", target, stage_name);
+                    results.push(StageResult::skipped(stage_name));
+                    continue;
+                }
+            }
+
             // If resuming, skip stages already completed
             if skip_until_resume {
                 if let Some(ref resume_stage) = resume_from_stage {
@@ -211,6 +228,17 @@ impl PipelineRunner {
                 warn!("Emergency degradation — flushing partial results");
                 has_partial = true;
                 break;
+            }
+
+            if let Err(e) = self.verify_pre_stage_gate(stage_name).await {
+                error!("Verification gate failed for stage {}: {}", stage_name, e);
+                let stage_result = StageResult::failed(stage_name, e.to_string());
+                results.push(stage_result);
+                has_failures = true;
+                if !self.ctx.config.continue_on_error {
+                    break;
+                }
+                continue;
             }
 
             info!("Running stage: {} (tier: {})", stage_name, tier);
@@ -270,6 +298,12 @@ impl PipelineRunner {
                     results.push(stage_result.clone());
                     completed_stages.push(stage_name.to_string());
 
+                    if stage_name == "extract" && stage_result.status == StageStatus::Success {
+                        if let Err(e) = self.collect_current_fqns().await {
+                            warn!("Failed to collect FQNs after extract stage: {}", e);
+                        }
+                    }
+
                     // Record stage completion
                     if !self.ctx.config.dry_run {
                         self.record_stage_completion(pipeline_id, stage_name, stage_result)
@@ -312,6 +346,7 @@ impl PipelineRunner {
         let state = self.ctx.state.read().await;
         let counts = state.counts.clone();
         let errors = state.errors.clone();
+        let current_fqns = state.current_fqns.clone();
         drop(state);
 
         // Determine final status
@@ -322,6 +357,20 @@ impl PipelineRunner {
         } else {
             PipelineStatus::Completed
         };
+
+        let is_full_run = self.ctx.config.from_stage.is_none()
+            && self.ctx.config.stages.is_none()
+            && !has_partial;
+
+        if !self.ctx.config.dry_run
+            && status == PipelineStatus::Completed
+            && is_full_run
+            && !current_fqns.is_empty()
+        {
+            if let Err(e) = self.run_stale_cleanup(&current_fqns).await {
+                warn!("Stale cleanup failed: {}", e);
+            }
+        }
 
         let duration = start.elapsed();
 
@@ -498,6 +547,201 @@ impl PipelineRunner {
         self.monitor = Some(monitor);
     }
 
+    async fn verify_pre_stage_gate(&self, stage_name: &str) -> Result<()> {
+        if self.ctx.config.dry_run {
+            debug!(
+                "Skipping verification gate for {} (dry_run mode)",
+                stage_name
+            );
+            return Ok(());
+        }
+        let crate_name = match &self.ctx.config.crate_name {
+            Some(name) => name,
+            None => {
+                debug!(
+                    "Skipping verification gate for {} (no crate_name)",
+                    stage_name
+                );
+                return Ok(());
+            }
+        };
+        match stage_name {
+            "graph" => self.verify_pre_graph_gate(crate_name).await,
+            "embed" => self.verify_pre_embed_gate(crate_name).await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn verify_pre_graph_gate(&self, crate_name: &str) -> Result<()> {
+        let pool = match &self.pool {
+            Some(p) => p,
+            None => {
+                debug!("Skipping pre-graph gate (no database connection)");
+                return Ok(());
+            }
+        };
+        let orphan_count: i64 = sqlx::query_scalar(
+            r#"SELECT count(*)::bigint FROM extracted_items WHERE source_file_id IS NULL AND crate_name = $1"#
+        )
+        .bind(crate_name)
+        .fetch_one(pool)
+        .await
+        .context("Failed to query orphan count for pre-graph gate")?;
+        if orphan_count > 0 {
+            anyhow::bail!(
+                "Verification gate failed: {} extracted items have NULL source_file_id for crate '{}'.\n\
+                 This indicates the Extract stage did not complete successfully.\n\
+                 Fix: re-run ingestion from the extract stage: --from-stage extract",
+                orphan_count, crate_name
+            );
+        }
+        info!(
+            "Pre-graph gate passed: no orphaned extracted_items for crate {}",
+            crate_name
+        );
+        Ok(())
+    }
+
+    async fn verify_pre_embed_gate(&self, crate_name: &str) -> Result<()> {
+        let neo4j_url = match &self.ctx.config.neo4j_url {
+            Some(url) => url,
+            None => {
+                debug!("Skipping pre-embed gate (no Neo4j URL configured)");
+                return Ok(());
+            }
+        };
+        let pool = match &self.pool {
+            Some(p) => p,
+            None => {
+                debug!("Skipping pre-embed gate (no database connection)");
+                return Ok(());
+            }
+        };
+        let sampled_fqns: Vec<String> = sqlx::query_scalar(
+            r#"SELECT fqn FROM extracted_items WHERE crate_name = $1 ORDER BY random() LIMIT 10"#,
+        )
+        .bind(crate_name)
+        .fetch_all(pool)
+        .await
+        .context("Failed to sample FQNs for pre-embed gate")?;
+        if sampled_fqns.is_empty() {
+            debug!(
+                "Skipping pre-embed gate (no extracted_items found for crate {})",
+                crate_name
+            );
+            return Ok(());
+        }
+        let graph = match neo4rs::Graph::new(
+            neo4j_url,
+            std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
+            std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string()),
+        )
+        .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                warn!("Skipping pre-embed gate: failed to connect to Neo4j: {}", e);
+                return Ok(());
+            }
+        };
+        for fqn in &sampled_fqns {
+            let query = neo4rs::query("MATCH (n {fqn: $fqn}) RETURN count(n) as cnt")
+                .param("fqn", fqn.clone());
+            let mut result = graph
+                .execute(query)
+                .await
+                .context("Failed to execute Neo4j query")?;
+            match result.next().await {
+                Ok(Some(row)) => {
+                    let count: i64 = row.get("cnt").unwrap_or(0);
+                    if count == 0 {
+                        anyhow::bail!(
+                            "Verification gate failed: Neo4j node missing for FQN '{}'.\n\
+                             This indicates the Graph stage did not complete successfully.\n\
+                             Fix: re-run ingestion from the graph stage: --from-stage graph",
+                            fqn
+                        );
+                    }
+                }
+                Ok(None) => {
+                    anyhow::bail!(
+                        "Verification gate failed: Neo4j query returned no result for FQN '{}'.\n\
+                         This indicates the Graph stage did not complete successfully.\n\
+                         Fix: re-run ingestion from the graph stage: --from-stage graph",
+                        fqn
+                    );
+                }
+                Err(e) => {
+                    warn!("Skipping pre-embed gate: Neo4j query error: {}", e);
+                    return Ok(());
+                }
+            }
+        }
+        info!(
+            "Pre-embed gate passed: all {} sampled FQNs have Neo4j nodes for crate {}",
+            sampled_fqns.len(),
+            crate_name
+        );
+        Ok(())
+    }
+
+    async fn collect_current_fqns(&self) -> Result<()> {
+        let pool = match &self.pool {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let crate_name = match &self.ctx.config.crate_name {
+            Some(name) => name,
+            None => return Ok(()),
+        };
+        let fqns: std::collections::HashSet<String> =
+            sqlx::query_scalar("SELECT fqn FROM extracted_items WHERE crate_name = $1")
+                .bind(crate_name)
+                .fetch_all(pool)
+                .await
+                .context("Failed to query FQNs for stale detection")?
+                .into_iter()
+                .collect();
+        let mut state = self.ctx.state.write().await;
+        state.current_fqns = fqns;
+        info!(
+            "Collected {} current FQNs for stale detection",
+            state.current_fqns.len()
+        );
+        Ok(())
+    }
+
+    async fn run_stale_cleanup(
+        &self,
+        current_fqns: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let pool = match &self.pool {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let crate_name = match &self.ctx.config.crate_name {
+            Some(name) => name,
+            None => return Ok(()),
+        };
+        info!("Running stale cleanup for crate {}", crate_name);
+        let report = crate::pipeline::stages::DataLifecycleManager::cleanup_stale_items(
+            crate_name,
+            current_fqns,
+            pool,
+            self.ctx.config.neo4j_url.as_deref(),
+            self.ctx.config.embedding_url.as_deref(),
+        )
+        .await
+        .context("Stale cleanup failed")?;
+        if report.stale_count > 0 {
+            info!(
+                "Stale cleanup complete: {} stale items deleted (Postgres: {}, Neo4j: {}, Qdrant: {})",
+                report.stale_count, report.postgres_deleted, report.neo4j_deleted, report.qdrant_deleted
+            );
+        }
+        Ok(())
+    }
+
     /// Create a runner that resumes from a previous checkpoint.
     ///
     /// Looks up the latest checkpoint for the given run_id and creates
@@ -550,10 +794,12 @@ mod tests {
     fn test_config() -> PipelineConfig {
         PipelineConfig {
             crate_path: PathBuf::from("."),
+            crate_name: None,
             database_url: "postgresql://test:test@localhost:5432/test".to_string(),
             neo4j_url: None,
             embedding_url: None,
             stages: None,
+            from_stage: None,
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
