@@ -99,19 +99,19 @@ setup_work_directory() {
 # =============================================================================
 configure_git() {
     log_info "Configuring git user: $GIT_USER_NAME <$GIT_USER_EMAIL>"
-    
-    git config user.name "$GIT_USER_NAME"
-    git config user.email "$GIT_USER_EMAIL"
-    
+
+    git config --global user.name "$GIT_USER_NAME"
+    git config --global user.email "$GIT_USER_EMAIL"
+
     # Configure git to handle line endings
-    git config core.autocrlf input
-    
+    git config --global core.autocrlf input
+
     # Set default branch name
-    git config init.defaultBranch main
-    
+    git config --global init.defaultBranch main
+
     # Configure credential helper for HTTPS pushes (if GH_TOKEN is available)
     if [ -n "$GH_TOKEN" ]; then
-        git config credential.helper store
+        git config --global credential.helper store
         log_info "Git credentials configured for HTTPS push"
     fi
 }
