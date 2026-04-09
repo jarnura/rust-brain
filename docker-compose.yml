@@ -278,6 +278,8 @@ services:
       DOCKER_NETWORK: ${DOCKER_NETWORK:-rustbrain_rustbrain-net}
       RUSTBRAIN_PUBLIC_HOST: ${RUSTBRAIN_PUBLIC_HOST:-}
       RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS: ${CONTAINER_KEEP_ALIVE_SECS:-0}
+      OPENCODE_CONFIG_HOST_PATH: ${OPENCODE_CONFIG_HOST_PATH:-}
+      MCP_SSE_URL: ${MCP_SSE_URL:-http://mcp-sse:3001/sse}
     networks:
       rustbrain-net:
         aliases:

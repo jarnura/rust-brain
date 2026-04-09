@@ -7,6 +7,7 @@ COPY docker-entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh
 RUN mkdir -p /home/opencode/.local/share/opencode/bin /home/opencode/.local/state /home/opencode/.config/opencode /workspace/target-repo /workspace/target-repo-work && \
     chown -R opencode:opencode /home/opencode /workspace
+ENV NODE_PATH=/usr/local/lib/node_modules
 USER opencode
 WORKDIR /workspace/target-repo-work
 EXPOSE 4096
