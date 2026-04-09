@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued'
-import { commitWorkspace, getWorkspaceDiff, resetWorkspace } from '../api/client'
+import { commitWorkspace, getExecution, getWorkspaceDiff, resetWorkspace } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 
 // Parse unified patch into per-file old/new string pairs for the diff viewer.
@@ -41,6 +41,7 @@ export function DiffViewer() {
   const {
     activeWorkspaceId,
     activeExecutionId,
+    executions,
     streamDone,
     diff,
     setDiff,
@@ -53,16 +54,36 @@ export function DiffViewer() {
   const [actionLoading, setActionLoading] = useState<'commit' | 'reset' | null>(null)
   const [actionResult, setActionResult] = useState<string | null>(null)
 
-  // Fetch diff when stream finishes
+  // Fetch diff when stream finishes.
+  // For completed historical executions, use the stored diff_summary.
+  // For the currently running execution, use the live workspace diff.
   useEffect(() => {
-    if (!activeWorkspaceId || !streamDone) return
+    if (!activeWorkspaceId || !streamDone || !activeExecutionId) return
     setLoading(true)
     setError(null)
-    getWorkspaceDiff(activeWorkspaceId)
-      .then(setDiff)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load diff'))
-      .finally(() => setLoading(false))
-  }, [activeWorkspaceId, streamDone, setDiff])
+
+    const exec = executions.find((e) => e.id === activeExecutionId)
+    const isCompleted = exec && exec.status !== 'running' && exec.status !== 'pending'
+
+    if (isCompleted) {
+      // Fetch execution to get diff_summary (may not be in the list yet)
+      getExecution(activeExecutionId)
+        .then((full) => {
+          if (full.diff_summary) {
+            setDiff({ patch: full.diff_summary, clean: false })
+          } else {
+            setDiff({ patch: '', clean: true })
+          }
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load diff'))
+        .finally(() => setLoading(false))
+    } else {
+      getWorkspaceDiff(activeWorkspaceId)
+        .then(setDiff)
+        .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load diff'))
+        .finally(() => setLoading(false))
+    }
+  }, [activeWorkspaceId, activeExecutionId, streamDone, setDiff, executions])
 
   async function handleCommit() {
     if (!activeWorkspaceId) return

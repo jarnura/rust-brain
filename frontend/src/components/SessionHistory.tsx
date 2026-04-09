@@ -35,7 +35,6 @@ export function SessionHistory() {
     setActiveExecutionId,
     clearStreamEvents,
     setDiff,
-    setStreamDone,
   } = useWorkspaceStore()
 
   useEffect(() => {
@@ -48,7 +47,9 @@ export function SessionHistory() {
   function handleSelect(exec: Execution) {
     clearStreamEvents()
     setDiff(null)
-    setStreamDone(exec.status !== 'running' && exec.status !== 'pending')
+    // Don't set streamDone here — let the SSE stream's "done" event set it.
+    // clearStreamEvents() already resets streamDone to false.
+    // For completed executions, the backend replays events and sends "done".
     setActiveExecutionId(exec.id)
   }
 
