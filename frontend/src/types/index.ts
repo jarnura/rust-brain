@@ -78,6 +78,8 @@ export type EventPhase =
   | 'file_edit'
   | 'done'
   | 'error'
+  | 'phase_change'
+  | 'agent_dispatch'
 
 export interface AgentEvent {
   id: number
