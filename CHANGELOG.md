@@ -90,6 +90,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Corrected endpoint counts and MCP tool counts
 - Added Quick Start snapshot section to README
 - Comprehensive documentation audit and remediation
+- Added KNOWN_ISSUES.md documenting all known limitations and failure modes
 
 ## [0.2.0] - 2026-03-15
 
