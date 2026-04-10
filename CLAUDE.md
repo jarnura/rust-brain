@@ -33,8 +33,9 @@ services/mcp/                MCP protocol bridge (stdio + SSE transport on :3001
 
 ## API Surface
 
-**Code Intelligence (10 endpoints):**
+**Code Intelligence (11 endpoints):**
 - `POST /tools/search_semantic` — vector search via Qdrant
+- `POST /tools/search_docs` — documentation search via Qdrant doc_embeddings
 - `POST /tools/aggregate_search` — cross-DB fan-out (Qdrant + Postgres + Neo4j)
 - `GET /tools/get_function` — full function details with source
 - `GET /tools/get_callers` — direct and transitive callers from call graph
@@ -51,7 +52,7 @@ services/mcp/                MCP protocol bridge (stdio + SSE transport on :3001
 
 **CRUD:** `/api/artifacts`, `/api/tasks`, `/tools/pg_query` (read-only SQL)
 
-**MCP Tools (15):** search_code, get_function, get_callers, get_trait_impls, find_usages_of_type, get_module_tree, query_graph, find_calls_with_type, find_trait_impls_for_type, pg_query, aggregate_search, context_store, status_check, task_update, consistency_check
+**MCP Tools (16):** search_code, search_docs, get_function, get_callers, get_trait_impls, find_usages_of_type, get_module_tree, query_graph, find_calls_with_type, find_trait_impls_for_type, pg_query, aggregate_search, context_store, status_check, task_update, consistency_check
 
 ## Ingestion Pipeline
 
