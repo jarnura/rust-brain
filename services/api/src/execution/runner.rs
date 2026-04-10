@@ -416,19 +416,20 @@ async fn run_execution_inner(
                                 if let Some(dispatched_agent) =
                                     extract_dispatched_agent_name(args, state)
                                 {
-                                    if set_agent_phase(&pool, exec_id, &dispatched_agent)
-                                        .await
-                                        .is_ok()
-                                    {
-                                        let _ = insert_agent_event(
-                                            &pool,
-                                            exec_id,
-                                            "agent_dispatch",
-                                            json!({ "agent": &dispatched_agent }),
-                                        )
-                                        .await;
-                                        current_agent = dispatched_agent;
+                                    if let Err(e) = set_agent_phase(&pool, exec_id, &dispatched_agent).await {
+                                        warn!(execution_id = %exec_id, error = %e, "Failed to set agent_phase in poll loop");
                                     }
+                                    if let Err(e) = insert_agent_event(
+                                        &pool,
+                                        exec_id,
+                                        "agent_dispatch",
+                                        json!({ "agent": &dispatched_agent }),
+                                    )
+                                    .await
+                                    {
+                                        warn!(execution_id = %exec_id, error = %e, agent = %dispatched_agent, "Failed to insert agent_dispatch in poll loop");
+                                    }
+                                    current_agent = dispatched_agent;
                                 }
                             }
                         }
@@ -550,19 +551,20 @@ async fn bridge_new_parts(
                 if let Some(name) = tool_name {
                     if name == "task" {
                         if let Some(dispatched_agent) = extract_dispatched_agent_name(args, state) {
-                            if set_agent_phase(pool, execution_id, &dispatched_agent)
-                                .await
-                                .is_ok()
-                            {
-                                let _ = insert_agent_event(
-                                    pool,
-                                    execution_id,
-                                    "agent_dispatch",
-                                    json!({ "agent": &dispatched_agent }),
-                                )
-                                .await;
-                                new_agent = Some(dispatched_agent);
+                            if let Err(e) = set_agent_phase(pool, execution_id, &dispatched_agent).await {
+                                warn!(execution_id = %execution_id, error = %e, "Failed to set agent_phase in bridge");
                             }
+                            if let Err(e) = insert_agent_event(
+                                pool,
+                                execution_id,
+                                "agent_dispatch",
+                                json!({ "agent": &dispatched_agent }),
+                            )
+                            .await
+                            {
+                                warn!(execution_id = %execution_id, error = %e, agent = %dispatched_agent, "Failed to insert agent_dispatch in bridge");
+                            }
+                            new_agent = Some(dispatched_agent);
                         }
                     }
                 }
@@ -653,14 +655,20 @@ async fn detect_agent_dispatches(
             if name == "task" {
                 if let Some(agent) = extract_dispatched_agent_name(args, state) {
                     if !detected.contains(&agent) {
-                        let _ = set_agent_phase(pool, execution_id, &agent).await;
-                        let _ = insert_agent_event(
+                        info!(execution_id = %execution_id, agent = %agent, "Detected agent dispatch");
+                        if let Err(e) = set_agent_phase(pool, execution_id, &agent).await {
+                            warn!(execution_id = %execution_id, error = %e, "Failed to set agent_phase in detect pass");
+                        }
+                        if let Err(e) = insert_agent_event(
                             pool,
                             execution_id,
                             "agent_dispatch",
                             json!({ "agent": &agent }),
                         )
-                        .await;
+                        .await
+                        {
+                            warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_dispatch event");
+                        }
                         detected.push(agent);
                     }
                 }
