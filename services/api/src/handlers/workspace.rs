@@ -23,12 +23,16 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::docker::{DockerClient, IngestionConfig};
 use crate::errors::AppError;
+use crate::execution::models::{
+    abort_executions_for_workspace, list_running_executions_for_workspace,
+};
 use crate::github::GithubClient;
 use crate::state::AppState;
 use crate::workspace::{
     create_workspace as db_create_workspace, get_workspace as db_get_workspace, lifecycle,
-    list_workspaces as db_list_workspaces, schema::create_workspace_schema, CreateWorkspaceParams,
-    Workspace, WorkspaceSourceType, WorkspaceStatus,
+    list_workspaces as db_list_workspaces, schema::create_workspace_schema,
+    schema::drop_workspace_schema, CreateWorkspaceParams, Workspace, WorkspaceSourceType,
+    WorkspaceStatus,
 };
 
 // =============================================================================
@@ -215,7 +219,15 @@ pub async fn get_workspace(
     Ok(Json(workspace))
 }
 
-/// `DELETE /workspaces/:id` — archive a workspace and clean up clone directory and Docker volume.
+/// `DELETE /workspaces/:id` — archive a workspace and clean up all resources.
+///
+/// Cleanup steps (in order):
+/// 1. Stop any running execution containers
+/// 2. Abort running executions in the database
+/// 3. Drop the per-workspace Postgres schema
+/// 4. Remove the Docker volume
+/// 5. Clean up the host clone directory
+/// 6. Archive the workspace record
 ///
 /// Returns `204 No Content` on success, `404` if not found.
 pub async fn delete_workspace(
@@ -231,6 +243,11 @@ pub async fn delete_workspace(
         .map_err(|e| AppError::Database(format!("Failed to fetch workspace: {}", e)))?
         .ok_or_else(|| AppError::NotFound(format!("Workspace not found: {}", id)))?;
 
+    // Check if already archived
+    if workspace.status == "archived" {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
     let result = sqlx::query::<sqlx::Postgres>(
         "UPDATE workspaces SET status = 'archived', updated_at = NOW() \
          WHERE id = $1 AND status != 'archived'",
@@ -240,29 +257,115 @@ pub async fn delete_workspace(
     .await
     .map_err(|e| AppError::Database(format!("Failed to archive workspace: {}", e)))?;
 
-    if result.rows_affected() > 0 {
-        info!(
-            workspace_id = %id,
-            clone_path = ?workspace.clone_path,
-            volume_name = ?workspace.volume_name,
-            "Workspace archived — triggering clone dir and volume cleanup"
-        );
-        let clone_path = workspace.clone_path;
-        let volume_name = workspace.volume_name;
-        let docker = state.docker.clone();
-        tokio::spawn(async move {
-            if let Some(path) = clone_path {
-                if let Err(e) = tokio::fs::remove_dir_all(&path).await {
-                    warn!("Failed to remove clone dir {}: {}", path, e);
-                }
-            }
-            if let Some(vol) = volume_name {
-                if let Err(e) = docker.remove_volume(&vol).await {
-                    warn!("Failed to remove Docker volume {}: {}", vol, e);
-                }
-            }
-        });
+    if result.rows_affected() == 0 {
+        return Ok(StatusCode::NO_CONTENT);
     }
+
+    info!(
+        workspace_id = %id,
+        schema_name = ?workspace.schema_name,
+        clone_path = ?workspace.clone_path,
+        volume_name = ?workspace.volume_name,
+        "Workspace archived — starting cleanup"
+    );
+
+    // Clone values for the background task
+    let schema_name = workspace.schema_name;
+    let clone_path = workspace.clone_path;
+    let volume_name = workspace.volume_name;
+    let docker = state.docker.clone();
+    let pool_clone = pool.clone();
+
+    tokio::spawn(async move {
+        // 1. Stop running execution containers
+        match list_running_executions_for_workspace(&pool_clone, id).await {
+            Ok(running) => {
+                for (exec_id, container_id_opt) in running {
+                    if let Some(cid) = container_id_opt {
+                        info!(
+                            workspace_id = %id,
+                            execution_id = %exec_id,
+                            container_id = %cid,
+                            "Stopping running execution container"
+                        );
+                        if let Err(e) = docker.stop_container(&cid).await {
+                            warn!(
+                                workspace_id = %id,
+                                container_id = %cid,
+                                error = %e,
+                                "Failed to stop container, attempting force remove"
+                            );
+                        }
+                        if let Err(e) = docker.remove_container(&cid).await {
+                            warn!(
+                                workspace_id = %id,
+                                container_id = %cid,
+                                error = %e,
+                                "Failed to remove container"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    workspace_id = %id,
+                    error = %e,
+                    "Failed to list running executions"
+                );
+            }
+        }
+
+        // 2. Abort running executions in database
+        if let Err(e) = abort_executions_for_workspace(&pool_clone, id).await {
+            warn!(
+                workspace_id = %id,
+                error = %e,
+                "Failed to abort running executions"
+            );
+        }
+
+        // 3. Drop the Postgres schema
+        if let Some(schema) = &schema_name {
+            info!(workspace_id = %id, schema = %schema, "Dropping workspace schema");
+            if let Err(e) = drop_workspace_schema(&pool_clone, schema).await {
+                warn!(
+                    workspace_id = %id,
+                    schema = %schema,
+                    error = %e,
+                    "Failed to drop workspace schema"
+                );
+            }
+        }
+
+        // 4. Remove Docker volume
+        if let Some(vol) = &volume_name {
+            info!(workspace_id = %id, volume = %vol, "Removing Docker volume");
+            if let Err(e) = docker.remove_volume(vol).await {
+                warn!(
+                    workspace_id = %id,
+                    volume = %vol,
+                    error = %e,
+                    "Failed to remove Docker volume"
+                );
+            }
+        }
+
+        // 5. Clean up host clone directory
+        if let Some(path) = &clone_path {
+            info!(workspace_id = %id, clone_path = %path, "Removing clone directory");
+            if let Err(e) = tokio::fs::remove_dir_all(path).await {
+                warn!(
+                    workspace_id = %id,
+                    clone_path = %path,
+                    error = %e,
+                    "Failed to remove clone directory"
+                );
+            }
+        }
+
+        info!(workspace_id = %id, "Workspace cleanup complete");
+    });
 
     Ok(StatusCode::NO_CONTENT)
 }

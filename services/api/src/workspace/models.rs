@@ -84,7 +84,7 @@ pub struct Workspace {
     pub source_url: String,
     pub clone_path: Option<String>,
     pub volume_name: Option<String>,
-    /// Postgres schema name, e.g. `ws_abc12345`
+    /// Postgres schema name, e.g. `ws_abc123456789`
     pub schema_name: Option<String>,
     pub status: String,
     pub default_branch: Option<String>,

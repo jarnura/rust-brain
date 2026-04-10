@@ -58,6 +58,8 @@ pub struct Config {
     pub embedding_dimensions: usize,
     /// Qdrant collection name for code embeddings
     pub collection_name: String,
+    /// Qdrant collection name for document embeddings
+    pub doc_collection_name: String,
     /// Ollama chat model name (used by playground chat)
     pub chat_model: String,
     /// TCP port the API server listens on
@@ -137,6 +139,7 @@ impl Config {
     /// | `EMBEDDING_MODEL` | no | `nomic-embed-text` |
     /// | `EMBEDDING_DIMENSIONS` | no | `768` |
     /// | `QDRANT_COLLECTION` | no | `code_embeddings` |
+    /// | `QDRANT_DOC_COLLECTION` | no | `doc_embeddings` |
     /// | `CHAT_MODEL` | no | `codellama:7b` |
     /// | `API_PORT` | no | `8080` |
     /// | `OPENCODE_HOST` | no | `http://opencode:4096` |
@@ -174,6 +177,8 @@ impl Config {
                 .unwrap_or(768),
             collection_name: std::env::var("QDRANT_COLLECTION")
                 .unwrap_or_else(|_| "code_embeddings".to_string()),
+            doc_collection_name: std::env::var("QDRANT_DOC_COLLECTION")
+                .unwrap_or_else(|_| "doc_embeddings".to_string()),
             chat_model: std::env::var("CHAT_MODEL").unwrap_or_else(|_| "codellama:7b".to_string()),
             port: std::env::var("API_PORT")
                 .map(|s| s.parse().unwrap_or(8080))
@@ -227,6 +232,7 @@ mod tests {
             embedding_model: "nomic-embed-text".to_string(),
             embedding_dimensions: 768,
             collection_name: "code_embeddings".to_string(),
+            doc_collection_name: "doc_embeddings".to_string(),
             chat_model: "codellama:7b".to_string(),
             port: 8080,
             opencode_host: "http://opencode:4096".to_string(),

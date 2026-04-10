@@ -3,6 +3,7 @@
 //! This module contains all the MCP tools that wrap the rust-brain API.
 
 pub mod aggregate_search;
+pub mod consistency_check;
 pub mod context_store;
 pub mod find_type_usages;
 pub mod get_callers;
@@ -12,6 +13,7 @@ pub mod get_trait_impls;
 pub mod pg_query;
 pub mod query_graph;
 pub mod search_code;
+pub mod search_docs;
 pub mod status_check;
 pub mod task_update;
 pub mod typecheck_tools;
@@ -25,6 +27,7 @@ use tracing::{debug, info, instrument, warn};
 pub fn all_definitions() -> Vec<Value> {
     let definitions = vec![
         search_code::definition(),
+        search_docs::definition(),
         get_function::definition(),
         get_callers::definition(),
         get_trait_impls::definition(),
@@ -38,6 +41,7 @@ pub fn all_definitions() -> Vec<Value> {
         status_check::definition(),
         task_update::definition(),
         aggregate_search::definition(),
+        consistency_check::definition(),
     ];
     debug!(count = definitions.len(), "Returning tool definitions");
     definitions
@@ -55,6 +59,10 @@ pub async fn execute_tool(
         "search_code" => {
             let request: search_code::SearchCodeRequest = serde_json::from_value(arguments)?;
             search_code::execute(client, request).await
+        }
+        "search_docs" => {
+            let request: search_docs::SearchDocsRequest = serde_json::from_value(arguments)?;
+            search_docs::execute(client, request).await
         }
         "get_function" => {
             let request: get_function::GetFunctionRequest = serde_json::from_value(arguments)?;
@@ -108,6 +116,10 @@ pub async fn execute_tool(
             let request: aggregate_search::AggregateSearchRequest = serde_json::from_value(arguments)?;
             aggregate_search::execute(client, request).await
         }
+        "consistency_check" => {
+            let request: consistency_check::ConsistencyCheckRequest = serde_json::from_value(arguments)?;
+            consistency_check::execute(client, request).await
+        }
         unknown => {
             warn!(tool = %unknown, "Unknown tool requested");
             Err(crate::error::McpError::InvalidRequest(format!(
@@ -125,7 +137,7 @@ mod tests {
     #[test]
     fn test_all_definitions_count() {
         let definitions = all_definitions();
-        assert_eq!(definitions.len(), 14);
+        assert_eq!(definitions.len(), 16);
     }
 
     #[test]
@@ -167,6 +179,7 @@ mod tests {
             .collect();
         
         assert!(names.contains(&"search_code"));
+        assert!(names.contains(&"search_docs"));
         assert!(names.contains(&"get_function"));
         assert!(names.contains(&"get_callers"));
         assert!(names.contains(&"get_trait_impls"));
@@ -180,6 +193,7 @@ mod tests {
         assert!(names.contains(&"status_check"));
         assert!(names.contains(&"task_update"));
         assert!(names.contains(&"aggregate_search"));
+        assert!(names.contains(&"consistency_check"));
     }
 
     #[test]

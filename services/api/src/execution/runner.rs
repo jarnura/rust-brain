@@ -398,9 +398,10 @@ async fn run_execution_inner(
             // bridge_new_parts expects &[MessagePart], collect owned refs
             for part in &new_parts {
                 let (event_type, content) = match *part {
-                    crate::opencode::MessagePart::Text { ref text } => {
-                        ("reasoning", json!({ "agent": &current_agent, "text": text }))
-                    }
+                    crate::opencode::MessagePart::Text { ref text } => (
+                        "reasoning",
+                        json!({ "agent": &current_agent, "text": text }),
+                    ),
                     crate::opencode::MessagePart::Reasoning { ref text } => (
                         "reasoning",
                         json!({ "agent": &current_agent, "reasoning": text }),
@@ -416,7 +417,9 @@ async fn run_execution_inner(
                                 if let Some(dispatched_agent) =
                                     extract_dispatched_agent_name(args, state)
                                 {
-                                    if let Err(e) = set_agent_phase(&pool, exec_id, &dispatched_agent).await {
+                                    if let Err(e) =
+                                        set_agent_phase(&pool, exec_id, &dispatched_agent).await
+                                    {
                                         warn!(execution_id = %exec_id, error = %e, "Failed to set agent_phase in poll loop");
                                     }
                                     match insert_agent_event(
@@ -461,8 +464,7 @@ async fn run_execution_inner(
                     crate::opencode::MessagePart::Unknown => continue,
                 };
 
-                if let Err(e) = insert_agent_event(&pool, exec_id, event_type, content).await
-                {
+                if let Err(e) = insert_agent_event(&pool, exec_id, event_type, content).await {
                     warn!(execution_id = %exec_id, error = %e, "Failed to insert agent_event");
                 }
             }
@@ -556,7 +558,9 @@ async fn bridge_new_parts(
                 if let Some(name) = tool_name {
                     if name == "task" {
                         if let Some(dispatched_agent) = extract_dispatched_agent_name(args, state) {
-                            if let Err(e) = set_agent_phase(pool, execution_id, &dispatched_agent).await {
+                            if let Err(e) =
+                                set_agent_phase(pool, execution_id, &dispatched_agent).await
+                            {
                                 warn!(execution_id = %execution_id, error = %e, "Failed to set agent_phase in bridge");
                             }
                             if let Err(e) = insert_agent_event(

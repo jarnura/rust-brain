@@ -250,9 +250,7 @@ impl DockerClient {
                 p
             )
         });
-        let mcp_env = cfg
-            .mcp_sse_url
-            .map(|url| format!("MCP_SSE_URL={}", url));
+        let mcp_env = cfg.mcp_sse_url.map(|url| format!("MCP_SSE_URL={}", url));
 
         let mut args = vec![
             "run",

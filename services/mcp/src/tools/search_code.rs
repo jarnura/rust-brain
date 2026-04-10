@@ -18,6 +18,9 @@ pub struct SearchCodeRequest {
     /// Minimum similarity score threshold (0.0 to 1.0)
     #[serde(default)]
     pub score_threshold: Option<f32>,
+    /// Restrict results to a specific crate name
+    #[serde(default)]
+    pub crate_filter: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -65,6 +68,7 @@ pub async fn execute(client: &ApiClient, request: SearchCodeRequest) -> Result<S
         "query": request.query,
         "limit": request.limit.min(50),
         "score_threshold": request.score_threshold,
+        "crate_filter": request.crate_filter,
     });
 
     let response: SearchCodeResponse = client
@@ -137,6 +141,10 @@ pub fn definition() -> serde_json::Value {
                     "description": "Minimum similarity score (0.0 to 1.0). Higher values return more relevant results.",
                     "minimum": 0.0,
                     "maximum": 1.0
+                },
+                "crate_filter": {
+                    "type": "string",
+                    "description": "Optional: restrict results to a specific crate name."
                 }
             },
             "required": ["query"]
@@ -160,12 +168,13 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query"].is_object());
         assert!(schema["properties"]["limit"].is_object());
         assert!(schema["properties"]["score_threshold"].is_object());
-        
+        assert!(schema["properties"]["crate_filter"].is_object());
+
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("query")));
     }
@@ -174,20 +183,31 @@ mod tests {
     fn test_search_code_request_deserialization() {
         let json = r#"{"query": "parse json", "limit": 20, "score_threshold": 0.5}"#;
         let request: SearchCodeRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.query, "parse json");
         assert_eq!(request.limit, 20);
         assert_eq!(request.score_threshold, Some(0.5));
+        assert_eq!(request.crate_filter, None);
+    }
+
+    #[test]
+    fn test_search_code_request_with_crate_filter() {
+        let json = r#"{"query": "parse json", "limit": 10, "crate_filter": "my_crate"}"#;
+        let request: SearchCodeRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(request.query, "parse json");
+        assert_eq!(request.crate_filter, Some("my_crate".to_string()));
     }
 
     #[test]
     fn test_search_code_request_defaults() {
         let json = r#"{"query": "test"}"#;
         let request: SearchCodeRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.query, "test");
         assert_eq!(request.limit, 10); // default
         assert_eq!(request.score_threshold, None);
+        assert_eq!(request.crate_filter, None);
     }
 
     #[test]

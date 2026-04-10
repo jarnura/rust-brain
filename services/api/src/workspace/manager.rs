@@ -1,14 +1,15 @@
 //! WorkspaceManager — entry point for workspace operations.
 //!
-//! Holds the Postgres pool and (eventually) a DockerClient handle.
+//! Holds the Postgres pool and DockerClient handle.
 //! All workspace lifecycle operations are delegated to `lifecycle` and `schema`.
 
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::models::{get_workspace, Workspace};
+use crate::docker::DockerClient;
 
-/// Owns the connection pool for workspace operations.
+/// Owns the connection pool and Docker client for workspace operations.
 ///
 /// Intended to be stored in [`crate::state::AppState`] and cloned cheaply
 /// via the inner `Arc<PgPool>`.
@@ -16,13 +17,14 @@ use super::models::{get_workspace, Workspace};
 pub struct WorkspaceManager {
     /// Postgres connection pool shared with the rest of the API.
     pub pool: PgPool,
-    // DockerClient will be added in a follow-up once volume orchestration is integrated.
+    /// Docker client for volume and container lifecycle operations.
+    pub docker: DockerClient,
 }
 
 impl WorkspaceManager {
-    /// Create a new WorkspaceManager with the given Postgres pool.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    /// Create a new WorkspaceManager with the given Postgres pool and Docker client.
+    pub fn new(pool: PgPool, docker: DockerClient) -> Self {
+        Self { pool, docker }
     }
 
     /// Fetch a single workspace by UUID.

@@ -41,11 +41,22 @@ pub struct OllamaConfig {
 
 impl Default for OllamaConfig {
     fn default() -> Self {
+        // Allow timeout and batch size override via environment
+        let timeout_secs = std::env::var("OLLAMA_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300); // 5 minutes default for large codebases
+
+        let batch_size = std::env::var("OLLAMA_BATCH_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(MAX_BATCH_SIZE);
+
         Self {
             base_url: "http://ollama:11434".to_string(),
             model: DEFAULT_MODEL.to_string(),
-            max_batch_size: MAX_BATCH_SIZE,
-            timeout: Duration::from_secs(60),
+            max_batch_size: batch_size,
+            timeout: Duration::from_secs(timeout_secs),
             max_retries: 5,
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(30),

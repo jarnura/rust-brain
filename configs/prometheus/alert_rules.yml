@@ -1,0 +1,34 @@
+# =============================================================================
+# rust-brain — Prometheus Alert Rules
+# =============================================================================
+
+groups:
+  - name: rustbrain-consistency
+    rules:
+      - alert: ConsistencyCheckFailed
+        expr: probe_http_status_code{probe="consistency"} == 503
+        for: 2m
+        labels:
+          severity: critical
+          component: consistency
+        annotations:
+          summary: "Cross-store consistency check failed"
+          description: |
+            The /health/consistency endpoint is returning HTTP 503, indicating
+            data inconsistencies between Postgres, Neo4j, and Qdrant.
+            Check the consistency report at http://localhost:8088/api/consistency
+            and follow the recovery steps in docs/runbook.md.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-store-consistency-failure"
+
+      - alert: ConsistencyProbeUnreachable
+        expr: probe_success{probe="consistency"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: consistency
+        annotations:
+          summary: "Consistency health endpoint unreachable"
+          description: |
+            The /health/consistency endpoint cannot be reached by the
+            blackbox exporter probe. The API service may be down or
+            the endpoint is not responding.

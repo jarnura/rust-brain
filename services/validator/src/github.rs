@@ -211,14 +211,10 @@ impl GithubClient {
     /// field set supported by the installed gh version.
     ///
     /// Returns at most 25 closing issues (GitHub's practical limit for a PR).
-    async fn fetch_closing_issues(
-        &self,
-        repo: &str,
-        pr_number: u32,
-    ) -> Result<Vec<ClosingIssue>> {
-        let (owner, name) = repo
-            .split_once('/')
-            .ok_or_else(|| anyhow::anyhow!("invalid repo format (expected owner/name): {}", repo))?;
+    async fn fetch_closing_issues(&self, repo: &str, pr_number: u32) -> Result<Vec<ClosingIssue>> {
+        let (owner, name) = repo.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!("invalid repo format (expected owner/name): {}", repo)
+        })?;
 
         let query = format!(
             r#"{{ repository(owner:"{owner}", name:"{name}") \
@@ -239,11 +235,7 @@ impl GithubClient {
             warn!("gh api graphql stderr: {}", stderr);
         }
         if !output.status.success() {
-            bail!(
-                "gh api graphql failed (exit {}): {}",
-                output.status,
-                stderr
-            );
+            bail!("gh api graphql failed (exit {}): {}", output.status, stderr);
         }
 
         let raw: serde_json::Value = serde_json::from_slice(&output.stdout)?;

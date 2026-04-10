@@ -177,6 +177,71 @@ async fn test_aggregate_search_missing_query() {
 }
 
 // =============================================================================
+// 3b. Doc search  (POST /tools/search_docs)
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_search_docs_happy_path() {
+    let resp = client()
+        .post(format!("{BASE}/tools/search_docs"))
+        .json(&json!({"query": "how to authenticate users", "limit": 5}))
+        .send()
+        .await
+        .expect("POST /tools/search_docs failed");
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(has_key(&body, "results"));
+    assert!(has_key(&body, "query"));
+    assert!(has_key(&body, "total"));
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(body["total"].as_u64().unwrap() as usize, results.len());
+    if !results.is_empty() {
+        let first = &results[0];
+        assert!(has_key(first, "source_file"));
+        assert!(has_key(first, "content_preview"));
+        assert!(has_key(first, "score"));
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_search_docs_missing_query() {
+    let resp = client()
+        .post(format!("{BASE}/tools/search_docs"))
+        .json(&json!({"limit": 5}))
+        .send()
+        .await
+        .expect("POST /tools/search_docs failed");
+
+    assert!(
+        resp.status() == 422 || resp.status() == 400,
+        "expected 400 or 422, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_search_docs_with_score_threshold() {
+    let resp = client()
+        .post(format!("{BASE}/tools/search_docs"))
+        .json(&json!({"query": "API documentation", "limit": 3, "score_threshold": 0.7}))
+        .send()
+        .await
+        .expect("POST /tools/search_docs failed");
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let results = body["results"].as_array().unwrap();
+    for result in results {
+        let score = result["score"].as_f64().unwrap();
+        assert!(score >= 0.7, "score {} should be >= threshold 0.7", score);
+    }
+}
+
+// =============================================================================
 // 4. Get function  (GET /tools/get_function)
 // =============================================================================
 
@@ -953,8 +1018,229 @@ async fn test_chat_sessions_lifecycle() {
 }
 
 // =============================================================================
+// 9. Execution endpoints (CLASS A-E agent routing)
+// =============================================================================
+
+/// Helper: Create a test workspace for execution tests.
+/// Returns the workspace ID.
+async fn create_test_workspace() -> String {
+    let name = format!("test-ws-{}", uuid_v4());
+    let resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    assert!(
+        resp.status() == 200 || resp.status() == 201 || resp.status() == 202,
+        "create workspace should succeed, got {}",
+        resp.status()
+    );
+
+    let body: Value = resp.json().await.unwrap();
+    body["id"].as_str().unwrap().to_string()
+}
+
+/// Helper: Wait for workspace to be ready (volume created).
+async fn wait_for_workspace_ready(workspace_id: &str) {
+    for _ in 0..30 {
+        let resp = client()
+            .get(format!("{BASE}/workspaces/{}", workspace_id))
+            .send()
+            .await
+            .expect("GET /workspaces/:id failed");
+
+        if resp.status() == 200 {
+            let body: Value = resp.json().await.unwrap();
+            if body["status"] == "ready" && body["volume_name"].is_string() {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    panic!("Workspace did not become ready within 60s");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_execute_class_a_simple_query() {
+    // CLASS A: "What does PipelineRunner do?" → orchestrator → explorer
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_ready(&workspace_id).await;
+
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
+        .json(&json!({
+            "prompt": "What does PipelineRunner do?"
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/execute failed");
+
+    assert_eq!(
+        resp.status(),
+        202,
+        "Expected 202 Accepted, got {:?}",
+        resp.status()
+    );
+
+    let body: Value = resp.json().await.unwrap();
+    assert!(has_key(&body, "id"), "Response should have execution id");
+    assert!(has_key(&body, "status"), "Response should have status");
+    assert_eq!(body["status"], "pending");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_execution_lifecycle_and_agent_dispatch() {
+    // Test full lifecycle: pending → running → completed
+    // And verify agent_dispatch events are emitted
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_ready(&workspace_id).await;
+
+    // Start execution
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
+        .json(&json!({
+            "prompt": "What does PipelineRunner do?"
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/execute failed");
+
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    let execution_id = body["id"].as_str().unwrap();
+
+    // Poll for completion (up to 5 minutes for CLASS A)
+    let mut final_status = String::new();
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let status_resp = client()
+            .get(format!("{BASE}/executions/{}", execution_id))
+            .send()
+            .await
+            .expect("GET /executions/:id failed");
+
+        assert_eq!(status_resp.status(), 200);
+        let status_body: Value = status_resp.json().await.unwrap();
+        final_status = status_body["status"].as_str().unwrap().to_string();
+
+        if final_status == "completed" || final_status == "failed" || final_status == "timeout" {
+            break;
+        }
+    }
+
+    assert!(
+        final_status == "completed" || final_status == "failed" || final_status == "timeout",
+        "Execution should reach terminal state, got: {}",
+        final_status
+    );
+
+    // Verify agent events exist
+    let events_resp = client()
+        .get(format!("{BASE}/executions/{}/events", execution_id))
+        .send()
+        .await
+        .expect("GET /executions/:id/events failed");
+
+    assert_eq!(events_resp.status(), 200);
+    let events: Vec<Value> = events_resp.json().await.unwrap();
+    assert!(!events.is_empty(), "Should have agent events");
+
+    // Check for agent_dispatch events
+    let dispatch_events: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["event_type"] == "agent_dispatch")
+        .collect();
+
+    println!("Found {} agent_dispatch events", dispatch_events.len());
+    for ev in &dispatch_events {
+        println!("  - agent: {:?}", ev["content"]["agent"]);
+    }
+
+    // For CLASS A query, expect at least explorer dispatch
+    if final_status == "completed" {
+        assert!(
+            !dispatch_events.is_empty(),
+            "CLASS A query should have agent_dispatch events"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_execute_rejects_empty_prompt() {
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_ready(&workspace_id).await;
+
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
+        .json(&json!({
+            "prompt": ""
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/execute failed");
+
+    assert_eq!(resp.status(), 400, "Empty prompt should be rejected");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_execution_sse_stream() {
+    // Test SSE stream for agent events
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_ready(&workspace_id).await;
+
+    // Start execution
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
+        .json(&json!({
+            "prompt": "What does PipelineRunner do?"
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/execute failed");
+
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    let execution_id = body["id"].as_str().unwrap();
+
+    // Connect to SSE stream
+    let sse_resp = client()
+        .get(format!(
+            "{BASE}/workspaces/{}/stream?execution_id={}",
+            workspace_id, execution_id
+        ))
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stream failed");
+
+    assert_eq!(sse_resp.status(), 200);
+    let content_type = sse_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("text/event-stream"),
+        "Expected SSE content type, got: {}",
+        content_type
+    );
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
+
+use std::time::Duration;
 
 fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

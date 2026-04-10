@@ -13,7 +13,12 @@
     />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-fallback" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0a0a0a;color:#a1a1aa;font-family:Inter,system-ui,sans-serif">
+        <p style="font-size:14px;animation:pulse 2s cubic-bezier(.4,0,.6,1) infinite">Loading…</p>
+        <noscript><p style="color:#f87171;margin-top:8px;font-size:13px">JavaScript is required to run this application.</p></noscript>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

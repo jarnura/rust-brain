@@ -659,67 +659,6 @@ impl NodeBuilder {
     }
 }
 
-/// Batch insert nodes using UNWIND for efficiency
-// TODO: used by future bulk-ingestion stage
-#[allow(dead_code)]
-pub async fn batch_insert_nodes(
-    graph: &Graph,
-    nodes: &[NodeData],
-    batch_size: usize,
-) -> Result<()> {
-    if nodes.is_empty() {
-        return Ok(());
-    }
-
-    // Group nodes by type for efficient batching
-    let mut nodes_by_type: HashMap<NodeType, Vec<&NodeData>> = HashMap::new();
-    for node in nodes {
-        nodes_by_type.entry(node.node_type).or_default().push(node);
-    }
-
-    for (node_type, type_nodes) in nodes_by_type {
-        let label = node_type.label();
-
-        // Process in batches
-        for chunk in type_nodes.chunks(batch_size) {
-            let query_str = format!(
-                "UNWIND $nodes AS node_data \
-                 MERGE (n:{} {{id: node_data.id}}) \
-                 SET n += node_data.props",
-                label
-            );
-
-            let node_params: Vec<HashMap<String, BoltType>> = chunk
-                .iter()
-                .map(|node| {
-                    let mut props = HashMap::new();
-                    props.insert("id".to_string(), BoltType::from(node.id.as_str()));
-                    props.insert("fqn".to_string(), BoltType::from(node.fqn.as_str()));
-                    props.insert("name".to_string(), BoltType::from(node.name.as_str()));
-
-                    for (key, value) in &node.properties {
-                        if let Some(bolt_value) = value.to_bolt_type() {
-                            props.insert(key.clone(), bolt_value);
-                        }
-                    }
-
-                    let mut node_param = HashMap::new();
-                    node_param.insert("id".to_string(), BoltType::from(node.id.as_str()));
-                    node_param.insert("props".to_string(), BoltType::from(props));
-                    node_param
-                })
-                .collect();
-
-            graph
-                .run(query(&query_str).param("nodes", node_params))
-                .await
-                .context(format!("Failed to batch insert {} nodes", label))?;
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

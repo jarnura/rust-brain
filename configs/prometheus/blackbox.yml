@@ -1,0 +1,24 @@
+# =============================================================================
+# rust-brain — Blackbox Exporter Configuration
+# =============================================================================
+# Probes external endpoints that don't natively expose Prometheus metrics.
+
+modules:
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: [200]
+      method: GET
+
+  http_consistency:
+    prober: http
+    timeout: 15s
+    http:
+      preferred_ip_protocol: ip4
+      # 200 = consistent, 503 = inconsistency detected
+      valid_status_codes: [200, 503]
+      method: GET
+      headers:
+        Accept: application/json

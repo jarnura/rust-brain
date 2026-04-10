@@ -86,53 +86,26 @@ struct DimensionScore {
 }
 
 /// Result of a single validator run (matches validator's RunResult).
+/// Only the fields we actually read are kept; serde ignores the rest.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 struct ValidatorRunResult {
-    /// Zero-indexed run number.
-    run_index: u8,
     /// Per-dimension scores from the LLM judge.
     dimensions: Vec<DimensionScore>,
-    /// Weighted composite score (1.0–5.0).
+    /// Weighted composite score (1.0-5.0).
     composite: f32,
     /// Whether this run passed the threshold.
     pass: bool,
-    /// Approximate tokens used.
-    #[serde(default)]
-    tokens_used: u32,
     /// Estimated cost in USD.
     #[serde(default)]
     cost_usd: f32,
 }
 
 /// Full validation result from the validator (matches validator's ValidationResult).
+/// Only the fields we actually read are kept; serde ignores the rest.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ValidatorOutput {
-    /// UUID assigned at save time (optional).
-    #[serde(default)]
-    id: Option<uuid::Uuid>,
-    /// GitHub repository in `owner/repo` form.
-    #[serde(default)]
-    repo: String,
-    /// PR number that was validated.
-    #[serde(default)]
-    pr_number: u32,
     /// Individual run results.
     runs: Vec<ValidatorRunResult>,
-    /// Mean composite score across all runs.
-    mean_composite: f32,
-    /// Standard deviation of composite scores.
-    #[serde(default)]
-    std_dev: f32,
-    /// Overall pass/fail.
-    pass: bool,
-    /// True when PR was expected to be rejected.
-    #[serde(default)]
-    inverted: bool,
-    /// Total cost across all runs.
-    #[serde(default)]
-    cost_usd: f32,
 }
 
 /// Legacy JSON structure for backward compatibility.

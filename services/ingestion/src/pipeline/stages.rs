@@ -624,8 +624,7 @@ impl ExpandStage {
 
             match self.run_cargo_expand(workspace_path, crate_name, &args_ref) {
                 Ok(output) => {
-                    let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
-                    let _ = std::fs::write(&cache_file, &output);
+                    self.write_expand_cache(&cache_file, &output, crate_name);
                     debug!("Succeeded with features {:?} for {}", features, crate_name);
                     return Ok(output);
                 }
@@ -640,8 +639,7 @@ impl ExpandStage {
                         if let Ok(output) =
                             self.run_cargo_expand(workspace_path, crate_name, &["--features", "v2"])
                         {
-                            let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
-                            let _ = std::fs::write(&cache_file, &output);
+                            self.write_expand_cache(&cache_file, &output, crate_name);
                             return Ok(output);
                         }
                     }
@@ -657,11 +655,27 @@ impl ExpandStage {
         );
         match self.run_cargo_expand(workspace_path, crate_name, &[]) {
             Ok(output) => {
-                let _ = std::fs::create_dir_all(EXPAND_CACHE_DIR);
-                let _ = std::fs::write(&cache_file, &output);
+                self.write_expand_cache(&cache_file, &output, crate_name);
                 Ok(output)
             }
             Err(_) => Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error"))),
+        }
+    }
+
+    /// Write expanded output to cache file with proper error logging.
+    fn write_expand_cache(&self, cache_file: &Path, output: &str, crate_name: &str) {
+        if let Err(e) = std::fs::create_dir_all(EXPAND_CACHE_DIR) {
+            warn!(
+                "Failed to create expand cache dir {:?} for {}: {}",
+                EXPAND_CACHE_DIR, crate_name, e
+            );
+            return;
+        }
+        if let Err(e) = std::fs::write(cache_file, output) {
+            warn!(
+                "Failed to write expand cache {:?} for {}: {}",
+                cache_file, crate_name, e
+            );
         }
     }
 
@@ -1491,37 +1505,43 @@ impl PipelineStage for ExpandStage {
                 // Expand the crate (writes to cache file internally)
                 let expanded_result = self.expand_library(crate_path, workspace_root, &crate_name);
 
-                let cache_file_exists = cache_file.exists();
-
                 match expanded_result {
                     Ok(_) => {
                         expanded_count += 1;
-                        // Cache file should now exist with expanded source
-                        if cache_file_exists || cache_file.exists() {
-                            for file_path in &source_files {
-                                // Pre-flight file size check: skip files > 10 MB
-                                if let Ok(metadata) = std::fs::metadata(file_path) {
-                                    if crate::pipeline::memory_accountant::MemoryAccountant::should_skip_file(metadata.len()) {
-                                        info!("Skipping oversized file {:?} ({} bytes)", file_path, metadata.len());
-                                        continue;
-                                    }
+                        let has_cache = cache_file.exists();
+                        if !has_cache {
+                            warn!(
+                                "Expand cache file missing for {} at {:?} — \
+                                 parse will use original source (possible permission issue)",
+                                crate_name, cache_file
+                            );
+                        }
+
+                        for file_path in &source_files {
+                            // Pre-flight file size check: skip files > 10 MB
+                            if let Ok(metadata) = std::fs::metadata(file_path) {
+                                if crate::pipeline::memory_accountant::MemoryAccountant::should_skip_file(metadata.len()) {
+                                    info!("Skipping oversized file {:?} ({} bytes)", file_path, metadata.len());
+                                    continue;
                                 }
+                            }
 
-                                if let Ok(source) = std::fs::read_to_string(file_path) {
-                                    let module_path =
-                                        compute_module_path(crate_path, file_path, &crate_name);
-                                    let file_hash = compute_content_hash(&source);
+                            if let Ok(source) = std::fs::read_to_string(file_path) {
+                                let module_path =
+                                    compute_module_path(crate_path, file_path, &crate_name);
+                                let file_hash = compute_content_hash(&source);
 
-                                    all_source_files.push(SourceFileInfo {
-                                        path: file_path.clone(),
-                                        crate_name: crate_name.clone(),
-                                        module_path,
-                                        original_source: Arc::new(source),
-                                        git_hash: git_hash.clone(),
-                                        content_hash: file_hash,
-                                    });
+                                all_source_files.push(SourceFileInfo {
+                                    path: file_path.clone(),
+                                    crate_name: crate_name.clone(),
+                                    module_path,
+                                    original_source: Arc::new(source),
+                                    git_hash: git_hash.clone(),
+                                    content_hash: file_hash,
+                                });
 
-                                    // Store cache file path, not content
+                                // Map to cache file only if it exists
+                                if has_cache {
                                     expanded_map.insert(file_path.clone(), cache_file.clone());
                                 }
                             }
@@ -2956,15 +2976,23 @@ impl GraphStage {
                     fqn: row.get("fqn"),
                     item_type: row.get("item_type"),
                     name: row.get("name"),
-                    visibility: row.get("visibility"),
-                    signature: row.get("signature"),
+                    visibility: row
+                        .get::<Option<String>, _>("visibility")
+                        .unwrap_or_default(),
+                    signature: row
+                        .get::<Option<String>, _>("signature")
+                        .unwrap_or_default(),
                     generic_params: serde_json::from_value(generic_params_json).unwrap_or_default(),
                     where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
                     attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
-                    doc_comment: row.get("doc_comment"),
+                    doc_comment: row
+                        .get::<Option<String>, _>("doc_comment")
+                        .unwrap_or_default(),
                     start_line: row.get::<i32, _>("start_line") as usize,
                     end_line: row.get::<i32, _>("end_line") as usize,
-                    body_source: row.get("body_source"),
+                    body_source: row
+                        .get::<Option<String>, _>("body_source")
+                        .unwrap_or_default(),
                     generated_by: row.get("generated_by"),
                 }
             })
@@ -4552,15 +4580,23 @@ impl EmbedStage {
                     fqn: row.get("fqn"),
                     item_type: row.get("item_type"),
                     name: row.get("name"),
-                    visibility: row.get("visibility"),
-                    signature: row.get("signature"),
+                    visibility: row
+                        .get::<Option<String>, _>("visibility")
+                        .unwrap_or_default(),
+                    signature: row
+                        .get::<Option<String>, _>("signature")
+                        .unwrap_or_default(),
                     generic_params: serde_json::from_value(generic_params_json).unwrap_or_default(),
                     where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
                     attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
-                    doc_comment: row.get("doc_comment"),
+                    doc_comment: row
+                        .get::<Option<String>, _>("doc_comment")
+                        .unwrap_or_default(),
                     start_line: row.get::<i32, _>("start_line") as usize,
                     end_line: row.get::<i32, _>("end_line") as usize,
-                    body_source: row.get("body_source"),
+                    body_source: row
+                        .get::<Option<String>, _>("body_source")
+                        .unwrap_or_default(),
                     generated_by: row.get("generated_by"),
                 }
             })
@@ -5879,5 +5915,102 @@ mod tests {
             "Should extract trait from unsafe impl. Found: {:?}",
             type_names4
         );
+    }
+
+    #[test]
+    fn test_stale_cleanup_report_default() {
+        let report = StaleCleanupReport::default();
+        assert_eq!(report.stale_count, 0);
+        assert_eq!(report.postgres_deleted, 0);
+        assert_eq!(report.neo4j_deleted, 0);
+        assert_eq!(report.qdrant_deleted, 0);
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn test_stale_cleanup_report_is_successful() {
+        let mut report = StaleCleanupReport::default();
+        assert!(report.is_successful());
+
+        report.errors.push("some error".to_string());
+        assert!(!report.is_successful());
+    }
+
+    #[test]
+    fn test_stale_cleanup_report_total_deleted() {
+        let report = StaleCleanupReport {
+            stale_count: 10,
+            postgres_deleted: 4,
+            neo4j_deleted: 3,
+            qdrant_deleted: 3,
+            errors: vec![],
+        };
+        assert_eq!(report.total_deleted(), 10);
+    }
+
+    #[test]
+    fn test_stale_fqn_set_difference() {
+        use std::collections::HashSet;
+
+        let existing: HashSet<String> = [
+            "crate::module::func_a".to_string(),
+            "crate::module::func_b".to_string(),
+            "crate::module::func_c".to_string(),
+            "crate::module::old_func".to_string(),
+            "crate::module::deprecated".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let current: HashSet<String> = [
+            "crate::module::func_a".to_string(),
+            "crate::module::func_b".to_string(),
+            "crate::module::func_c".to_string(),
+            "crate::module::new_func".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let stale: Vec<String> = existing.difference(&current).cloned().collect();
+
+        assert_eq!(stale.len(), 2);
+        assert!(stale.contains(&"crate::module::old_func".to_string()));
+        assert!(stale.contains(&"crate::module::deprecated".to_string()));
+    }
+
+    #[test]
+    fn test_stale_fqn_empty_current_means_all_stale() {
+        use std::collections::HashSet;
+
+        let existing: HashSet<String> = ["crate::module::func".to_string()].into_iter().collect();
+        let current: HashSet<String> = HashSet::new();
+
+        let stale: Vec<String> = existing.difference(&current).cloned().collect();
+
+        assert_eq!(stale.len(), 1);
+    }
+
+    #[test]
+    fn test_stale_fqn_empty_existing_means_nothing_stale() {
+        use std::collections::HashSet;
+
+        let existing: HashSet<String> = HashSet::new();
+        let current: HashSet<String> = ["crate::module::func".to_string()].into_iter().collect();
+
+        let stale: Vec<String> = existing.difference(&current).cloned().collect();
+
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_stale_fqn_identical_sets_means_no_stale() {
+        use std::collections::HashSet;
+
+        let existing: HashSet<String> = ["crate::module::func".to_string()].into_iter().collect();
+        let current: HashSet<String> = ["crate::module::func".to_string()].into_iter().collect();
+
+        let stale: Vec<String> = existing.difference(&current).cloned().collect();
+
+        assert!(stale.is_empty());
     }
 }

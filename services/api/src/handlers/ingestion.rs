@@ -53,7 +53,7 @@ pub async fn ingestion_progress(
 
     let row = sqlx::query_as::<_, IngestionRow>(
         r#"
-        SELECT id, started_at, completed_at, status,
+        SELECT started_at, completed_at, status,
                crates_processed, items_extracted, errors, metadata
         FROM ingestion_runs
         ORDER BY started_at DESC
@@ -81,8 +81,6 @@ pub async fn ingestion_progress(
 
 #[derive(sqlx::FromRow)]
 struct IngestionRow {
-    #[allow(dead_code)]
-    id: sqlx::types::Uuid,
     started_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
     status: String,

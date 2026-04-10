@@ -11,6 +11,7 @@ use crate::workspace::WorkspaceManager;
 use neo4rs::Graph;
 use prometheus::Registry;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Shared application state available to all Axum handlers.
 ///
@@ -34,6 +35,8 @@ pub struct AppState {
     pub workspace_manager: WorkspaceManager,
     /// Docker client for volume and container lifecycle operations
     pub docker: DockerClient,
+    /// Process start time for uptime calculation
+    pub start_time: Instant,
 }
 
 /// Prometheus metrics for API request tracking.

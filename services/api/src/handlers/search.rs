@@ -34,9 +34,22 @@ pub struct SearchSemanticRequest {
     /// Minimum similarity score (0.0–1.0) to include a result
     #[serde(default)]
     pub score_threshold: Option<f32>,
-    /// Restrict results to a specific crate (not yet wired)
+    /// Restrict results to a specific crate
     #[serde(default)]
     pub crate_filter: Option<String>,
+}
+
+/// Request body for `POST /tools/search_docs`.
+#[derive(Debug, Deserialize)]
+pub struct SearchDocsRequest {
+    /// Natural-language search query
+    pub query: String,
+    /// Maximum number of results (default: 10)
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    /// Minimum similarity score (0.0–1.0) to include a result
+    #[serde(default)]
+    pub score_threshold: Option<f32>,
 }
 
 /// Response for `POST /tools/search_semantic`.
@@ -48,6 +61,28 @@ pub struct SearchSemanticResponse {
     pub query: String,
     /// Number of results returned
     pub total: usize,
+}
+
+/// Response for `POST /tools/search_docs`.
+#[derive(Debug, Serialize)]
+pub struct SearchDocsResponse {
+    /// Matching document snippets ranked by similarity
+    pub results: Vec<DocResult>,
+    /// Echo of the original query
+    pub query: String,
+    /// Number of results returned
+    pub total: usize,
+}
+
+/// A single document search hit from Qdrant vector search.
+#[derive(Debug, Serialize)]
+pub struct DocResult {
+    /// Source file path
+    pub source_file: String,
+    /// Content preview/snippet
+    pub content_preview: String,
+    /// Similarity score (0.0–1.0)
+    pub score: f32,
 }
 
 /// A single search hit from Qdrant vector search or keyword fallback.
@@ -202,12 +237,22 @@ pub async fn search_semantic(
     match get_embedding(&state, &req.query).await {
         Ok(embedding) => {
             // Vector search path — full semantic similarity
-            let search_request = serde_json::json!({
+            let mut search_request = serde_json::json!({
                 "vector": embedding,
                 "limit": req.limit,
                 "with_payload": true,
                 "score_threshold": req.score_threshold,
             });
+
+            // Apply crate filter as a Qdrant must-match condition
+            if let Some(ref crate_name) = req.crate_filter {
+                search_request["filter"] = serde_json::json!({
+                    "must": [{
+                        "key": "crate_name",
+                        "match": { "value": crate_name }
+                    }]
+                });
+            }
 
             let search_url = format!(
                 "{}/collections/{}/points/search",
@@ -250,7 +295,8 @@ pub async fn search_semantic(
                 "Ollama unavailable ({}), falling back to keyword search",
                 ollama_err
             );
-            keyword_search_fallback(&state, &req.query, req.limit).await
+            keyword_search_fallback(&state, &req.query, req.limit, req.crate_filter.as_deref())
+                .await
         }
     }
 }
@@ -261,32 +307,92 @@ async fn keyword_search_fallback(
     state: &AppState,
     query: &str,
     limit: usize,
+    crate_filter: Option<&str>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
     let pattern = format!("%{}%", query);
     let limit_i64 = limit as i64;
 
-    let rows = sqlx::query_as::<_, (String, String, String, String, i32, i32, Option<String>, Option<String>)>(
-        r#"
-        SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
-               ei.signature, ei.doc_comment
-        FROM extracted_items ei
-        LEFT JOIN source_files sf ON ei.source_file_id = sf.id
-        WHERE ei.fqn ILIKE $1
-           OR ei.name ILIKE $1
-           OR ei.doc_comment ILIKE $1
-           OR ei.signature ILIKE $1
-        ORDER BY
-            CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
-            CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
-            ei.name
-        LIMIT $2
-        "#,
-    )
-    .bind(&pattern)
-    .bind(limit_i64)
-    .fetch_all(&state.pg_pool)
-    .await
-    .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?;
+    let (sql, has_crate_filter) = if crate_filter.is_some() {
+        (
+            r#"
+            SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
+                   ei.signature, ei.doc_comment
+            FROM extracted_items ei
+            LEFT JOIN source_files sf ON ei.source_file_id = sf.id
+            WHERE (ei.fqn ILIKE $1
+               OR ei.name ILIKE $1
+               OR ei.doc_comment ILIKE $1
+               OR ei.signature ILIKE $1)
+              AND sf.crate_name = $3
+            ORDER BY
+                CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
+                CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
+                ei.name
+            LIMIT $2
+            "#,
+            true,
+        )
+    } else {
+        (
+            r#"
+            SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
+                   ei.signature, ei.doc_comment
+            FROM extracted_items ei
+            LEFT JOIN source_files sf ON ei.source_file_id = sf.id
+            WHERE ei.fqn ILIKE $1
+               OR ei.name ILIKE $1
+               OR ei.doc_comment ILIKE $1
+               OR ei.signature ILIKE $1
+            ORDER BY
+                CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
+                CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
+                ei.name
+            LIMIT $2
+            "#,
+            false,
+        )
+    };
+
+    let rows = if has_crate_filter {
+        sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                i32,
+                i32,
+                Option<String>,
+                Option<String>,
+            ),
+        >(sql)
+        .bind(&pattern)
+        .bind(limit_i64)
+        .bind(crate_filter.unwrap())
+        .fetch_all(&state.pg_pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?
+    } else {
+        sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                i32,
+                i32,
+                Option<String>,
+                Option<String>,
+            ),
+        >(sql)
+        .bind(&pattern)
+        .bind(limit_i64)
+        .fetch_all(&state.pg_pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?
+    };
 
     let results: Vec<SearchResult> = rows
         .into_iter()
@@ -312,6 +418,68 @@ async fn keyword_search_fallback(
     Ok(Json(SearchSemanticResponse {
         query: format!("{} (keyword fallback — Ollama unavailable)", query),
         total,
+        results,
+    }))
+}
+
+/// Searches for documentation using natural-language similarity.
+///
+/// Generates an embedding via Ollama, then performs a vector search against
+/// the `doc_embeddings` Qdrant collection. Returns document snippets with
+/// source file paths and content previews.
+///
+/// # Errors
+///
+/// Returns [`AppError::Ollama`] if embedding generation fails.
+/// Returns [`AppError::Qdrant`] if the vector search request fails.
+pub async fn search_docs(
+    State(state): State<AppState>,
+    Json(req): Json<SearchDocsRequest>,
+) -> Result<Json<SearchDocsResponse>, AppError> {
+    state.metrics.record_request("search_docs", "POST");
+    debug!("Doc search for: {}", req.query);
+
+    let embedding = get_embedding(&state, &req.query).await?;
+
+    let search_request = serde_json::json!({
+        "vector": embedding,
+        "limit": req.limit,
+        "with_payload": true,
+        "score_threshold": req.score_threshold,
+    });
+
+    let search_url = format!(
+        "{}/collections/{}/points/search",
+        state.config.qdrant_host, state.config.doc_collection_name
+    );
+
+    let response = state
+        .http_client
+        .post(&search_url)
+        .json(&search_request)
+        .send()
+        .await
+        .map_err(|e| AppError::Qdrant(format!("Failed to search Qdrant: {}", e)))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Qdrant(format!(
+            "Qdrant search failed: {} - {}",
+            status, body
+        )));
+    }
+
+    let search_result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| AppError::Qdrant(format!("Failed to parse Qdrant response: {}", e)))?;
+
+    let results = parse_doc_search_results(&search_result);
+
+    Ok(Json(SearchDocsResponse {
+        query: req.query,
+        total: results.len(),
         results,
     }))
 }
@@ -506,6 +674,46 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                             .get("docstring")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn parse_doc_search_results(search_result: &serde_json::Value) -> Vec<DocResult> {
+    search_result
+        .get("result")
+        .and_then(|v| v.as_array())
+        .map(|results| {
+            results
+                .iter()
+                .filter_map(|r| {
+                    let payload = r.get("payload")?;
+                    // doc_embeddings uses file_path (not source_file)
+                    let source_file = payload
+                        .get("file_path")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| payload.get("source_file").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    // doc_embeddings uses text (not content or content_preview)
+                    let content_preview = payload
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| payload.get("content").and_then(|v| v.as_str()))
+                        .or_else(|| payload.get("content_preview").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    let preview = if content_preview.len() > 500 {
+                        format!("{}...", &content_preview[..500])
+                    } else {
+                        content_preview
+                    };
+                    Some(DocResult {
+                        source_file,
+                        content_preview: preview,
+                        score: r.get("score")?.as_f64()? as f32,
                     })
                 })
                 .collect()
@@ -849,5 +1057,231 @@ mod tests {
         assert_eq!(deserialized.fqn, "test::item");
         assert_eq!(deserialized.body_source, Some("struct item {}".to_string()));
         assert!(deserialized.callers.is_empty());
+    }
+
+    /// Verify that the Qdrant filter JSON matches the expected structure
+    /// when crate_filter is applied.
+    #[test]
+    fn test_qdrant_crate_filter_json_structure() {
+        let crate_name = "my_crate";
+        let filter = serde_json::json!({
+            "must": [{
+                "key": "crate_name",
+                "match": { "value": crate_name }
+            }]
+        });
+
+        // Verify structure matches Qdrant's expected filter format
+        let must = filter["must"].as_array().unwrap();
+        assert_eq!(must.len(), 1);
+        assert_eq!(must[0]["key"], "crate_name");
+        assert_eq!(must[0]["match"]["value"], "my_crate");
+    }
+
+    #[test]
+    fn test_search_request_with_crate_filter_builds_filter() {
+        // Simulate what the handler does: build a search request then conditionally add filter
+        let crate_filter = Some("tokio".to_string());
+        let embedding = vec![0.1_f32; 3];
+
+        let mut search_request = serde_json::json!({
+            "vector": embedding,
+            "limit": 10,
+            "with_payload": true,
+            "score_threshold": null,
+        });
+
+        if let Some(ref crate_name) = crate_filter {
+            search_request["filter"] = serde_json::json!({
+                "must": [{
+                    "key": "crate_name",
+                    "match": { "value": crate_name }
+                }]
+            });
+        }
+
+        assert!(search_request.get("filter").is_some());
+        assert_eq!(
+            search_request["filter"]["must"][0]["match"]["value"],
+            "tokio"
+        );
+    }
+
+    #[test]
+    fn test_search_request_without_crate_filter_has_no_filter() {
+        let crate_filter: Option<String> = None;
+        let embedding = vec![0.1_f32; 3];
+
+        let mut search_request = serde_json::json!({
+            "vector": embedding,
+            "limit": 10,
+            "with_payload": true,
+            "score_threshold": null,
+        });
+
+        if let Some(ref crate_name) = crate_filter {
+            search_request["filter"] = serde_json::json!({
+                "must": [{
+                    "key": "crate_name",
+                    "match": { "value": crate_name }
+                }]
+            });
+        }
+
+        assert!(search_request.get("filter").is_none());
+    }
+
+    #[test]
+    fn test_search_docs_request_deserialization() {
+        let json = serde_json::json!({
+            "query": "how to authenticate users",
+            "limit": 5,
+            "score_threshold": 0.7
+        });
+
+        let req: SearchDocsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.query, "how to authenticate users");
+        assert_eq!(req.limit, 5);
+        assert_eq!(req.score_threshold, Some(0.7));
+    }
+
+    #[test]
+    fn test_search_docs_request_defaults() {
+        let json = serde_json::json!({
+            "query": "test"
+        });
+
+        let req: SearchDocsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.limit, 10);
+        assert!(req.score_threshold.is_none());
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_empty() {
+        let data = serde_json::json!({"result": []});
+        let results = parse_doc_search_results(&data);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_valid() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.92,
+                    "payload": {
+                        "source_file": "docs/api/authentication.md",
+                        "content": "Authentication is handled via JWT tokens..."
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_file, "docs/api/authentication.md");
+        assert_eq!(
+            results[0].content_preview,
+            "Authentication is handled via JWT tokens..."
+        );
+        assert!((results[0].score - 0.92).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_qdrant_schema() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.92,
+                    "payload": {
+                        "file_path": "docs/api/authentication.md",
+                        "text": "Authentication is handled via JWT tokens...",
+                        "section_title": "Auth",
+                        "crate_name": "rust_brain"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_file, "docs/api/authentication.md");
+        assert_eq!(
+            results[0].content_preview,
+            "Authentication is handled via JWT tokens..."
+        );
+        assert!((results[0].score - 0.92).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_content_preview_fallback() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.85,
+                    "payload": {
+                        "source_file": "README.md",
+                        "content_preview": "Short preview"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content_preview, "Short preview");
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_truncates_long_content() {
+        let long_content = "x".repeat(600);
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.9,
+                    "payload": {
+                        "source_file": "docs/guide.md",
+                        "content": long_content.clone()
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].content_preview.ends_with("..."));
+        assert!(results[0].content_preview.len() <= 503);
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_missing_fields() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.8,
+                    "payload": {}
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_file, "");
+        assert_eq!(results[0].content_preview, "");
+    }
+
+    #[test]
+    fn test_doc_result_serialization() {
+        let result = DocResult {
+            source_file: "docs/api.md".to_string(),
+            content_preview: "API documentation".to_string(),
+            score: 0.95,
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["source_file"], "docs/api.md");
+        assert_eq!(json["content_preview"], "API documentation");
+        let score = json["score"].as_f64().unwrap() as f32;
+        assert!((score - 0.95).abs() < f32::EPSILON);
     }
 }

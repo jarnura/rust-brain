@@ -16,6 +16,7 @@
 pub mod artifacts;
 pub mod benchmarker;
 pub mod chat;
+pub mod consistency;
 pub mod execution;
 pub mod graph;
 pub mod graph_templates;

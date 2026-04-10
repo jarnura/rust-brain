@@ -8,11 +8,8 @@ global:
   external_labels:
     monitor: 'rustbrain'
 
-# Alertmanager (optional, uncomment if needed)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets: ['alertmanager:9093']
+rule_files:
+  - 'alert_rules.yml'
 
 scrape_configs:
   # ===========================================================================
@@ -60,3 +57,21 @@ scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  - job_name: 'consistency-health'
+    metrics_path: /probe
+    params:
+      module: [http_consistency]
+    static_configs:
+      - targets:
+          - http://api:8080/health/consistency
+        labels:
+          service: 'api'
+          probe: 'consistency'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

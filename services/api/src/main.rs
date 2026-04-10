@@ -103,10 +103,10 @@ async fn main() -> anyhow::Result<()> {
     // Create Docker client
     let docker = DockerClient::new();
 
-    // Create workspace manager (shares the same Postgres pool and Docker client)
     let workspace_manager = workspace::WorkspaceManager::new(pg_pool.clone(), docker.clone());
 
-    // Create app state
+    let start_time = std::time::Instant::now();
+
     let state = AppState {
         config: config.clone(),
         pg_pool,
@@ -116,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
         opencode_client,
         workspace_manager: workspace_manager.clone(),
         docker: docker.clone(),
+        start_time,
     };
 
     // Start timeout sweeper for stale execution containers
@@ -144,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
             "/tools/aggregate_search",
             post(handlers::search::aggregate_search),
         )
+        .route("/tools/search_docs", post(handlers::search::search_docs))
         .layer(GovernorLayer {
             config: embedding_governor_config,
         });

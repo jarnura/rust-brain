@@ -11,7 +11,6 @@ use neo4rs::{query, BoltType, Graph};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use super::nodes::NodeData;
@@ -406,43 +405,6 @@ fn rel_property_to_bolt(value: &super::relationships::PropertyValue) -> Option<B
             Some(BoltType::from(bolt_list))
         }
         RPV::Null => None,
-    }
-}
-
-/// High-performance streaming batch inserter
-// TODO: used by future streaming ingestion pipeline
-#[allow(dead_code)]
-pub struct StreamingBatchInserter {
-    graph: Arc<Graph>,
-    config: BatchConfig,
-    stats: Arc<RwLock<BatchStats>>,
-}
-
-#[allow(dead_code)]
-impl StreamingBatchInserter {
-    /// Create a new streaming batch inserter
-    pub fn new(graph: Arc<Graph>, config: BatchConfig) -> Self {
-        Self {
-            graph,
-            config,
-            stats: Arc::new(RwLock::new(BatchStats::default())),
-        }
-    }
-
-    /// Insert nodes in streaming fashion
-    pub async fn insert_nodes_stream(
-        &self,
-        _node_stream: impl futures::Stream<Item = NodeData> + Send,
-        _batch_size: usize,
-    ) -> Result<()> {
-        // Note: Simplified implementation - full streaming would require
-        // more complex setup. For now, use batch_insert_nodes.
-        Ok(())
-    }
-
-    /// Get statistics
-    pub async fn stats(&self) -> BatchStats {
-        self.stats.read().await.clone()
     }
 }
 
