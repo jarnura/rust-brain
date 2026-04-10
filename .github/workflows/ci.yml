@@ -1,0 +1,244 @@
+# GitHub Actions CI pipeline for rust-brain
+# Runs on every push to main and all pull requests.
+# Enforces: formatting, clippy, tests, and release build.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ===========================================================================
+  # Format check - fails if code is not properly formatted
+  # ===========================================================================
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+  # ===========================================================================
+  # Clippy linting - fails on any warnings
+  # ===========================================================================
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-clippy-
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ===========================================================================
+  # Unit tests - runs all workspace tests except #[ignore] integration tests
+  # ===========================================================================
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-test-
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  # ===========================================================================
+  # Release build - verifies release compilation succeeds
+  # ===========================================================================
+  build:
+    name: Build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-build-
+
+      - name: Build release
+        run: cargo build --release
+
+  # ===========================================================================
+  # Nightly check - allows failures, catches future breaking changes
+  # ===========================================================================
+  nightly:
+    name: Nightly
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-nightly-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-nightly-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-nightly-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-nightly-
+
+      - name: Check with nightly
+        run: cargo check --workspace
+
+      - name: Clippy with nightly
+        run: cargo clippy --all-targets -- -D warnings || true
+
+  # ===========================================================================
+  # Integration tests - requires docker-compose stack (Postgres, Neo4j, Qdrant)
+  # Run manually or on a schedule - not on every PR due to resource requirements
+  # ===========================================================================
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-integration-
+
+      # Note: Integration tests require full docker-compose stack.
+      # They are marked with #[ignore] and need:
+      # - Postgres (DATABASE_URL)
+      # - Neo4j (NEO4J_URL)
+      # - Qdrant (QDRANT_URL)
+      # - Ollama (EMBEDDING_URL) - optional for some tests
+      #
+      # To enable full integration tests, add service containers or
+      # use a self-hosted runner with docker-compose available.
+      #
+      # Example service containers (minimal Postgres only):
+      # services:
+      #   postgres:
+      #     image: postgres:16
+      #     env:
+      #       POSTGRES_USER: rustbrain
+      #       POSTGRES_PASSWORD: rustbrain
+      #       POSTGRES_DB: rustbrain
+      #     ports:
+      #       - 5432:5432
+      #     options: >-
+      #       --health-cmd pg_isready
+      #       --health-interval 10s
+      #       --health-timeout 5s
+      #       --health-retries 5
+
+      - name: Run integration tests
+        run: |
+          echo "Integration tests require docker-compose stack."
+          echo "Run locally with: cargo test --test api_integration -- --include-ignored"
+          echo "Skipping in CI until service containers are configured."
+        # Uncomment when services are configured:
+        # run: cargo test --workspace -- --include-ignored

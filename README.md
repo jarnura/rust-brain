@@ -1,5 +1,7 @@
 # rust-brain
 
+[![CI](https://github.com/jarnura/rust-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/jarnura/rust-brain/actions/workflows/ci.yml)
+
 A production-grade Rust code intelligence platform. Ingests Rust codebases and builds a queryable knowledge graph with semantic search, call graph traversal, trait resolution, and monomorphization tracking.
 
 ## Architecture
@@ -232,6 +234,67 @@ See [docs/opencode-integration.md](./docs/opencode-integration.md) for architect
 - **Monorepo-first**: FQN scheme and graph schema support multi-repo with zero schema changes
 - **Streaming responses**: SSE-based MCP transport for real-time tool invocations in IDEs
 - **Model flexibility**: LiteLLM routing supports Anthropic, OpenAI, local models with transparent fallbacks
+
+## CI/CD
+
+### What Runs in CI
+
+The CI pipeline (`.github/workflows/ci.yml`) runs automatically on all pull requests and pushes to `main`:
+
+| Job | Command | Description |
+|-----|---------|-------------|
+| **fmt** | `cargo fmt --check` | Enforces code formatting |
+| **clippy** | `cargo clippy --all-targets -- -D warnings` | Linting (warnings = failures) |
+| **test** | `cargo test --workspace` | Unit tests only |
+| **build** | `cargo build --release` | Release compilation |
+| **nightly** | `cargo check --workspace` | Future compatibility check |
+
+### What Requires Docker
+
+Integration tests require the full docker-compose stack (Postgres, Neo4j, Qdrant, Ollama). These are **not run in CI** due to resource constraints and are marked with `#[ignore]` in the codebase.
+
+To run integration tests locally:
+
+```bash
+# Start the infrastructure
+./scripts/start.sh
+
+# Wait for services to be healthy
+./scripts/healthcheck.sh
+
+# Run integration tests (includes ignored tests)
+cargo test --workspace -- --include-ignored
+
+# Or run specific integration test files
+cargo test --test api_integration -- --include-ignored
+```
+
+**Integration test requirements:**
+- Postgres (DATABASE_URL)
+- Neo4j (NEO4J_URL)  
+- Qdrant (QDRANT_URL)
+- Ollama (EMBEDDING_URL) — optional for some tests
+
+### Branch Protection Recommendations
+
+For the `main` branch, configure these settings in GitHub (Settings → Branches → Add rule):
+
+1. **Required status checks:**
+   - `fmt` — Format check
+   - `clippy` — Linting
+   - `test` — Unit tests
+   - `build` — Release build
+
+2. **Additional settings:**
+   - ✅ Require a pull request before merging
+   - ✅ Require approvals (recommended: 1)
+   - ✅ Require status checks to pass before merging
+   - ✅ Require branches to be up to date before merging
+   - ✅ Require linear history (optional, keeps history clean)
+
+3. **Do NOT require:**
+   - `nightly` job (allowed to fail, catches future breaking changes)
+   - `integration` job (only runs on main branch pushes)
 
 ## Status
 
