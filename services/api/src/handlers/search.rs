@@ -1281,7 +1281,7 @@ mod tests {
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["source_file"], "docs/api.md");
         assert_eq!(json["content_preview"], "API documentation");
-        let score = json["score"].as_f64().unwrap() as f32;
-        assert!((score - 0.95).abs() < f32::EPSILON);
+        let score = json["score"].as_f64().unwrap();
+        assert!((score - 0.95).abs() < 1e-6);
     }
 }
