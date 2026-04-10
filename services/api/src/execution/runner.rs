@@ -331,16 +331,22 @@ async fn run_execution_inner(
 
         // Check if the background send completed (success or failure)
         if send_task.is_finished() {
-            // Do one final poll to capture any remaining parts
+            // Do one final poll to capture any remaining parts from ALL assistant messages.
             if let Ok(messages) = opencode.get_messages(&session_id).await {
-                if let Some(msg) = messages.iter().rev().find(|m| m.role == "assistant") {
-                    if msg.parts.len() > last_seen_part_count {
-                        let new_parts = &msg.parts[last_seen_part_count..];
-                        if let Some(new_agent) =
-                            bridge_new_parts(&pool, exec_id, &current_agent, new_parts).await
-                        {
-                            current_agent = new_agent;
-                        }
+                let all_parts: Vec<&crate::opencode::MessagePart> = messages
+                    .iter()
+                    .filter(|m| m.role == "assistant")
+                    .flat_map(|m| m.parts.iter())
+                    .collect();
+                if all_parts.len() > last_seen_part_count {
+                    let new_parts = &all_parts[last_seen_part_count..];
+                    // Use owned slice for bridge_new_parts
+                    let owned: Vec<crate::opencode::MessagePart> =
+                        new_parts.iter().map(|p| (*p).clone()).collect();
+                    if let Some(new_agent) =
+                        bridge_new_parts(&pool, exec_id, &current_agent, &owned).await
+                    {
+                        current_agent = new_agent;
                     }
                 }
             }
@@ -363,7 +369,11 @@ async fn run_execution_inner(
             break;
         }
 
-        // Poll for intermediate message parts
+        // Poll for intermediate message parts across ALL assistant messages.
+        //
+        // OpenCode produces multiple assistant messages in a multi-turn flow
+        // (one per orchestrator turn). We count total parts across all assistant
+        // messages so we bridge events from every turn.
         let messages = match opencode.get_messages(&session_id).await {
             Ok(msgs) => msgs,
             Err(e) => {
@@ -372,26 +382,88 @@ async fn run_execution_inner(
             }
         };
 
-        let assistant_msg = messages.iter().rev().find(|m| m.role == "assistant");
+        let all_parts: Vec<&crate::opencode::MessagePart> = messages
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .flat_map(|m| m.parts.iter())
+            .collect();
+        let total_part_count = all_parts.len();
 
-        if let Some(msg) = assistant_msg {
-            let part_count = msg.parts.len();
+        if total_part_count > last_seen_part_count {
+            last_new_part_time = std::time::Instant::now();
+            stall_logged = false;
 
-            if part_count > last_seen_part_count {
-                last_new_part_time = std::time::Instant::now();
-                stall_logged = false;
+            let new_parts: Vec<&crate::opencode::MessagePart> =
+                all_parts[last_seen_part_count..].to_vec();
+            // bridge_new_parts expects &[MessagePart], collect owned refs
+            for part in &new_parts {
+                let (event_type, content) = match *part {
+                    crate::opencode::MessagePart::Text { ref text } => {
+                        ("reasoning", json!({ "agent": &current_agent, "text": text }))
+                    }
+                    crate::opencode::MessagePart::Reasoning { ref text } => (
+                        "reasoning",
+                        json!({ "agent": &current_agent, "reasoning": text }),
+                    ),
+                    crate::opencode::MessagePart::ToolInvocation {
+                        ref tool_name,
+                        ref args,
+                        ref result,
+                        ref state,
+                    } => {
+                        if let Some(name) = tool_name {
+                            if name == "task" {
+                                if let Some(dispatched_agent) =
+                                    extract_dispatched_agent_name(args, state)
+                                {
+                                    if set_agent_phase(&pool, exec_id, &dispatched_agent)
+                                        .await
+                                        .is_ok()
+                                    {
+                                        let _ = insert_agent_event(
+                                            &pool,
+                                            exec_id,
+                                            "agent_dispatch",
+                                            json!({ "agent": &dispatched_agent }),
+                                        )
+                                        .await;
+                                        current_agent = dispatched_agent;
+                                    }
+                                }
+                            }
+                        }
+                        (
+                            "tool_call",
+                            json!({
+                                "agent": &current_agent,
+                                "tool": tool_name,
+                                "args": args.as_ref().or(state.as_ref()
+                                    .and_then(|s| s.get("input"))),
+                                "result": result.as_ref().or(state.as_ref()
+                                    .and_then(|s| s.get("output"))),
+                            }),
+                        )
+                    }
+                    crate::opencode::MessagePart::StepStart { ref id } => (
+                        "reasoning",
+                        json!({ "agent": &current_agent, "step_start": id }),
+                    ),
+                    crate::opencode::MessagePart::StepFinish { ref reason } => (
+                        "reasoning",
+                        json!({ "agent": &current_agent, "step_finish": reason }),
+                    ),
+                    crate::opencode::MessagePart::Unknown => continue,
+                };
 
-                let new_parts = &msg.parts[last_seen_part_count..];
-                if let Some(new_agent) =
-                    bridge_new_parts(&pool, exec_id, &current_agent, new_parts).await
+                if let Err(e) = insert_agent_event(&pool, exec_id, event_type, content).await
                 {
-                    current_agent = new_agent;
+                    warn!(execution_id = %exec_id, error = %e, "Failed to insert agent_event");
                 }
-                last_seen_part_count = part_count;
-            } else if last_new_part_time.elapsed().as_secs() > STALL_TIMEOUT_SECS && !stall_logged {
-                stall_logged = true;
-                warn!(execution_id = %exec_id, "No new parts for {}s, send still running", STALL_TIMEOUT_SECS);
             }
+            last_seen_part_count = total_part_count;
+        } else if last_new_part_time.elapsed().as_secs() > STALL_TIMEOUT_SECS && !stall_logged {
+            stall_logged = true;
+            warn!(execution_id = %exec_id, "No new parts for {}s, send still running", STALL_TIMEOUT_SECS);
         }
     }
 
@@ -401,16 +473,22 @@ async fn run_execution_inner(
     // subagent hasn't finished yet, so `state.input.subagent_type` is absent).
     // Now that the send is complete, re-scan ALL parts for agent dispatches
     // with fully populated state data.
+    //
+    // IMPORTANT: OpenCode returns multiple assistant messages (one per turn).
+    // Tool dispatches may be in any assistant message, so scan ALL of them.
     if let Ok(final_messages) = opencode.get_messages(&session_id).await {
-        if let Some(msg) = final_messages.iter().rev().find(|m| m.role == "assistant") {
-            let detected = detect_agent_dispatches(&pool, exec_id, &msg.parts).await;
-            if !detected.is_empty() {
-                info!(
-                    execution_id = %exec_id,
-                    agents = ?detected,
-                    "Post-completion agent detection found dispatches"
-                );
-            }
+        let all_assistant_parts: Vec<&crate::opencode::MessagePart> = final_messages
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .flat_map(|m| m.parts.iter())
+            .collect();
+        let detected = detect_agent_dispatches(&pool, exec_id, &all_assistant_parts).await;
+        if !detected.is_empty() {
+            info!(
+                execution_id = %exec_id,
+                agents = ?detected,
+                "Post-completion agent detection found dispatches"
+            );
         }
     }
 
@@ -553,10 +631,12 @@ fn extract_dispatched_agent_name(
 /// populated (the subagent is still running). This function runs after the
 /// blocking `send_message` completes, when all parts are fully resolved.
 /// It emits `agent_dispatch` events for any dispatches not already recorded.
+///
+/// Accepts `&[&MessagePart]` to allow scanning parts from multiple messages.
 async fn detect_agent_dispatches(
     pool: &PgPool,
     execution_id: Uuid,
-    parts: &[crate::opencode::MessagePart],
+    parts: &[&crate::opencode::MessagePart],
 ) -> Vec<String> {
     use crate::opencode::MessagePart;
 
@@ -568,7 +648,7 @@ async fn detect_agent_dispatches(
             args,
             state,
             ..
-        } = part
+        } = *part
         {
             if name == "task" {
                 if let Some(agent) = extract_dispatched_agent_name(args, state) {
