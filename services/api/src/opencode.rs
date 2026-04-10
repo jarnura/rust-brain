@@ -150,15 +150,22 @@ pub enum MessagePart {
     Text { text: String },
     /// Chain-of-thought reasoning (hidden from user display)
     Reasoning { text: String },
-    /// A tool invocation with optional arguments and result
-    #[serde(rename = "tool-invocation")]
+    /// A tool invocation with optional arguments and result.
+    ///
+    /// OpenCode sends `type: "tool"` with fields `tool` (name), `state`
+    /// (nested `input`/`output`), `callID`, etc. Legacy format uses
+    /// `type: "tool-invocation"` with `toolName`, `args`, `result`.
+    #[serde(rename = "tool-invocation", alias = "tool")]
     ToolInvocation {
-        #[serde(rename = "toolName", default)]
+        #[serde(rename = "toolName", alias = "tool", default)]
         tool_name: Option<String>,
         #[serde(default)]
         args: Option<serde_json::Value>,
         #[serde(default)]
         result: Option<serde_json::Value>,
+        /// OpenCode wraps input/output in a `state` object.
+        #[serde(default)]
+        state: Option<serde_json::Value>,
     },
     /// Marks the beginning of an agent step
     #[serde(rename = "step-start")]
@@ -456,5 +463,124 @@ impl OpenCodeClient {
             .await
             .context("get_messages parse failed")?;
         Ok(entries.into_iter().map(Message::from).collect())
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_invocation_deserializes_opencode_format() {
+        // Actual format from OpenCode API
+        let json = serde_json::json!({
+            "type": "tool",
+            "tool": "task",
+            "callID": "functions.task:0",
+            "state": {
+                "status": "completed",
+                "input": {
+                    "subagent_type": "explore",
+                    "prompt": "Find auth patterns",
+                    "description": "Search for authentication"
+                },
+                "output": "Found 5 matches",
+                "metadata": {},
+                "title": "Explorer task",
+                "time": { "start": 1, "end": 2 }
+            }
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+                state,
+            } => {
+                assert_eq!(
+                    tool_name,
+                    Some("task".to_string()),
+                    "tool_name should be 'task'"
+                );
+                assert!(args.is_none(), "args should be None for OpenCode format");
+                assert!(
+                    result.is_none(),
+                    "result should be None for OpenCode format"
+                );
+                assert!(state.is_some(), "state should be populated");
+
+                let state = state.unwrap();
+                assert_eq!(
+                    state.get("status").and_then(|s| s.as_str()),
+                    Some("completed")
+                );
+                let input = state.get("input").expect("state.input should exist");
+                assert_eq!(
+                    input.get("subagent_type").and_then(|s| s.as_str()),
+                    Some("explore")
+                );
+            }
+            _ => panic!("Expected ToolInvocation variant, got {part:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_invocation_deserializes_legacy_format() {
+        // Legacy format with toolName and args
+        let json = serde_json::json!({
+            "type": "tool-invocation",
+            "toolName": "bash",
+            "args": { "command": "ls -la" },
+            "result": "file1.txt\nfile2.txt"
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+                state,
+            } => {
+                assert_eq!(tool_name, Some("bash".to_string()));
+                assert!(args.is_some());
+                assert!(result.is_some());
+                assert!(state.is_none());
+            }
+            _ => panic!("Expected ToolInvocation variant"),
+        }
+    }
+
+    #[test]
+    fn tool_invocation_type_alias_matches_both_formats() {
+        // Both "type": "tool" and "type": "tool-invocation" should work
+        let json_tool = serde_json::json!({
+            "type": "tool",
+            "tool": "read",
+            "state": { "input": { "file": "test.rs" } }
+        });
+
+        let json_tool_invocation = serde_json::json!({
+            "type": "tool-invocation",
+            "toolName": "read",
+            "args": { "file": "test.rs" }
+        });
+
+        let part1: MessagePart =
+            serde_json::from_value(json_tool).expect("Failed to deserialize tool");
+        let part2: MessagePart = serde_json::from_value(json_tool_invocation)
+            .expect("Failed to deserialize tool-invocation");
+
+        // Both should be ToolInvocation variant
+        assert!(matches!(part1, MessagePart::ToolInvocation { .. }));
+        assert!(matches!(part2, MessagePart::ToolInvocation { .. }));
     }
 }

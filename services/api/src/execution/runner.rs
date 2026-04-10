@@ -6,8 +6,8 @@
 //!
 //! 1. Spawn an ephemeral OpenCode container with the workspace volume mounted.
 //! 2. Create an OpenCode session inside that container.
-//! 3. Drive four sequential agent phases (orchestrating → researching →
-//!    planning → developing), writing `phase_change` events for each.
+//! 3. Send the user prompt to the OpenCode orchestrator agent (blocking call)
+//!    and bridge response parts into `agent_dispatch` events.
 //! 4. Bridge OpenCode response parts into `agent_events` rows.
 //! 5. Mark the execution `completed` (or `failed`) and clean up the container.
 
@@ -28,35 +28,14 @@ use crate::docker::{DockerClient, ExecutionConfig};
 use crate::opencode::OpenCodeClient;
 
 // =============================================================================
-// Phase definitions
+// Polling configuration
 // =============================================================================
 
-/// Agent phases executed in order.
-const PHASES: &[(&str, &str)] = &[
-    ("orchestrating", ORCHESTRATOR_PROMPT),
-    ("researching", RESEARCH_PROMPT),
-    ("planning", PLANNING_PROMPT),
-    ("developing", DEVELOPMENT_PROMPT),
-];
+/// Interval between polling calls to OpenCode for new message parts.
+const POLL_INTERVAL_SECS: u64 = 2;
 
-const ORCHESTRATOR_PROMPT: &str = "You are the orchestrator agent for a Rust codebase assistant. \
-     Analyse the workspace and the user's request. \
-     Identify which files are relevant, which architectural concerns apply, \
-     and produce a concise task breakdown for the specialist agents.";
-
-const RESEARCH_PROMPT: &str = "You are the research agent. Based on the orchestrator's analysis, \
-     explore the relevant Rust source files in /workspace. \
-     Summarise function signatures, module structure, and any existing tests \
-     that touch the area described in the task.";
-
-const PLANNING_PROMPT: &str =
-    "You are the planning agent. Given the orchestrator's task breakdown and \
-     the research summary, produce a step-by-step implementation plan. \
-     Be precise about which files to create or modify and what changes to make.";
-
-const DEVELOPMENT_PROMPT: &str = "You are the development agent. Execute the implementation plan. \
-     Write idiomatic Rust code, update tests, and ensure `cargo check` passes. \
-     Commit your changes to the workspace when done.";
+/// Maximum time to wait for new parts before logging a stall warning.
+const STALL_TIMEOUT_SECS: u64 = 60;
 
 // =============================================================================
 // Container readiness check
@@ -203,25 +182,23 @@ async fn run_execution_inner(
         opencode_config_host_path: params.opencode_config_host_path.as_deref(),
         mcp_sse_url: params.mcp_sse_url.as_deref(),
     };
-    let (container_id, internal_url, mapped_port) = match docker
-        .spawn_execution_container(&exec_cfg)
-        .await
-    {
-        Ok(tuple) => tuple,
-        Err(e) => {
-            let error_msg = classify_container_error(&e.to_string());
-            warn!(execution_id = %exec_id, error = %error_msg, "Container spawn failed");
-            let _ = insert_agent_event(
-                &pool,
-                exec_id,
-                "error",
-                json!({ "stage": "container_spawn", "error": &error_msg }),
-            )
-            .await;
-            let _ = fail_execution(&pool, exec_id, &error_msg).await;
-            return Err(None);
-        }
-    };
+    let (container_id, internal_url, mapped_port) =
+        match docker.spawn_execution_container(&exec_cfg).await {
+            Ok(tuple) => tuple,
+            Err(e) => {
+                let error_msg = classify_container_error(&e.to_string());
+                warn!(execution_id = %exec_id, error = %error_msg, "Container spawn failed");
+                let _ = insert_agent_event(
+                    &pool,
+                    exec_id,
+                    "error",
+                    json!({ "stage": "container_spawn", "error": &error_msg }),
+                )
+                .await;
+                let _ = fail_execution(&pool, exec_id, &error_msg).await;
+                return Err(None);
+            }
+        };
 
     // Record container_id immediately so the sweeper can kill it on timeout
     if let Err(e) = set_container_id(&pool, exec_id, &container_id).await {
@@ -317,41 +294,127 @@ async fn run_execution_inner(
         warn!(execution_id = %exec_id, error = %e, "Failed to persist runtime info");
     }
 
-    // 4. Drive each agent phase
-    let full_prompt = &params.prompt;
-    for (phase, phase_system_prompt) in PHASES {
-        // Advance phase in DB and emit phase_change event
-        if let Err(e) = set_agent_phase(&pool, exec_id, phase).await {
-            warn!(execution_id = %exec_id, phase = phase, error = %e, "Failed to set agent_phase");
+    // 4. Send prompt to orchestrator and poll for intermediate events
+    //
+    // OpenCode's POST /session/{id}/message blocks until the LLM finishes.
+    // Intermediate ToolInvocation parts (subagent dispatches) are only visible
+    // via GET /session/{id}/message while the response is being generated.
+    // We spawn the blocking send in a background task and poll concurrently.
+    if let Err(e) = set_agent_phase(&pool, exec_id, "orchestrator").await {
+        warn!(execution_id = %exec_id, error = %e, "Failed to set initial agent_phase");
+    }
+
+    let send_opencode = opencode.clone();
+    let send_session = session_id.clone();
+    let send_prompt = params.prompt.clone();
+    let send_exec_id = exec_id;
+    let send_task = tokio::spawn(async move {
+        send_opencode
+            .send_message(&send_session, &send_prompt)
+            .await
+            .map_err(|e| {
+                warn!(execution_id = %send_exec_id, error = %e, "Background send_message failed");
+                e
+            })
+    });
+
+    info!(execution_id = %exec_id, "Message send spawned, starting polling loop");
+
+    // Poll for intermediate parts while the send runs in the background
+    let mut last_seen_part_count: usize = 0;
+    let mut current_agent = "orchestrator".to_string();
+    let mut last_new_part_time = std::time::Instant::now();
+    let mut stall_logged = false;
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
+
+        // Check if the background send completed (success or failure)
+        if send_task.is_finished() {
+            // Do one final poll to capture any remaining parts
+            if let Ok(messages) = opencode.get_messages(&session_id).await {
+                if let Some(msg) = messages.iter().rev().find(|m| m.role == "assistant") {
+                    if msg.parts.len() > last_seen_part_count {
+                        let new_parts = &msg.parts[last_seen_part_count..];
+                        if let Some(new_agent) =
+                            bridge_new_parts(&pool, exec_id, &current_agent, new_parts).await
+                        {
+                            current_agent = new_agent;
+                        }
+                    }
+                }
+            }
+            // Now check the send result
+            match send_task.await {
+                Ok(Ok(_)) => {
+                    info!(execution_id = %exec_id, "Orchestrator send completed");
+                }
+                Ok(Err(e)) => {
+                    let _ =
+                        fail_execution(&pool, exec_id, &format!("Orchestrator failed: {e}")).await;
+                    return Err(Some(container_id));
+                }
+                Err(e) => {
+                    let _ =
+                        fail_execution(&pool, exec_id, &format!("Send task panicked: {e}")).await;
+                    return Err(Some(container_id));
+                }
+            }
+            break;
         }
 
-        let _ = insert_agent_event(&pool, exec_id, "phase_change", json!({ "phase": phase })).await;
-
-        info!(execution_id = %exec_id, phase = phase, "Running agent phase");
-
-        // Build the prompt: prepend the system context then append the user task
-        let message = format!("{}\n\n---\nUser task: {}", phase_system_prompt, full_prompt);
-
-        match opencode.send_message(&session_id, &message).await {
-            Ok(msg) => {
-                // Bridge response parts as agent_events
-                bridge_message(&pool, exec_id, phase, &msg.parts).await;
-            }
+        // Poll for intermediate message parts
+        let messages = match opencode.get_messages(&session_id).await {
+            Ok(msgs) => msgs,
             Err(e) => {
-                warn!(execution_id = %exec_id, phase = phase, error = %e, "Agent phase failed");
-                let _ = insert_agent_event(
-                    &pool,
-                    exec_id,
-                    "error",
-                    json!({ "phase": phase, "error": e.to_string() }),
-                )
-                .await;
-                let _ =
-                    fail_execution(&pool, exec_id, &format!("Phase '{phase}' failed: {e}")).await;
-                return Err(Some(container_id));
+                warn!(execution_id = %exec_id, error = %e, "Failed to get messages");
+                continue;
+            }
+        };
+
+        let assistant_msg = messages.iter().rev().find(|m| m.role == "assistant");
+
+        if let Some(msg) = assistant_msg {
+            let part_count = msg.parts.len();
+
+            if part_count > last_seen_part_count {
+                last_new_part_time = std::time::Instant::now();
+                stall_logged = false;
+
+                let new_parts = &msg.parts[last_seen_part_count..];
+                if let Some(new_agent) =
+                    bridge_new_parts(&pool, exec_id, &current_agent, new_parts).await
+                {
+                    current_agent = new_agent;
+                }
+                last_seen_part_count = part_count;
+            } else if last_new_part_time.elapsed().as_secs() > STALL_TIMEOUT_SECS && !stall_logged {
+                stall_logged = true;
+                warn!(execution_id = %exec_id, "No new parts for {}s, send still running", STALL_TIMEOUT_SECS);
             }
         }
     }
+
+    // 4b. Post-completion agent detection pass.
+    //
+    // During polling, ToolInvocation parts may have incomplete `state` (the
+    // subagent hasn't finished yet, so `state.input.subagent_type` is absent).
+    // Now that the send is complete, re-scan ALL parts for agent dispatches
+    // with fully populated state data.
+    if let Ok(final_messages) = opencode.get_messages(&session_id).await {
+        if let Some(msg) = final_messages.iter().rev().find(|m| m.role == "assistant") {
+            let detected = detect_agent_dispatches(&pool, exec_id, &msg.parts).await;
+            if !detected.is_empty() {
+                info!(
+                    execution_id = %exec_id,
+                    agents = ?detected,
+                    "Post-completion agent detection found dispatches"
+                );
+            }
+        }
+    }
+
+    info!(execution_id = %exec_id, final_agent = %current_agent, "Execution events bridged");
 
     // 5. Collect diff summary from the final session state
     let diff_summary = opencode
@@ -381,40 +444,70 @@ async fn run_execution_inner(
 // Helpers
 // =============================================================================
 
-/// Bridge OpenCode message parts into `agent_events` rows.
-async fn bridge_message(
+async fn bridge_new_parts(
     pool: &PgPool,
     execution_id: Uuid,
-    phase: &str,
+    current_agent: &str,
     parts: &[crate::opencode::MessagePart],
-) {
+) -> Option<String> {
     use crate::opencode::MessagePart;
+
+    let mut new_agent: Option<String> = None;
 
     for part in parts {
         let (event_type, content) = match part {
-            MessagePart::Text { text } => ("reasoning", json!({ "phase": phase, "text": text })),
-            MessagePart::Reasoning { text } => {
-                ("reasoning", json!({ "phase": phase, "reasoning": text }))
+            MessagePart::Text { text } => {
+                ("reasoning", json!({ "agent": current_agent, "text": text }))
             }
+            MessagePart::Reasoning { text } => (
+                "reasoning",
+                json!({ "agent": current_agent, "reasoning": text }),
+            ),
             MessagePart::ToolInvocation {
                 tool_name,
                 args,
                 result,
-            } => (
-                "tool_call",
-                json!({
-                    "phase": phase,
-                    "tool": tool_name,
-                    "args": args,
-                    "result": result,
-                }),
-            ),
-            MessagePart::StepStart { id } => {
-                ("reasoning", json!({ "phase": phase, "step_start": id }))
+                state,
+            } => {
+                if let Some(name) = tool_name {
+                    if name == "task" {
+                        if let Some(dispatched_agent) = extract_dispatched_agent_name(args, state) {
+                            if set_agent_phase(pool, execution_id, &dispatched_agent)
+                                .await
+                                .is_ok()
+                            {
+                                let _ = insert_agent_event(
+                                    pool,
+                                    execution_id,
+                                    "agent_dispatch",
+                                    json!({ "agent": &dispatched_agent }),
+                                )
+                                .await;
+                                new_agent = Some(dispatched_agent);
+                            }
+                        }
+                    }
+                }
+
+                (
+                    "tool_call",
+                    json!({
+                        "agent": current_agent,
+                        "tool": tool_name,
+                        "args": args.as_ref().or(state.as_ref()
+                            .and_then(|s| s.get("input"))),
+                        "result": result.as_ref().or(state.as_ref()
+                            .and_then(|s| s.get("output"))),
+                    }),
+                )
             }
+            MessagePart::StepStart { id } => (
+                "reasoning",
+                json!({ "agent": current_agent, "step_start": id }),
+            ),
             MessagePart::StepFinish { reason } => (
                 "reasoning",
-                json!({ "phase": phase, "step_finish": reason }),
+                json!({ "agent": current_agent, "step_finish": reason }),
             ),
             MessagePart::Unknown => continue,
         };
@@ -423,6 +516,79 @@ async fn bridge_message(
             warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_event");
         }
     }
+
+    new_agent
+}
+
+/// Extract the dispatched agent name from either the legacy `args` format
+/// or the OpenCode `state.input` format.
+fn extract_dispatched_agent_name(
+    args: &Option<serde_json::Value>,
+    state: &Option<serde_json::Value>,
+) -> Option<String> {
+    // Legacy format: args.subagent_type or args.category
+    if let Some(name) = args.as_ref().and_then(|obj| {
+        obj.get("subagent_type")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("category").and_then(|v| v.as_str()))
+    }) {
+        return Some(name.to_string());
+    }
+    // OpenCode format: state.input.subagent_type or state.input.agent
+    if let Some(input) = state.as_ref().and_then(|s| s.get("input")) {
+        if let Some(name) = input
+            .get("subagent_type")
+            .and_then(|v| v.as_str())
+            .or_else(|| input.get("agent").and_then(|v| v.as_str()))
+        {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Post-completion scan of ALL response parts for `task()` tool invocations.
+///
+/// During real-time polling, `state.input.subagent_type` may not yet be
+/// populated (the subagent is still running). This function runs after the
+/// blocking `send_message` completes, when all parts are fully resolved.
+/// It emits `agent_dispatch` events for any dispatches not already recorded.
+async fn detect_agent_dispatches(
+    pool: &PgPool,
+    execution_id: Uuid,
+    parts: &[crate::opencode::MessagePart],
+) -> Vec<String> {
+    use crate::opencode::MessagePart;
+
+    let mut detected = Vec::new();
+
+    for part in parts {
+        if let MessagePart::ToolInvocation {
+            tool_name: Some(name),
+            args,
+            state,
+            ..
+        } = part
+        {
+            if name == "task" {
+                if let Some(agent) = extract_dispatched_agent_name(args, state) {
+                    if !detected.contains(&agent) {
+                        let _ = set_agent_phase(pool, execution_id, &agent).await;
+                        let _ = insert_agent_event(
+                            pool,
+                            execution_id,
+                            "agent_dispatch",
+                            json!({ "agent": &agent }),
+                        )
+                        .await;
+                        detected.push(agent);
+                    }
+                }
+            }
+        }
+    }
+
+    detected
 }
 
 fn classify_container_error(error: &str) -> String {
@@ -486,19 +652,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phases_ordered_correctly() {
-        let names: Vec<&str> = PHASES.iter().map(|(n, _)| *n).collect();
+    fn extract_agent_name_from_subagent_type() {
+        let args = serde_json::json!({ "subagent_type": "explorer" });
         assert_eq!(
-            names,
-            vec!["orchestrating", "researching", "planning", "developing"]
+            extract_dispatched_agent_name(&Some(args), &None),
+            Some("explorer".to_string())
         );
     }
 
     #[test]
-    fn phase_prompts_non_empty() {
-        for (phase, prompt) in PHASES {
-            assert!(!prompt.is_empty(), "Prompt for phase '{phase}' is empty");
-        }
+    fn extract_agent_name_from_category() {
+        let args = serde_json::json!({ "category": "quick" });
+        assert_eq!(
+            extract_dispatched_agent_name(&Some(args), &None),
+            Some("quick".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_agent_name_prefers_subagent_type() {
+        let args = serde_json::json!({ "subagent_type": "explorer", "category": "quick" });
+        assert_eq!(
+            extract_dispatched_agent_name(&Some(args), &None),
+            Some("explorer".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_agent_name_from_opencode_state() {
+        let state = serde_json::json!({
+            "status": "completed",
+            "input": { "subagent_type": "explore", "prompt": "..." },
+            "output": "result text"
+        });
+        assert_eq!(
+            extract_dispatched_agent_name(&None, &Some(state)),
+            Some("explore".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_agent_name_args_takes_precedence_over_state() {
+        let args = serde_json::json!({ "subagent_type": "explorer" });
+        let state = serde_json::json!({
+            "input": { "subagent_type": "explore" }
+        });
+        assert_eq!(
+            extract_dispatched_agent_name(&Some(args), &Some(state)),
+            Some("explorer".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_agent_name_returns_none_for_missing_fields() {
+        let args = serde_json::json!({ "other_field": "value" });
+        assert_eq!(extract_dispatched_agent_name(&Some(args), &None), None);
+    }
+
+    #[test]
+    fn extract_agent_name_returns_none_for_none_args() {
+        assert_eq!(extract_dispatched_agent_name(&None, &None), None);
     }
 
     #[test]
