@@ -51,7 +51,7 @@ services/mcp/                MCP protocol bridge (stdio + SSE transport on :3001
 
 **CRUD:** `/api/artifacts`, `/api/tasks`, `/tools/pg_query` (read-only SQL)
 
-**MCP Tools (14):** search_code, get_function, get_callers, get_trait_impls, find_usages_of_type, get_module_tree, query_graph, find_calls_with_type, find_trait_impls_for_type, pg_query, aggregate_search, context_store, status_check, task_update
+**MCP Tools (15):** search_code, get_function, get_callers, get_trait_impls, find_usages_of_type, get_module_tree, query_graph, find_calls_with_type, find_trait_impls_for_type, pg_query, aggregate_search, context_store, status_check, task_update, consistency_check
 
 ## Ingestion Pipeline
 

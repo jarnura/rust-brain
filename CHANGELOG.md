@@ -26,12 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Validator runs migration and REST query endpoints
 - Full validation pipeline: extractor → preparator → executor → comparator
 
-#### MCP Tools (5 new tools)
+#### MCP Tools (6 new tools)
 - `pg_query` — Read-only SQL queries against Postgres
 - `context_store` — Persistent context management
 - `status_check` — Service health verification
 - `task_update` — Task status tracking
 - `aggregate_search` — Cross-database search (Qdrant + Postgres + Neo4j)
+- `consistency_check` — Cross-database consistency verification
 
 #### React Frontend/Playground
 - React Editor Playground with Vite + React 18 + Tailwind

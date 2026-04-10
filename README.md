@@ -168,7 +168,7 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 
 ## Agent Tool API
 
-### Code Intelligence (9 endpoints)
+### Code Intelligence (10 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
