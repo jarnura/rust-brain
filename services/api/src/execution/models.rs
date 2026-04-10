@@ -52,7 +52,7 @@ pub struct AgentEvent {
     pub id: i64,
     pub execution_id: Uuid,
     pub timestamp: DateTime<Utc>,
-    /// `reasoning` | `tool_call` | `file_edit` | `error` | `phase_change`
+    /// `reasoning` | `tool_call` | `file_edit` | `error` | `phase_change` | `agent_dispatch` | `container_kept_alive`
     pub event_type: String,
     pub content: serde_json::Value,
 }

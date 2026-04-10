@@ -419,7 +419,7 @@ async fn run_execution_inner(
                                     if let Err(e) = set_agent_phase(&pool, exec_id, &dispatched_agent).await {
                                         warn!(execution_id = %exec_id, error = %e, "Failed to set agent_phase in poll loop");
                                     }
-                                    if let Err(e) = insert_agent_event(
+                                    match insert_agent_event(
                                         &pool,
                                         exec_id,
                                         "agent_dispatch",
@@ -427,7 +427,12 @@ async fn run_execution_inner(
                                     )
                                     .await
                                     {
-                                        warn!(execution_id = %exec_id, error = %e, agent = %dispatched_agent, "Failed to insert agent_dispatch in poll loop");
+                                        Ok(ev) => {
+                                            info!(execution_id = %exec_id, event_id = ev.id, agent = %dispatched_agent, "Inserted agent_dispatch in poll loop");
+                                        }
+                                        Err(e) => {
+                                            warn!(execution_id = %exec_id, error = %e, agent = %dispatched_agent, "Failed to insert agent_dispatch in poll loop");
+                                        }
                                     }
                                     current_agent = dispatched_agent;
                                 }
@@ -659,7 +664,7 @@ async fn detect_agent_dispatches(
                         if let Err(e) = set_agent_phase(pool, execution_id, &agent).await {
                             warn!(execution_id = %execution_id, error = %e, "Failed to set agent_phase in detect pass");
                         }
-                        if let Err(e) = insert_agent_event(
+                        match insert_agent_event(
                             pool,
                             execution_id,
                             "agent_dispatch",
@@ -667,7 +672,12 @@ async fn detect_agent_dispatches(
                         )
                         .await
                         {
-                            warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_dispatch event");
+                            Ok(ev) => {
+                                info!(execution_id = %execution_id, event_id = ev.id, agent = %agent, "Inserted agent_dispatch event");
+                            }
+                            Err(e) => {
+                                warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_dispatch event");
+                            }
                         }
                         detected.push(agent);
                     }
