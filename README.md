@@ -168,11 +168,12 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 
 ## Agent Tool API
 
-### Code Intelligence (10 endpoints)
+### Code Intelligence (12 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /tools/search_semantic` | Natural language code search |
+| `POST /tools/search_docs` | Documentation semantic search |
 | `POST /tools/aggregate_search` | Cross-database aggregated search |
 | `GET /tools/get_function?fqn=` | Full function details with source |
 | `GET /tools/get_callers?fqn=` | Direct and transitive callers |
@@ -180,10 +181,11 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `GET /tools/find_usages_of_type?type_name=` | Where a type is used |
 | `GET /tools/get_module_tree?crate=` | Module hierarchy |
 | `POST /tools/query_graph` | Raw Cypher queries |
+| `POST /tools/pg_query` | Read-only SQL queries |
 | `GET /tools/find_calls_with_type?type_name=` | Call sites with specific type argument (turbofish) |
 | `GET /tools/find_trait_impls_for_type?type_name=` | All trait implementations for a given type |
 
-### Chat (6 endpoints)
+### Chat (10 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -192,7 +194,20 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `POST /tools/chat/send` | Send message to stream |
 | `POST /tools/chat/sessions` | Create session |
 | `GET /tools/chat/sessions` | List sessions |
+| `GET /tools/chat/sessions/:id` | Get session details |
 | `DELETE /tools/chat/sessions/:id` | Delete session |
+| `POST /tools/chat/sessions/:id/fork` | Fork a session |
+| `POST /tools/chat/sessions/:id/abort` | Abort streaming session |
+
+### System (5 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Service health with per-store counts |
+| `GET /metrics` | Prometheus metrics |
+| `GET /api/snapshot` | Snapshot info |
+| `GET /api/consistency` | Cross-store consistency check |
+| `GET /api/ingestion/progress` | Ingestion progress |
 
 ## Key Files
 

@@ -8,6 +8,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Phase 3: Cross-Store Intelligence
+
+##### Cross-Store Consistency Checker
+- `GET /api/consistency` endpoint with summary and full detail modes
+- `consistency_check` MCP tool for verifying data integrity across Postgres, Neo4j, and Qdrant
+- Per-store item counts with discrepancy detection and recommendations
+- ADR-004 documenting cross-store consistency design decisions
+
+##### Documentation Embeddings
+- `POST /tools/search_docs` endpoint for semantic documentation search
+- `search_docs` MCP tool for natural language doc queries
+- Doc embeddings collection (417 vectors across 30 documentation files)
+- `scripts/embed_docs.py` for automated documentation vectorization
+
+##### Native Agent Dispatch
+- Replaced hardcoded 4-phase pipeline with native OpenCode orchestrator dispatch
+- Dynamic agent timeline in playground showing real-time execution progress
+- Session replay with historical tool invocations and code diffs
+- ADR-003 documenting workspace isolation architecture
+
+##### Aggregated Health Endpoint
+- `GET /health` now returns per-store counts (Postgres items, Neo4j nodes/edges, Qdrant points)
+- Dependency health status with latency metrics
+- `GET /health/consistency` for quick consistency verification
+
+#### Phase 2: Production Readiness
+
+##### CI Pipeline
+- GitHub Actions workflow with cargo check, clippy, test, and build jobs
+- Automated formatting enforcement (cargo fmt --check)
+- Release build verification
+- Nightly Rust compatibility check
+
+##### E2E Test Suite
+- 10 comprehensive E2E tests spanning all endpoint classes
+- Semantic search, graph queries, Postgres queries, aggregate search, MCP tools, chat
+- Content-aware smoke tests for codebase identity validation
+- Integration test scripts for consistency, class routing, and full E2E suite
+- `docs/E2E_TEST_SUITE.md` with test specifications
+
+##### Documentation
+- `KNOWN_ISSUES.md` — comprehensive documentation of all known limitations and failure modes
+- `RELEASE_CHECKLIST.md` — systematic release verification protocol
+- `docs/INGESTION_PERFORMANCE.md` — baseline performance metrics and bottleneck analysis
+- `docs/COVERAGE_REPORT.md` — test coverage documentation
+- `docs/adr/ADR-003-workspace-isolation.md` — workspace isolation architecture
+- `docs/adr/ADR-004-cross-store-consistency.md` — cross-store consistency design
+
+##### Playground Improvements
+- Dynamic agent timeline replacing fixed phase progress bar
+- Session replay with historical tool invocations
+- Runtime hostname detection for API base URL
+- Fixed session replay showing empty tools and diff
+
+##### Ingestion Performance
+- Tokio-based async ingestion achieving 284K items indexed
+- Neo4j: 365K nodes, 366K edges
+- Qdrant: 284K vectors
+- Identified embedding stage as primary bottleneck (39 items/sec)
+- Memory-bounded streaming pipeline with bounded channels
+
+##### Execution Features
+- Configurable container keep-alive for debugging
+- OpenCode containers exposed via host port mapping
+- Git-based write workflow for developer agent
+- Rebuild-affected script for post-commit container updates
+
+### Changed
+
+- MCP tool count increased from 15 to 16 (added search_docs, consistency_check)
+- API route count increased to 49 unique paths
+- Documentation file count increased to 20 files
+- Increased chat timeout from 2 to 10 minutes for long-running conversations
+
 #### Workspace Management System
 - Workspace module with DB migrations and REST endpoints for project isolation
 - DockerClient for per-workspace volume orchestration
