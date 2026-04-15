@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Documentation Updates
+
+- `docs/api-spec.md` — Added 19 missing endpoints: workspace management (11), execution (2), consistency (2), validator (2), benchmarker (3), and search_docs
+- `docs/getting-started.md` — Removed broken reference to non-existent `tests/fixtures/sample_crate/`
+
 #### Phase 3: Cross-Store Intelligence
 
 ##### Cross-Store Consistency Checker

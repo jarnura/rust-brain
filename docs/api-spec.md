@@ -63,10 +63,57 @@ REST API for the rust-brain code intelligence platform. All endpoints are served
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET` | `/health` | Service health check |
+| `GET` | `/health/consistency` | Cross-store consistency health |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/api/snapshot` | Snapshot metadata |
 | `GET` | `/api/ingestion/progress` | Ingestion pipeline progress |
+| `GET` | `/api/consistency` | Cross-store consistency check |
 | `GET` | `/playground/*` | Playground static files |
+
+### Documentation Search
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/tools/search_docs` | Semantic search over documentation files |
+
+### Workspaces
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/workspaces` | Create workspace from GitHub repo |
+| `GET` | `/workspaces` | List all workspaces |
+| `GET` | `/workspaces/:id` | Get workspace details |
+| `DELETE` | `/workspaces/:id` | Archive workspace |
+| `GET` | `/workspaces/:id/files` | List workspace file tree |
+| `POST` | `/workspaces/:id/execute` | Start multi-agent execution |
+| `GET` | `/workspaces/:id/executions` | List executions for workspace |
+| `GET` | `/workspaces/:id/stream` | SSE stream of workspace events |
+| `GET` | `/workspaces/:id/diff` | Get uncommitted changes |
+| `POST` | `/workspaces/:id/commit` | Commit changes |
+| `POST` | `/workspaces/:id/reset` | Discard changes |
+
+### Executions
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/executions/:id` | Get execution status |
+| `GET` | `/executions/:id/events` | SSE stream of agent events |
+
+### Validator
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/validator/runs` | List validator runs for a PR |
+| `GET` | `/validator/runs/:id` | Get validator run details |
+
+### Benchmarker
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/benchmarker/suites` | List eval suites |
+| `GET` | `/benchmarker/runs` | List bench runs |
+| `POST` | `/benchmarker/runs` | Trigger a new bench run |
+| `GET` | `/benchmarker/runs/:id` | Get bench run details |
 
 ---
 
@@ -917,3 +964,555 @@ Update a task's status (with state transition validation), retry count, or error
 ```
 
 Valid state transitions: `pending → in_progress → done | failed`. Any state can transition to `escalated`.
+
+---
+
+## POST /tools/search_docs
+
+Semantic search over documentation files (not code). Queries the `doc_embeddings` Qdrant collection.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "query": "how to set up authentication",
+  "limit": 10,
+  "score_threshold": 0.7
+}
+```
+
+### Parameters
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `query` | string | Yes | - | Natural language query |
+| `limit` | integer | No | 10 | Maximum results to return |
+| `score_threshold` | float | No | - | Minimum similarity score (0.0–1.0) |
+
+### Response Schema
+
+```json
+{
+  "query": "how to set up authentication",
+  "total": 3,
+  "results": [
+    {
+      "source_file": "docs/mcp-setup.md",
+      "content_preview": "## Authentication Setup\n\nTo configure authentication...",
+      "score": 0.89
+    }
+  ]
+}
+```
+
+---
+
+## GET /api/consistency
+
+Cross-store consistency checker. Verifies data integrity across Postgres, Neo4j, and Qdrant.
+
+### Query Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `crate` | string | No | - | Specific crate to check (checks all if omitted) |
+| `detail` | string | No | `summary` | `summary` (counts only) or `full` (FQN sets) |
+
+### cURL Example
+
+```bash
+curl "http://localhost:8088/api/consistency?detail=summary"
+```
+
+### Response Schema
+
+```json
+{
+  "crate_name": "all",
+  "timestamp": "2026-04-10T15:30:00Z",
+  "store_counts": {
+    "postgres": 284123,
+    "neo4j": 365000,
+    "qdrant": 284123
+  },
+  "discrepancies": null,
+  "status": "consistent",
+  "recommendation": "All stores are in sync."
+}
+```
+
+---
+
+## GET /health/consistency
+
+Lightweight consistency health check for Prometheus monitoring. Returns aggregate status only.
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/health/consistency
+```
+
+### Response Schema
+
+```json
+{
+  "status": "healthy",
+  "postgres_count": 284123,
+  "neo4j_count": 365000,
+  "qdrant_count": 284123
+}
+```
+
+---
+
+## Workspace Management
+
+### POST /workspaces
+
+Create a new workspace from a GitHub repository. Returns `202 Accepted` immediately; cloning happens asynchronously.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "github_url": "https://github.com/juspay/hyperswitch",
+  "name": "hyperswitch-main"
+}
+```
+
+### Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `github_url` | string | Yes | GitHub HTTPS URL (`https://github.com/<owner>/<repo>`) |
+| `name` | string | No | Human-readable name (defaults to repo slug) |
+
+### Response Schema (202 Accepted)
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "cloning",
+  "message": "Workspace creation started. Poll GET /workspaces/:id for status."
+}
+```
+
+---
+
+### GET /workspaces
+
+List all non-archived workspaces.
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | integer | Max results (default 50) |
+
+### Response Schema
+
+```json
+{
+  "workspaces": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "hyperswitch-main",
+      "github_url": "https://github.com/juspay/hyperswitch",
+      "status": "ready",
+      "volume_name": "ws-550e8400",
+      "created_at": "2026-04-10T10:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### GET /workspaces/:id
+
+Get a single workspace by ID.
+
+### Response Schema
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "hyperswitch-main",
+  "github_url": "https://github.com/juspay/hyperswitch",
+  "status": "ready",
+  "volume_name": "ws-550e8400",
+  "created_at": "2026-04-10T10:00:00Z"
+}
+```
+
+---
+
+### DELETE /workspaces/:id
+
+Archive a workspace and clean up associated Docker volumes. Returns `204 No Content` on success.
+
+---
+
+### GET /workspaces/:id/files
+
+List the file tree for a workspace. Returns a recursive directory structure compatible with react-treeview.
+
+### Response Schema
+
+```json
+[
+  {
+    "name": "src",
+    "path": "src",
+    "is_dir": true,
+    "children": [
+      {
+        "name": "main.rs",
+        "path": "src/main.rs",
+        "is_dir": false,
+        "children": []
+      }
+    ]
+  }
+]
+```
+
+---
+
+### POST /workspaces/:id/execute
+
+Start a multi-agent execution in a workspace. Returns `202 Accepted` immediately.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "prompt": "Add unit tests for the payment processing module",
+  "branch_name": "feature/payment-tests",
+  "timeout_secs": 7200
+}
+```
+
+### Parameters
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `prompt` | string | Yes | - | Natural-language task description |
+| `branch_name` | string | No | auto-generated | Git branch for commits |
+| `timeout_secs` | integer | No | 7200 | Execution timeout in seconds |
+
+### Response Schema (202 Accepted)
+
+```json
+{
+  "id": "660e8400-e29b-41d4-a716-446655440000",
+  "status": "pending",
+  "message": "Execution started. Stream GET /executions/:id/events for live updates."
+}
+```
+
+---
+
+### GET /workspaces/:id/executions
+
+List all executions for a workspace.
+
+### Response Schema
+
+```json
+{
+  "executions": [
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440000",
+      "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "completed",
+      "prompt": "Add unit tests...",
+      "branch_name": "feature/payment-tests",
+      "created_at": "2026-04-10T10:00:00Z",
+      "completed_at": "2026-04-10T11:30:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### GET /executions/:id
+
+Get execution status and details.
+
+### Response Schema
+
+```json
+{
+  "id": "660e8400-e29b-41d4-a716-446655440000",
+  "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "running",
+  "prompt": "Add unit tests...",
+  "branch_name": "feature/payment-tests",
+  "container_id": "abc123def456",
+  "session_id": "opencode-session-xyz",
+  "runtime_info": {
+    "current_phase": "implementation",
+    "agent": "developer"
+  },
+  "created_at": "2026-04-10T10:00:00Z"
+}
+```
+
+### Status Values
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Execution queued, waiting for container |
+| `running` | Agents actively working |
+| `completed` | Finished successfully |
+| `failed` | Terminated with error |
+| `timeout` | Exceeded timeout limit |
+
+---
+
+### GET /executions/:id/events
+
+SSE (Server-Sent Events) stream of agent events during execution. Useful for real-time UI updates.
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `agent_dispatch` | Agent spawned or transitioned |
+| `tool_invocation` | Agent called a tool |
+| `code_diff` | Code change detected |
+| `phase_change` | Execution phase transitioned |
+| `container_kept_alive` | Container kept alive for debugging |
+
+---
+
+### GET /workspaces/:id/stream
+
+SSE stream combining execution events with workspace file changes.
+
+---
+
+### GET /workspaces/:id/diff
+
+Get the git diff for uncommitted changes in a workspace.
+
+### Response Schema
+
+```json
+{
+  "diff": "diff --git a/src/main.rs b/src/main.rs\n...",
+  "stats": {
+    "files_changed": 3,
+    "insertions": 45,
+    "deletions": 12
+  }
+}
+```
+
+---
+
+### POST /workspaces/:id/commit
+
+Commit current changes in the workspace.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "message": "Add unit tests for payment module",
+  "author_name": "Developer",
+  "author_email": "dev@example.com"
+}
+```
+
+---
+
+### POST /workspaces/:id/reset
+
+Reset workspace to clean state (discard uncommitted changes).
+
+---
+
+## Validator Endpoints
+
+### GET /validator/runs
+
+List validator runs for a specific PR.
+
+### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo` | string | Yes | GitHub repo in `owner/repo` form |
+| `pr` | integer | Yes | Pull request number |
+
+### Response Schema
+
+```json
+{
+  "runs": [
+    {
+      "id": "770e8400-e29b-41d4-a716-446655440000",
+      "repo": "juspay/hyperswitch",
+      "pr_number": 42,
+      "run_index": 1,
+      "composite_score": 0.85,
+      "pass": true,
+      "inverted": false,
+      "created_at": "2026-04-10T10:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### GET /validator/runs/:id
+
+Get full detail for a single validator run.
+
+### Response Schema
+
+```json
+{
+  "id": "770e8400-e29b-41d4-a716-446655440000",
+  "repo": "juspay/hyperswitch",
+  "pr_number": 42,
+  "run_index": 1,
+  "composite_score": 0.85,
+  "pass": true,
+  "inverted": false,
+  "dimension_scores": {
+    "correctness": 0.9,
+    "completeness": 0.8,
+    "code_quality": 0.85
+  },
+  "tokens_used": 15000,
+  "cost_usd": 0.12,
+  "created_at": "2026-04-10T10:00:00Z"
+}
+```
+
+---
+
+## Benchmarker Endpoints
+
+### GET /benchmarker/suites
+
+List all eval suites with case counts.
+
+### Response Schema
+
+```json
+{
+  "suites": [
+    {
+      "suite_name": "default",
+      "case_count": 25
+    }
+  ]
+}
+```
+
+---
+
+### GET /benchmarker/runs
+
+List bench runs with optional filters.
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `suite` | string | Filter by suite name |
+| `status` | string | Filter by status (`running`, `completed`, `failed`) |
+| `limit` | integer | Max results (default 50, max 200) |
+
+### Response Schema
+
+```json
+{
+  "runs": [
+    {
+      "id": "880e8400-e29b-41d4-a716-446655440000",
+      "suite_name": "default",
+      "release_tag": "v0.3.0",
+      "status": "completed",
+      "total_cases": 25,
+      "completed_cases": 25,
+      "pass_count": 22,
+      "pass_rate": 0.88,
+      "mean_composite": 0.82,
+      "total_cost_usd": 3.45,
+      "started_at": "2026-04-10T10:00:00Z",
+      "completed_at": "2026-04-10T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### POST /benchmarker/runs
+
+Trigger a new bench run.
+
+### Request
+
+**Content-Type:** `application/json`
+
+```json
+{
+  "suite_name": "default",
+  "release_tag": "v0.3.0"
+}
+```
+
+---
+
+### GET /benchmarker/runs/:id
+
+Get full detail for a bench run including per-case results.
+
+### Response Schema
+
+```json
+{
+  "id": "880e8400-e29b-41d4-a716-446655440000",
+  "suite_name": "default",
+  "release_tag": "v0.3.0",
+  "status": "completed",
+  "total_cases": 25,
+  "completed_cases": 25,
+  "pass_count": 22,
+  "pass_rate": 0.88,
+  "mean_composite": 0.82,
+  "total_cost_usd": 3.45,
+  "started_at": "2026-04-10T10:00:00Z",
+  "completed_at": "2026-04-10T12:00:00Z",
+  "case_results": [
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440000",
+      "eval_case_id": "case-001",
+      "validator_run_id": "770e8400-e29b-41d4-a716-446655440000",
+      "run_index": 1,
+      "composite": 0.85,
+      "pass": true,
+      "cost_usd": 0.12,
+      "created_at": "2026-04-10T10:05:00Z"
+    }
+  ]
+}
+```

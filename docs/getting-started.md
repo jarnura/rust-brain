@@ -189,10 +189,7 @@ Use this if you want to ingest your own crate instead of using the snapshot.
 ### Prepare a Rust Crate
 
 ```bash
-# Option 1: Use a sample crate (provided in tests/fixtures)
-ls tests/fixtures/sample_crate/
-
-# Option 2: Use any local Rust crate
+# Use any local Rust crate
 # Ensure it compiles with `cargo check`
 ```
 

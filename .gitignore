@@ -25,3 +25,6 @@ services/api/static/test.html
 
 # TypeScript build artifacts
 *.tsbuildinfo
+
+# OpenCode local state
+.opencode/
