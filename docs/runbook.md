@@ -1037,6 +1037,120 @@ docker network inspect rustbrain_rustbrain-net
 docker-compose up -d --force-recreate neo4j
 ```
 
+## Qdrant Workspace Migration
+
+One-time migration of Qdrant data from global collections to per-workspace collections, as defined in [ADR-005](./adr/ADR-005-multi-tenancy-physical-isolation.md).
+
+### Overview
+
+Migrates data from 3 global collections (`code_embeddings`, `doc_embeddings`, `crate_docs`) into per-workspace collections following the naming convention `ws_<12hex>_<collection_type>`. The `external_docs` collection stays global (not workspace-scoped per ADR-005).
+
+### Prerequisites
+
+- Qdrant running and healthy on `QDRANT_HOST` (default: `http://localhost:6333`)
+- Postgres running with the `workspaces` table populated
+- `curl` and `jq` available on the host
+- `psql` available (or run from inside the Postgres container)
+
+### Running the Migration
+
+```bash
+# Dry run — preview what would happen without writing anything
+./scripts/migrate-qdrant-workspace.sh --dry-run
+
+# Full migration (does NOT delete source collections)
+./scripts/migrate-qdrant-workspace.sh
+
+# Migration with source collection deletion after verification
+./scripts/migrate-qdrant-workspace.sh --delete-source
+
+# Custom batch size (default: 500) for large collections
+./scripts/migrate-qdrant-workspace.sh --batch-size 1000
+```
+
+### What the Script Does
+
+1. **Build crate→workspace mapping** — queries Postgres `workspaces` table and each workspace schema's `source_files` to build a `crate_name → workspace_schema_name` routing table
+2. **Create per-workspace collections** — for each workspace that has data, creates `ws_<12hex>_code_embeddings`, `ws_<12hex>_doc_embeddings`, `ws_<12hex>_crate_docs` with 2560-dim cosine similarity
+3. **Scroll + upsert data** — reads points from global collections in batches, adds `workspace_id` to payload, upserts into the correct workspace collection
+4. **Orphan handling** — points with no workspace match go to `ws_default_<collection_type>` collections
+5. **Verification** — compares source and target point counts per collection
+6. **Optional cleanup** — with `--delete-source`, removes global collections after successful verification
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_HOST` | `http://localhost:6333` | Qdrant REST API endpoint |
+| `DATABASE_URL` | (required) | Postgres connection string for workspace mapping |
+| `QDRANT_DEFAULT_WORKSPACE_ID` | `default` | Workspace ID for orphan data with no mapping |
+| `EMBEDDING_DIMENSIONS` | `2560` | Vector dimensions for new collections |
+
+### Post-Migration Verification
+
+```bash
+# List all collections — should see ws_* collections alongside global ones
+curl -s http://localhost:6333/collections | jq '.result.collections[].name'
+
+# Check point count in a workspace collection
+curl -s http://localhost:6333/collections/ws_550e8400e29b_code_embeddings | jq '.result.points_count'
+
+# Verify workspace_id is present in migrated points
+curl -s -X POST http://localhost:6333/collections/ws_550e8400e29b_code_embeddings/points/scroll \
+  -H 'Content-Type: application/json' \
+  -d '{"limit": 1, "with_payload": true}' | jq '.result.points[0].payload.workspace_id'
+```
+
+### Rollback
+
+The migration is additive — it creates new collections without modifying global ones. To rollback:
+
+1. Delete the per-workspace collections:
+   ```bash
+   # List ws_* collections
+   curl -s http://localhost:6333/collections | jq -r '.result.collections[].name' | grep '^ws_'
+
+   # Delete each one
+   for col in $(curl -s http://localhost:6333/collections | jq -r '.result.collections[].name' | grep '^ws_'); do
+     curl -X DELETE "http://localhost:6333/collections/$col"
+   done
+   ```
+
+2. The global collections remain untouched unless `--delete-source` was used.
+
+### Troubleshooting
+
+**Issue: "No workspaces found in Postgres"**
+
+The migration requires workspace records in the `workspaces` table. Create workspaces first via the API:
+```bash
+curl -X POST http://localhost:8088/workspaces \
+  -H 'Content-Type: application/json' \
+  -d '{"github_url": "https://github.com/org/repo"}'
+```
+
+**Issue: "Qdrant health check failed"**
+
+Verify Qdrant is running and `QDRANT_HOST` is correct:
+```bash
+curl -s http://localhost:6333/healthz
+```
+
+**Issue: "DATABASE_URL not set"**
+
+Set the connection string for the Postgres instance containing the `workspaces` table:
+```bash
+export DATABASE_URL=postgresql://rustbrain:password@localhost:5432/rustbrain
+```
+
+**Issue: Large collection migration is slow**
+
+Increase batch size and check Qdrant resource usage:
+```bash
+./scripts/migrate-qdrant-workspace.sh --batch-size 2000
+docker stats rustbrain-qdrant
+```
+
 ## Environment Variables
 
 Key variables in `.env`:
