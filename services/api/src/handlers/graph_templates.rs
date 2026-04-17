@@ -284,11 +284,169 @@ pub fn resolve_with_workspace(
             ))
         }
 
+        "get_trait_impls_api" => {
+            let trait_name = require_str(parameters, &["trait_name"])?;
+            Ok((
+                format!(
+                    "MATCH (impl:Impl:{ws})-[:IMPLEMENTS]->(trait:Trait:{ws}) \
+                     WHERE trait.name = $trait_name OR trait.fqn CONTAINS $trait_name OR trait.fqn = $trait_name \
+                     RETURN impl.fqn AS impl_fqn, impl.name AS impl_name, trait.name AS trait_name, trait.fqn AS trait_fqn, \
+                     impl.start_line AS start_line \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"trait_name": trait_name, "limit": limit}),
+            ))
+        }
+
+        "find_usages_of_type" => {
+            let type_name = require_str(parameters, &["type_name"])?;
+            let fqn_suffix = format!("::{}", type_name);
+            Ok((
+                format!(
+                    "MATCH (n:{ws})-[:USES_TYPE]->(t:{ws}) \
+                     WHERE (t:Struct OR t:Enum OR t:Trait OR t:TypeAlias OR t:Type) \
+                     AND (t.name = $type_name OR t.fqn = $type_name OR t.fqn ENDS WITH $fqn_suffix) \
+                     RETURN n.fqn AS fqn, n.name AS name, labels(n)[0] AS kind, n.file_path AS file_path, n.start_line AS line \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"type_name": type_name, "fqn_suffix": fqn_suffix, "limit": limit}),
+            ))
+        }
+
+        "get_module_tree" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                format!(
+                    "MATCH (m:Module:{ws}) \
+                     WHERE split(m.fqn, '::')[0] = $crate_name \
+                     WITH collect(m) AS all_modules \
+                     OPTIONAL MATCH (parent:Module:{ws})-[:CONTAINS]->(child:Module:{ws}) \
+                     WHERE split(parent.fqn, '::')[0] = $crate_name AND split(child.fqn, '::')[0] = $crate_name \
+                     WITH all_modules, collect({{parent: parent.fqn, child: child.fqn}}) AS module_hierarchy \
+                     OPTIONAL MATCH (m:Module:{ws})-[:CONTAINS]->(item:{ws}) \
+                     WHERE split(m.fqn, '::')[0] = $crate_name AND NOT item:Module \
+                     WITH all_modules, module_hierarchy, \
+                     collect({{module_fqn: m.fqn, name: item.name, kind: labels(item)[0], visibility: item.visibility}}) AS all_items \
+                     RETURN all_modules, module_hierarchy, all_items"
+                ),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        "get_callers" => {
+            let fqn = require_str(parameters, &["fqn"])?;
+            let depth = clamp_depth(parameters);
+            Ok((
+                format!(
+                    "MATCH (caller:Function:{ws})-[:CALLS*1..{depth}]->(callee:Function:{ws} {{fqn: $fqn}}) \
+                     WHERE caller.fqn <> $fqn \
+                     RETURN DISTINCT caller.fqn AS fqn, caller.name AS name, caller.file_path AS file_path, \
+                     caller.start_line AS line \
+                     ORDER BY fqn \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"fqn": fqn, "limit": limit}),
+            ))
+        }
+
+        "get_callers_for_impl" => {
+            let prefix = require_str(parameters, &["prefix"])?;
+            let depth = clamp_depth(parameters);
+            Ok((
+                format!(
+                    "MATCH (method:Function:{ws}) \
+                     WHERE method.fqn STARTS WITH $prefix \
+                     WITH method \
+                     MATCH (caller:Function:{ws})-[:CALLS*1..{depth}]->(method) \
+                     WHERE NOT caller.fqn STARTS WITH $prefix \
+                     RETURN DISTINCT caller.fqn AS fqn, caller.name AS name, \
+                     caller.file_path AS file_path, caller.start_line AS line \
+                     ORDER BY fqn \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"prefix": prefix, "limit": limit}),
+            ))
+        }
+
+        "get_callees_for_impl" => {
+            let prefix = require_str(parameters, &["prefix"])?;
+            Ok((
+                format!(
+                    "MATCH (method:Function:{ws}) \
+                     WHERE method.fqn STARTS WITH $prefix \
+                     WITH method \
+                     MATCH (method)-[:CALLS]->(callee:Function:{ws}) \
+                     WHERE NOT callee.fqn STARTS WITH $prefix \
+                     RETURN DISTINCT callee.fqn AS fqn, callee.name AS name \
+                     ORDER BY name \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"prefix": prefix, "limit": limit}),
+            ))
+        }
+
+        "get_callees" => {
+            let fqn = require_str(parameters, &["fqn"])?;
+            Ok((
+                format!(
+                    "MATCH (caller:Function:{ws} {{fqn: $fqn}})-[:CALLS]->(callee:Function:{ws}) \
+                     RETURN callee.fqn AS fqn, callee.name AS name \
+                     ORDER BY name"
+                ),
+                serde_json::json!({"fqn": fqn}),
+            ))
+        }
+
+        "consistency_fqns" => Ok((
+            format!(
+                "MATCH (n:Function:{ws}) RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Struct:{ws}) RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Enum:{ws}) RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Trait:{ws}) RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Impl:{ws}) RETURN n.fqn AS fqn \
+                     UNION MATCH (n:TypeAlias:{ws}) RETURN n.fqn AS fqn"
+            ),
+            serde_json::json!({}),
+        )),
+
+        "consistency_fqns_filtered" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                format!(
+                    "MATCH (n:Function:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Struct:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Enum:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Trait:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN n.fqn AS fqn \
+                     UNION MATCH (n:Impl:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN n.fqn AS fqn \
+                     UNION MATCH (n:TypeAlias:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN n.fqn AS fqn"
+                ),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        "consistency_count" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                format!(
+                    "MATCH (n:Function:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN count(n) AS count \
+                     UNION MATCH (n:Struct:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN count(n) AS count \
+                     UNION MATCH (n:Enum:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN count(n) AS count \
+                     UNION MATCH (n:Trait:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN count(n) AS count \
+                     UNION MATCH (n:Impl:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN count(n) AS count \
+                     UNION MATCH (n:TypeAlias:{ws}) WHERE split(n.fqn, '::')[0] = $crate_name RETURN count(n) AS count"
+                ),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
         _ => Err(AppError::BadRequest(format!(
             "Unknown query template: '{}'. Available: find_functions_by_name, \
              find_callers, find_callees, find_trait_implementations, find_by_fqn, \
              find_neighbors, find_nodes_by_label, find_module_contents, count_by_label, \
-             find_crate_overview, find_crate_dependencies, find_crate_dependents",
+             find_crate_overview, find_crate_dependencies, find_crate_dependents, \
+             get_trait_impls_api, find_usages_of_type, get_module_tree, \
+             get_callers, get_callers_for_impl, get_callees_for_impl, get_callees, \
+             consistency_fqns, consistency_fqns_filtered, consistency_count",
             query_name,
         ))),
     }
@@ -375,5 +533,186 @@ mod tests {
         )
         .unwrap();
         assert!(cypher.contains("Struct:Workspace_ws"));
+    }
+
+    #[test]
+    fn resolve_get_trait_impls_api() {
+        let (cypher, params) = resolve_with_workspace(
+            "get_trait_impls_api",
+            &params(&[("trait_name", serde_json::json!("Clone"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("Impl:Workspace_ws"));
+        assert!(cypher.contains("Trait:Workspace_ws"));
+        assert_eq!(params["trait_name"], "Clone");
+    }
+
+    #[test]
+    fn resolve_find_usages_of_type() {
+        let (cypher, params) = resolve_with_workspace(
+            "find_usages_of_type",
+            &params(&[("type_name", serde_json::json!("String"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("USES_TYPE"));
+        assert!(cypher.contains(":Workspace_ws"));
+        assert_eq!(params["type_name"], "String");
+        assert_eq!(params["fqn_suffix"], "::String");
+    }
+
+    #[test]
+    fn resolve_get_module_tree() {
+        let (cypher, params) = resolve_with_workspace(
+            "get_module_tree",
+            &params(&[("crate_name", serde_json::json!("my_crate"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("Module:Workspace_ws"));
+        assert!(cypher.contains("CONTAINS"));
+        assert_eq!(params["crate_name"], "my_crate");
+    }
+
+    #[test]
+    fn resolve_get_callers() {
+        let (cypher, params) = resolve_with_workspace(
+            "get_callers",
+            &params(&[
+                ("fqn", serde_json::json!("crate::func")),
+                ("depth", serde_json::json!(2)),
+            ]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("Function:Workspace_ws"));
+        assert!(cypher.contains("CALLS*1..2"));
+        assert_eq!(params["fqn"], "crate::func");
+    }
+
+    #[test]
+    fn resolve_get_callers_for_impl() {
+        let (cypher, params) = resolve_with_workspace(
+            "get_callers_for_impl",
+            &params(&[
+                ("prefix", serde_json::json!("crate::Type::")),
+                ("depth", serde_json::json!(1)),
+            ]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("STARTS WITH $prefix"));
+        assert!(cypher.contains("CALLS*1..1"));
+        assert_eq!(params["prefix"], "crate::Type::");
+    }
+
+    #[test]
+    fn resolve_get_callees_for_impl() {
+        let (cypher, params) = resolve_with_workspace(
+            "get_callees_for_impl",
+            &params(&[("prefix", serde_json::json!("crate::Type::"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("STARTS WITH $prefix"));
+        assert!(cypher.contains("[:CALLS]->"));
+        assert_eq!(params["prefix"], "crate::Type::");
+    }
+
+    #[test]
+    fn resolve_get_callees() {
+        let (cypher, params) = resolve_with_workspace(
+            "get_callees",
+            &params(&[("fqn", serde_json::json!("crate::func"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("{fqn: $fqn}"));
+        assert!(cypher.contains("[:CALLS]->"));
+        assert_eq!(params["fqn"], "crate::func");
+    }
+
+    #[test]
+    fn resolve_consistency_fqns() {
+        let (cypher, _) =
+            resolve_with_workspace("consistency_fqns", &HashMap::new(), "Workspace_ws").unwrap();
+        assert!(cypher.contains("Function:Workspace_ws"));
+        assert!(cypher.contains("Struct:Workspace_ws"));
+        assert!(cypher.contains("UNION"));
+    }
+
+    #[test]
+    fn resolve_consistency_fqns_filtered() {
+        let (cypher, params) = resolve_with_workspace(
+            "consistency_fqns_filtered",
+            &params(&[("crate_name", serde_json::json!("api"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("split(n.fqn, '::')[0] = $crate_name"));
+        assert_eq!(params["crate_name"], "api");
+    }
+
+    #[test]
+    fn resolve_consistency_count() {
+        let (cypher, params) = resolve_with_workspace(
+            "consistency_count",
+            &params(&[("crate_name", serde_json::json!("api"))]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("count(n)"));
+        assert_eq!(params["crate_name"], "api");
+    }
+
+    #[test]
+    fn resolve_get_trait_impls_api_missing_param() {
+        let err = resolve_with_workspace("get_trait_impls_api", &HashMap::new(), "Workspace_ws")
+            .unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_find_usages_of_type_missing_param() {
+        let err = resolve_with_workspace("find_usages_of_type", &HashMap::new(), "Workspace_ws")
+            .unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_get_module_tree_missing_param() {
+        let err =
+            resolve_with_workspace("get_module_tree", &HashMap::new(), "Workspace_ws").unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_get_callers_missing_fqn() {
+        let err =
+            resolve_with_workspace("get_callers", &HashMap::new(), "Workspace_ws").unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_get_callees_missing_fqn() {
+        let err =
+            resolve_with_workspace("get_callees", &HashMap::new(), "Workspace_ws").unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_consistency_fqns_filtered_missing_crate() {
+        let err =
+            resolve_with_workspace("consistency_fqns_filtered", &HashMap::new(), "Workspace_ws")
+                .unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_consistency_count_missing_crate() {
+        let err = resolve_with_workspace("consistency_count", &HashMap::new(), "Workspace_ws")
+            .unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
     }
 }

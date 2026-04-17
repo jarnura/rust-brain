@@ -179,24 +179,21 @@ pub async fn get_trait_impls(
     debug!("Get trait impls for: {}", query.trait_name);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
-    let ws_label = client.workspace().workspace_label();
 
-    let cypher = format!(
-        r#"
-        MATCH (impl:Impl:{ws_label})-[:IMPLEMENTS]->(trait:Trait:{ws_label})
-        WHERE trait.name = $trait_name OR trait.fqn CONTAINS $trait_name OR trait.fqn = $trait_name
-        RETURN impl.fqn as impl_fqn, impl.name as impl_name, trait.name as trait_name, trait.fqn as trait_fqn,
-               impl.start_line as start_line
-        LIMIT $limit
-        "#
+    let mut params = std::collections::HashMap::new();
+    params.insert(
+        "trait_name".to_string(),
+        serde_json::json!(query.trait_name),
     );
+    params.insert("limit".to_string(), serde_json::json!(query.limit as i64));
 
-    let params = serde_json::json!({
-        "trait_name": query.trait_name,
-        "limit": query.limit as i32,
-    });
+    let (cypher, query_params) = super::graph_templates::resolve_with_workspace(
+        "get_trait_impls_api",
+        &params,
+        &client.workspace().workspace_label(),
+    )?;
 
-    let results = client.execute_query(&cypher, params).await?;
+    let results = client.execute_query(&cypher, query_params).await?;
 
     let implementations = results
         .into_iter()
@@ -243,27 +240,18 @@ pub async fn find_usages_of_type(
     debug!("Find usages of type: {}", query.type_name);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
-    let ws_label = client.workspace().workspace_label();
 
-    let cypher = format!(
-        r#"
-        MATCH (n:{ws_label})-[:USES_TYPE]->(t:{ws_label})
-        WHERE (t:Struct OR t:Enum OR t:Trait OR t:TypeAlias OR t:Type)
-        AND (t.name = $type_name OR t.fqn = $type_name OR t.fqn ENDS WITH $fqn_suffix)
-        RETURN n.fqn as fqn, n.name as name, labels(n)[0] as kind, n.file_path as file_path, n.start_line as line
-        LIMIT $limit
-        "#
-    );
+    let mut params = std::collections::HashMap::new();
+    params.insert("type_name".to_string(), serde_json::json!(query.type_name));
+    params.insert("limit".to_string(), serde_json::json!(query.limit as i64));
 
-    let fqn_suffix = format!("::{}", query.type_name);
+    let (cypher, query_params) = super::graph_templates::resolve_with_workspace(
+        "find_usages_of_type",
+        &params,
+        &client.workspace().workspace_label(),
+    )?;
 
-    let params = serde_json::json!({
-        "type_name": query.type_name,
-        "fqn_suffix": fqn_suffix,
-        "limit": query.limit as i32,
-    });
-
-    let results = client.execute_query(&cypher, params).await?;
+    let results = client.execute_query(&cypher, query_params).await?;
 
     let usages = results
         .into_iter()
@@ -302,35 +290,20 @@ pub async fn get_module_tree(
     debug!("Get module tree for crate: {}", query.crate_name);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
-    let ws_label = client.workspace().workspace_label();
 
-    let cypher = format!(
-        r#"
-        // Get all modules for this crate (crate name is first part of FQN)
-        MATCH (m:Module:{ws_label})
-        WHERE split(m.fqn, '::')[0] = $crate_name
-        WITH collect(m) as all_modules
-
-        // Get all parent-child module relationships within this crate
-        OPTIONAL MATCH (parent:Module:{ws_label})-[:CONTAINS]->(child:Module:{ws_label})
-        WHERE split(parent.fqn, '::')[0] = $crate_name AND split(child.fqn, '::')[0] = $crate_name
-        WITH all_modules, collect({{parent: parent.fqn, child: child.fqn}}) as module_hierarchy
-
-        // Get items for each module (using CONTAINS, not DEFINES)
-        OPTIONAL MATCH (m:Module:{ws_label})-[:CONTAINS]->(item:{ws_label})
-        WHERE split(m.fqn, '::')[0] = $crate_name AND NOT item:Module
-        WITH all_modules, module_hierarchy,
-             collect({{module_fqn: m.fqn, name: item.name, kind: labels(item)[0], visibility: item.visibility}}) as all_items
-
-        RETURN all_modules, module_hierarchy, all_items
-        "#
+    let mut params = std::collections::HashMap::new();
+    params.insert(
+        "crate_name".to_string(),
+        serde_json::json!(query.crate_name),
     );
 
-    let params = serde_json::json!({
-        "crate_name": query.crate_name,
-    });
+    let (cypher, query_params) = super::graph_templates::resolve_with_workspace(
+        "get_module_tree",
+        &params,
+        &client.workspace().workspace_label(),
+    )?;
 
-    let results = client.execute_query(&cypher, params).await?;
+    let results = client.execute_query(&cypher, query_params).await?;
 
     let root = if let Some(first) = results.first() {
         // Parse all modules

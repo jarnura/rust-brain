@@ -306,13 +306,54 @@ jobs:
       # Neo4j: graph store (workspace labels filter data)
       # Qdrant: vector store (per-workspace collections)
 
+      - name: Install PostgreSQL client
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
       - name: Verify isolation test compilation
         if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
         run: |
           cargo test --test workspace_neo4j_isolation --no-run
           cargo test --test workspace_e2e_isolation --no-run
+          cargo build --bin rustbrain-api
 
-      - name: Run workspace isolation tests
+      - name: Initialize database schema
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
+        env:
+          DATABASE_URL: postgresql://rustbrain:rustbrain_ci@localhost:5432/rustbrain
+        run: |
+          psql "$DATABASE_URL" -f scripts/init-db.sql
+          # Apply API-specific migrations
+          for f in services/api/migrations/*.sql; do
+            psql "$DATABASE_URL" -f "$f"
+          done
+
+      - name: Start API server
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
+        env:
+          DATABASE_URL: postgresql://rustbrain:rustbrain_ci@localhost:5432/rustbrain
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: rustbrain_ci_2024
+          QDRANT_HOST: http://localhost:6333
+          OLLAMA_HOST: http://localhost:11434
+          API_PORT: "8088"
+          RUST_LOG: info
+        run: |
+          cargo run --bin rustbrain-api &
+          API_PID=$!
+          echo "API_PID=$API_PID" >> $GITHUB_ENV
+          # Wait for the API server to become healthy (up to 60s)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8088/health > /dev/null 2>&1; then
+              echo "API server is healthy after ${i}s"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8088/health || (echo "API server did not become healthy" && exit 1)
+
+      - name: Run workspace isolation tests (unit + contract)
         if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
         env:
           DATABASE_URL: postgresql://rustbrain:rustbrain_ci@localhost:5432/rustbrain
@@ -323,12 +364,40 @@ jobs:
           RUST_LOG: debug
           RUST_BACKTRACE: 1
         run: |
-          # First run non-ignored tests (should always pass)
+          # Run non-ignored unit tests (should always pass)
           cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation 2>&1 | tee test-output.txt
-          # Then run ignored tests (will fail until implementation lands)
-          # Uncomment the line below when WorkspaceGraphClient + label injection are implemented:
-          # cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored 2>&1 | tee -a test-output.txt
+
+          # Run contract tests (error-path: missing/invalid workspace header)
+          # These only need the API server — no workspace data required
+          cargo test --test workspace_neo4j_isolation -- \
+            test_query_graph_without_workspace_returns_400 \
+            test_query_graph_with_invalid_workspace_returns_404 \
+            test_get_module_tree_without_workspace_returns_400 \
+            --include-ignored 2>&1 | tee -a test-output.txt
+
+      - name: Run workspace isolation tests (full integration)
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
+        env:
+          DATABASE_URL: postgresql://rustbrain:rustbrain_ci@localhost:5432/rustbrain
+          NEO4J_URL: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: rustbrain_ci_2024
+          QDRANT_HOST: http://localhost:6333
+          RUST_LOG: debug
+          RUST_BACKTRACE: 1
+        run: |
+          # Full integration tests require Docker-in-Docker for workspace provisioning.
+          # These will fail on standard CI runners but pass on self-hosted runners.
+          # Run with continue-on-error until self-hosted runner is available.
+          cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored 2>&1 | tee -a test-output.txt || true
         continue-on-error: true
+
+      - name: Stop API server
+        if: always()
+        run: |
+          if [ -n "$API_PID" ]; then
+            kill $API_PID 2>/dev/null || true
+          fi
 
       - name: Upload test artifacts on failure
         if: failure() && (steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true')

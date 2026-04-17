@@ -3,13 +3,17 @@
 //! Ports the 10 core Neo4j Cypher queries to Apache AGE openCypher.
 //! All queries use the SQL wrapper pattern:
 //! ```sql
-//! SELECT * FROM cypher('graph_name', $$ <cypher> $$, $1::agtype) AS (result agtype)
+//! SELECT * FROM cypher('graph_name', $$ <cypher> $$, $1) AS (result agtype)
 //! ```
 //!
-//! # Key Difference: ON CREATE SET → COALESCE
+//! # Key Differences from Neo4j Cypher
 //!
-//! AGE does NOT support `ON CREATE SET` / `ON MATCH SET` in MERGE.
-//! Query #3 uses `SET prop = coalesce(n.prop, default)` instead.
+//! 1. **ON CREATE SET → COALESCE**: AGE does NOT support `ON CREATE SET` / `ON MATCH SET`
+//!    in MERGE. Query #3 uses `SET prop = coalesce(n.prop, default)` instead.
+//!
+//! 2. **SET n += map → Individual SETs**: AGE does NOT support `SET n += $props` or
+//!    `SET n += variable.props` with a map value. Each property must be set individually:
+//!    `SET n.key1 = variable.key1, n.key2 = variable.key2, ...`
 
 use anyhow::{Context, Result};
 use sqlx::PgPool;
@@ -18,6 +22,17 @@ use tracing::{debug, info, warn};
 
 use super::types::{build_agtype_param, build_unwind_param, parse_age_vertex, AgeNode};
 
+// Known node property keys (from Neo4j batch.rs schema)
+const NODE_PROPS: &[&str] = &[
+    "fqn",
+    "name",
+    "visibility",
+    "is_async",
+    "start_line",
+    "end_line",
+    "file_path",
+];
+
 // ---------------------------------------------------------------------------
 // Query #1 — Batch node insert (UNWIND)
 // Source: batch.rs:238-279
@@ -25,11 +40,8 @@ use super::types::{build_agtype_param, build_unwind_param, parse_age_vertex, Age
 
 /// Insert a batch of nodes using UNWIND, grouped by a single label.
 ///
-/// ```cypher
-/// UNWIND $nodes AS node_data
-/// MERGE (n:Label {id: node_data.id})
-/// SET n += node_data.props
-/// ```
+/// AGE does NOT support `SET n += variable.props`. Properties are set individually
+/// from top-level fields in the UNWIND data.
 pub async fn batch_insert_nodes(
     pool: &PgPool,
     graph_name: &str,
@@ -40,19 +52,27 @@ pub async fn batch_insert_nodes(
         return Ok(0);
     }
 
+    let set_clauses: Vec<String> = NODE_PROPS
+        .iter()
+        .map(|p| format!("n.{} = node_data.{}", p, p))
+        .collect();
+    let set_clause = format!(" SET {}", set_clauses.join(", "));
+
     let cypher = format!(
         "UNWIND $nodes AS node_data \
-         MERGE (n:{label} {{id: node_data.id}}) \
-         SET n += node_data.props",
-        label = label
+         MERGE (n:{label} {{id: node_data.id}}){set_clause}",
+        label = label,
+        set_clause = set_clause
     );
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1::agtype) AS (result agtype)",
+        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
         graph_name, cypher
     );
 
-    let agtype_param = build_unwind_param(nodes, "nodes");
+    let flattened: Vec<serde_json::Value> = nodes.iter().map(|n| flatten_node_data(n)).collect();
+
+    let agtype_param = build_unwind_param(&flattened, "nodes");
     debug!(
         "batch_insert_nodes: {} nodes with label {}",
         nodes.len(),
@@ -69,6 +89,41 @@ pub async fn batch_insert_nodes(
     Ok(nodes.len())
 }
 
+/// Flatten a node data object: merge nested `props` into top-level.
+fn flatten_node_data(node: &serde_json::Value) -> serde_json::Value {
+    let mut flat = serde_json::Map::new();
+    if let Some(obj) = node.as_object() {
+        for (k, v) in obj {
+            if k == "props" {
+                if let Some(props_obj) = v.as_object() {
+                    for (pk, pv) in props_obj {
+                        flat.insert(pk.clone(), pv.clone());
+                    }
+                }
+            } else {
+                flat.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(flat)
+}
+
+/// Extract unique property keys (excluding structural keys) from flattened items.
+fn extract_prop_keys(items: &[serde_json::Value]) -> Vec<String> {
+    let structural_keys = ["id", "from_id", "to_id", "fqn", "name"];
+    let mut keys = std::collections::BTreeSet::new();
+    for item in items {
+        if let Some(obj) = item.as_object() {
+            for k in obj.keys() {
+                if !structural_keys.contains(&k.as_str()) {
+                    keys.insert(k.clone());
+                }
+            }
+        }
+    }
+    keys.into_iter().collect()
+}
+
 // ---------------------------------------------------------------------------
 // Query #2 — Batch relationship insert with MATCH both ends (UNWIND)
 // Source: batch.rs:329-349
@@ -76,13 +131,8 @@ pub async fn batch_insert_nodes(
 
 /// Insert a batch of relationships using UNWIND where both endpoints must exist.
 ///
-/// ```cypher
-/// UNWIND $rels AS rel_data
-/// MATCH (from:FromLabel {id: rel_data.from_id})
-/// MATCH (to:ToLabel {id: rel_data.to_id})
-/// MERGE (from)-[r:REL_TYPE]->(to)
-/// SET r += rel_data.props
-/// ```
+/// AGE does NOT support `SET r += variable.props`. Relationship properties from
+/// the nested `props` field are set individually after flattening.
 pub async fn batch_insert_relationships(
     pool: &PgPool,
     graph_name: &str,
@@ -95,23 +145,37 @@ pub async fn batch_insert_relationships(
         return Ok(0);
     }
 
+    let flattened: Vec<serde_json::Value> = rels.iter().map(|r| flatten_node_data(r)).collect();
+
+    let rel_prop_keys = extract_prop_keys(&flattened);
+
+    let set_clause = if rel_prop_keys.is_empty() {
+        String::new()
+    } else {
+        let clauses: Vec<String> = rel_prop_keys
+            .iter()
+            .map(|k| format!("r.{} = rel_data.{}", k, k))
+            .collect();
+        format!(" SET {}", clauses.join(", "))
+    };
+
     let cypher = format!(
         "UNWIND $rels AS rel_data \
          MATCH (from:{from_label} {{id: rel_data.from_id}}) \
          MATCH (to:{to_label} {{id: rel_data.to_id}}) \
-         MERGE (from)-[r:{rel_type}]->(to) \
-         SET r += rel_data.props",
+         MERGE (from)-[r:{rel_type}]->(to){set_clause}",
         from_label = from_label,
         to_label = to_label,
-        rel_type = rel_type
+        rel_type = rel_type,
+        set_clause = set_clause
     );
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1::agtype) AS (result agtype)",
+        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
         graph_name, cypher
     );
 
-    let agtype_param = build_unwind_param(rels, "rels");
+    let agtype_param = build_unwind_param(&flattened, "rels");
     debug!(
         "batch_insert_relationships: {} rels [{}]-[{}]->[{}]",
         rels.len(),
@@ -175,6 +239,20 @@ pub async fn batch_insert_rels_merge_target(
         return Ok(0);
     }
 
+    let flattened: Vec<serde_json::Value> = rels.iter().map(|r| flatten_node_data(r)).collect();
+
+    let rel_prop_keys = extract_prop_keys(&flattened);
+
+    let rel_set_clause = if rel_prop_keys.is_empty() {
+        String::new()
+    } else {
+        let clauses: Vec<String> = rel_prop_keys
+            .iter()
+            .map(|k| format!("r.{} = rel_data.{}", k, k))
+            .collect();
+        format!(" SET {}", clauses.join(", "))
+    };
+
     let cypher = format!(
         "UNWIND $rels AS rel_data \
          MATCH (from:{from_label} {{id: rel_data.from_id}}) \
@@ -182,19 +260,19 @@ pub async fn batch_insert_rels_merge_target(
          SET to.fqn = coalesce(to.fqn, rel_data.to_id), \
              to.name = coalesce(to.name, rel_data.to_id), \
              to.external = coalesce(to.external, true) \
-         MERGE (from)-[r:{rel_type}]->(to) \
-         SET r += rel_data.props",
+         MERGE (from)-[r:{rel_type}]->(to){rel_set_clause}",
         from_label = from_label,
         to_label = to_label,
-        rel_type = rel_type
+        rel_type = rel_type,
+        rel_set_clause = rel_set_clause
     );
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1::agtype) AS (result agtype)",
+        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
         graph_name, cypher
     );
 
-    let agtype_param = build_unwind_param(rels, "rels");
+    let agtype_param = build_unwind_param(&flattened, "rels");
     debug!(
         "batch_insert_rels_merge_target: {} rels [{}]-[{}]->[{}] (COALESCE workaround)",
         rels.len(),
@@ -229,9 +307,8 @@ pub async fn batch_insert_rels_merge_target(
 
 /// Create or update a single node using MERGE (idempotent).
 ///
-/// ```cypher
-/// MERGE (n:Label {id: $id}) SET n += $props
-/// ```
+/// AGE does NOT support `SET n += $props` with a parameter map.
+/// Instead, each property is set individually: `SET n.key1 = $key1, n.key2 = $key2, ...`
 pub async fn merge_node(
     pool: &PgPool,
     graph_name: &str,
@@ -239,19 +316,34 @@ pub async fn merge_node(
     id: &str,
     props: &HashMap<String, serde_json::Value>,
 ) -> Result<()> {
+    let mut params = HashMap::new();
+    params.insert("id".to_string(), serde_json::json!(id));
+
+    let set_clauses: Vec<String> = props
+        .keys()
+        .filter_map(|key| {
+            let safe_key = key.replace('-', "_").replace(' ', "_");
+            params.insert(safe_key.clone(), props[key].clone());
+            Some(format!("n.{} = ${}", key, key))
+        })
+        .collect();
+
+    let set_clause = if set_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" SET {}", set_clauses.join(", "))
+    };
+
     let cypher = format!(
-        "MERGE (n:{label} {{id: $id}}) SET n += $props",
-        label = label
+        "MERGE (n:{label} {{id: $id}}){set_clause}",
+        label = label,
+        set_clause = set_clause
     );
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1::agtype) AS (result agtype)",
+        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
         graph_name, cypher
     );
-
-    let mut params = HashMap::new();
-    params.insert("id".to_string(), serde_json::json!(id));
-    params.insert("props".to_string(), serde_json::json!(props));
 
     let agtype_param = build_agtype_param(&params);
     debug!("merge_node: {} [{}]", id, label);
@@ -272,12 +364,8 @@ pub async fn merge_node(
 
 /// Create or update a single relationship using MERGE (idempotent).
 ///
-/// ```cypher
-/// MATCH (from:FromLabel {id: $from_id})
-/// MATCH (to:ToLabel {id: $to_id})
-/// MERGE (from)-[r:REL_TYPE]->(to)
-/// SET r += $props
-/// ```
+/// AGE does NOT support `SET r += $props` with a parameter map.
+/// Instead, each property is set individually: `SET r.key1 = $key1, ...`
 #[allow(clippy::too_many_arguments)]
 pub async fn merge_relationship(
     pool: &PgPool,
@@ -289,25 +377,39 @@ pub async fn merge_relationship(
     to_id: &str,
     props: &HashMap<String, serde_json::Value>,
 ) -> Result<()> {
-    let cypher = format!(
-        "MATCH (from:{from_label} {{id: $from_id}}) \
-         MATCH (to:{to_label} {{id: $to_id}}) \
-         MERGE (from)-[r:{rel_type}]->(to) \
-         SET r += $props",
-        from_label = from_label,
-        to_label = to_label,
-        rel_type = rel_type
-    );
-
-    let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1::agtype) AS (result agtype)",
-        graph_name, cypher
-    );
-
     let mut params = HashMap::new();
     params.insert("from_id".to_string(), serde_json::json!(from_id));
     params.insert("to_id".to_string(), serde_json::json!(to_id));
-    params.insert("props".to_string(), serde_json::json!(props));
+
+    for (key, value) in props {
+        params.insert(key.clone(), value.clone());
+    }
+
+    let set_clauses: Vec<String> = props
+        .keys()
+        .map(|key| format!("r.{} = ${}", key, key))
+        .collect();
+
+    let set_clause = if set_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" SET {}", set_clauses.join(", "))
+    };
+
+    let cypher = format!(
+        "MATCH (from:{from_label} {{id: $from_id}}) \
+         MATCH (to:{to_label} {{id: $to_id}}) \
+         MERGE (from)-[r:{rel_type}]->(to){set_clause}",
+        from_label = from_label,
+        to_label = to_label,
+        rel_type = rel_type,
+        set_clause = set_clause
+    );
+
+    let sql = format!(
+        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
+        graph_name, cypher
+    );
 
     let agtype_param = build_agtype_param(&params);
     debug!(
@@ -420,7 +522,7 @@ pub async fn find_node_by_fqn(
     let cypher = "MATCH (n {fqn: $fqn}) RETURN n";
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1::agtype) AS (result agtype)",
+        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
         graph_name, cypher
     );
 
@@ -541,24 +643,30 @@ mod tests {
 
     #[test]
     fn test_build_batch_nodes_query() {
-        // Verify SQL contains expected fragments
         let label = "Function";
+        let set_clauses: Vec<String> = NODE_PROPS
+            .iter()
+            .map(|p| format!("n.{} = node_data.{}", p, p))
+            .collect();
+        let set_clause = format!(" SET {}", set_clauses.join(", "));
+
         let cypher = format!(
             "UNWIND $nodes AS node_data \
-             MERGE (n:{label} {{id: node_data.id}}) \
-             SET n += node_data.props",
-            label = label
+             MERGE (n:{label} {{id: node_data.id}}){set_clause}",
+            label = label,
+            set_clause = set_clause
         );
         let sql = format!(
-            "SELECT * FROM cypher('rustbrain', $$ {} $$, $1::agtype) AS (result agtype)",
+            "SELECT * FROM cypher('rustbrain', $$ {} $$, $1) AS (result agtype)",
             cypher
         );
 
         assert!(sql.contains("UNWIND $nodes"));
         assert!(sql.contains("MERGE (n:Function {id: node_data.id})"));
-        assert!(sql.contains("SET n += node_data.props"));
+        assert!(sql.contains("n.fqn = node_data.fqn"));
+        assert!(sql.contains("n.name = node_data.name"));
         assert!(sql.contains("cypher('rustbrain'"));
-        assert!(sql.contains("$1::agtype"));
+        assert!(sql.contains("$1)"));
     }
 
     #[test]
@@ -574,8 +682,7 @@ mod tests {
              SET to.fqn = coalesce(to.fqn, rel_data.to_id), \
                  to.name = coalesce(to.name, rel_data.to_id), \
                  to.external = coalesce(to.external, true) \
-             MERGE (from)-[r:{rel_type}]->(to) \
-             SET r += rel_data.props",
+             MERGE (from)-[r:{rel_type}]->(to)",
             from_label = from_label,
             to_label = to_label,
             rel_type = rel_type
@@ -595,7 +702,7 @@ mod tests {
     fn test_build_find_by_fqn_query() {
         let cypher = "MATCH (n {fqn: $fqn}) RETURN n";
         let sql = format!(
-            "SELECT * FROM cypher('rustbrain', $$ {} $$, $1::agtype) AS (result agtype)",
+            "SELECT * FROM cypher('rustbrain', $$ {} $$, $1) AS (result agtype)",
             cypher
         );
 
@@ -611,7 +718,7 @@ mod tests {
         );
         assert!(sql.contains("MATCH (n) DETACH DELETE n"));
 
-        assert!(!sql.contains("$1::agtype"));
+        assert!(!sql.contains("$1"));
     }
 
     #[test]
@@ -619,7 +726,7 @@ mod tests {
         let sql =
             format!("SELECT * FROM cypher('rustbrain', $$ RETURN 1 as test $$) AS (result agtype)");
         assert!(sql.contains("RETURN 1 as test"));
-        assert!(!sql.contains("$1::agtype"));
+        assert!(!sql.contains("$1"));
     }
 
     // -----------------------------------------------------------------------
