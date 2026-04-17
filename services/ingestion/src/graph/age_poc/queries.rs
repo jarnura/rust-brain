@@ -601,7 +601,7 @@ pub async fn find_node_by_fqn(
     let cypher = "MATCH (n {fqn: $fqn}) RETURN n";
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
+        "SELECT ag_catalog.agtype_out(result)::text FROM cypher('{}', $$ {} $$, $1) AS (result agtype)",
         graph_name, cypher
     );
 
@@ -642,7 +642,7 @@ pub async fn find_nodes_by_type(
     let cypher = format!("MATCH (n:{label}) RETURN n", label = label);
 
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ {} $$) AS (result agtype)",
+        "SELECT ag_catalog.agtype_out(result)::text FROM cypher('{}', $$ {} $$) AS (result agtype)",
         graph_name, cypher
     );
 
@@ -699,7 +699,7 @@ pub async fn clear_all(pool: &PgPool, graph_name: &str) -> Result<()> {
 /// ```
 pub async fn test_connection(pool: &PgPool, graph_name: &str) -> Result<bool> {
     let sql = format!(
-        "SELECT * FROM cypher('{}', $$ RETURN 1 as test $$) AS (result agtype)",
+        "SELECT ag_catalog.agtype_out(result)::text FROM cypher('{}', $$ RETURN 1 as test $$) AS (result agtype)",
         graph_name
     );
 
@@ -780,12 +780,13 @@ mod tests {
     fn test_build_find_by_fqn_query() {
         let cypher = "MATCH (n {fqn: $fqn}) RETURN n";
         let sql = format!(
-            "SELECT * FROM cypher('rustbrain', $$ {} $$, $1) AS (result agtype)",
+            "SELECT ag_catalog.agtype_out(result)::text FROM cypher('rustbrain', $$ {} $$, $1) AS (result agtype)",
             cypher
         );
 
         assert!(sql.contains("MATCH (n {fqn: $fqn})"));
         assert!(sql.contains("RETURN n"));
+        assert!(sql.contains("agtype_out(result)::text"));
         assert!(sql.contains("cypher('rustbrain'"));
     }
 
@@ -802,8 +803,9 @@ mod tests {
     #[test]
     fn test_build_test_connection_query() {
         let sql =
-            format!("SELECT * FROM cypher('rustbrain', $$ RETURN 1 as test $$) AS (result agtype)");
+            format!("SELECT ag_catalog.agtype_out(result)::text FROM cypher('rustbrain', $$ RETURN 1 as test $$) AS (result agtype)");
         assert!(sql.contains("RETURN 1 as test"));
+        assert!(sql.contains("agtype_out(result)::text"));
         assert!(!sql.contains("$1"));
     }
 
