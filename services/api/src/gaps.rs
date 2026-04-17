@@ -77,8 +77,30 @@ pub struct Recommendation {
 // Gap Analysis Implementation
 // =============================================================================
 
+use crate::handlers::graph_templates;
 use crate::neo4j::execute_neo4j_query;
 use crate::state::AppState;
+
+async fn exec_system_template(
+    state: &AppState,
+    query_name: &str,
+    params: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let (cypher, query_params) = graph_templates::resolve_system(query_name, params)?;
+    execute_neo4j_query(state, &cypher, query_params).await
+}
+
+use crate::errors::AppError;
+
+/// Build a parameter map from key-value pairs for system template calls.
+fn params(
+    pairs: &[(&str, serde_json::Value)],
+) -> std::collections::HashMap<String, serde_json::Value> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect()
+}
 
 impl GapAnalysis {
     /// Perform comprehensive gap analysis of the rust-brain system
@@ -242,10 +264,10 @@ async fn check_get_function(state: &AppState) -> FeatureStatus {
     }
 
     // Check Neo4j for function nodes
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH (f:Function) RETURN count(f) as count",
-        serde_json::json!({}),
+        "count_label",
+        &params(&[("label", serde_json::json!("Function"))]),
     )
     .await
     {
@@ -286,11 +308,10 @@ async fn check_get_callers(state: &AppState) -> FeatureStatus {
     let mut details = Vec::new();
     let mut status = FeatureState::Working;
 
-    // Check for CALLS relationships
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH ()-[r:CALLS]->() RETURN count(r) as count",
-        serde_json::json!({}),
+        "count_relationship",
+        &params(&[("rel_type", serde_json::json!("CALLS"))]),
     )
     .await
     {
@@ -310,11 +331,10 @@ async fn check_get_callers(state: &AppState) -> FeatureStatus {
         }
     }
 
-    // Check for Function nodes (prerequisite for callers)
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH (f:Function) RETURN count(f) as count LIMIT 1",
-        serde_json::json!({}),
+        "count_label",
+        &params(&[("label", serde_json::json!("Function"))]),
     )
     .await
     {
@@ -343,10 +363,10 @@ async fn check_trait_impls(state: &AppState) -> FeatureStatus {
     let mut status = FeatureState::Working;
 
     // Check for Trait nodes
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH (t:Trait) RETURN count(t) as count",
-        serde_json::json!({}),
+        "count_label",
+        &params(&[("label", serde_json::json!("Trait"))]),
     )
     .await
     {
@@ -366,11 +386,10 @@ async fn check_trait_impls(state: &AppState) -> FeatureStatus {
         }
     }
 
-    // Check for IMPLEMENTS relationships
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH ()-[r:IMPLEMENTS]->() RETURN count(r) as count",
-        serde_json::json!({}),
+        "count_relationship",
+        &params(&[("rel_type", serde_json::json!("IMPLEMENTS"))]),
     )
     .await
     {
@@ -405,10 +424,10 @@ async fn check_find_usages(state: &AppState) -> FeatureStatus {
     let mut status = FeatureState::Working;
 
     // Check for Type nodes
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH (t:Type) RETURN count(t) as count",
-        serde_json::json!({}),
+        "count_label",
+        &params(&[("label", serde_json::json!("Type"))]),
     )
     .await
     {
@@ -428,11 +447,10 @@ async fn check_find_usages(state: &AppState) -> FeatureStatus {
         }
     }
 
-    // Check for USES_TYPE relationships
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH ()-[r:USES_TYPE]->() RETURN count(r) as count",
-        serde_json::json!({}),
+        "count_relationship",
+        &params(&[("rel_type", serde_json::json!("USES_TYPE"))]),
     )
     .await
     {
@@ -467,10 +485,10 @@ async fn check_module_tree(state: &AppState) -> FeatureStatus {
     let mut status = FeatureState::Working;
 
     // Check for Module nodes
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH (m:Module) RETURN count(m) as count",
-        serde_json::json!({}),
+        "count_label",
+        &params(&[("label", serde_json::json!("Module"))]),
     )
     .await
     {
@@ -490,11 +508,10 @@ async fn check_module_tree(state: &AppState) -> FeatureStatus {
         }
     }
 
-    // Check for Crate nodes
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH (c:Crate) RETURN count(c) as count",
-        serde_json::json!({}),
+        "count_label",
+        &params(&[("label", serde_json::json!("Crate"))]),
     )
     .await
     {
@@ -515,11 +532,10 @@ async fn check_module_tree(state: &AppState) -> FeatureStatus {
         Err(_) => {} // Already reported above
     }
 
-    // Check for CONTAINS relationships
-    match execute_neo4j_query(
+    match exec_system_template(
         state,
-        "MATCH ()-[r:CONTAINS]->() RETURN count(r) as count",
-        serde_json::json!({}),
+        "count_relationship",
+        &params(&[("rel_type", serde_json::json!("CONTAINS"))]),
     )
     .await
     {
@@ -554,7 +570,7 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
     let mut status = FeatureState::Working;
 
     // Test basic Cypher execution
-    match execute_neo4j_query(state, "RETURN 1 as test", serde_json::json!({})).await {
+    match exec_system_template(state, "ping", &params(&[])).await {
         Ok(results) => {
             let test_val = results.first().and_then(|r| r.get("test")?.as_i64());
 
@@ -572,13 +588,7 @@ async fn check_graph_query(state: &AppState) -> FeatureStatus {
     }
 
     // Check for any data to query
-    match execute_neo4j_query(
-        state,
-        "MATCH (n) RETURN count(n) as count",
-        serde_json::json!({}),
-    )
-    .await
-    {
+    match exec_system_template(state, "count_total_nodes", &params(&[])).await {
         Ok(results) => {
             let count = extract_count(&results);
 
@@ -626,24 +636,16 @@ fn extract_bool(results: &[serde_json::Value]) -> bool {
 
 async fn get_data_quality(state: &AppState, code_collection: &str) -> DataQuality {
     // Get Neo4j node count
-    let neo4j_nodes = execute_neo4j_query(
-        state,
-        "MATCH (n) RETURN count(n) as count",
-        serde_json::json!({}),
-    )
-    .await
-    .map(|r| extract_count(&r))
-    .unwrap_or(0);
+    let neo4j_nodes = exec_system_template(state, "count_total_nodes", &params(&[]))
+        .await
+        .map(|r| extract_count(&r))
+        .unwrap_or(0);
 
-    // Get Neo4j relationship count
-    let neo4j_relationships = execute_neo4j_query(
-        state,
-        "MATCH ()-[r]->() RETURN count(r) as count",
-        serde_json::json!({}),
-    )
-    .await
-    .map(|r| extract_count(&r))
-    .unwrap_or(0);
+    let neo4j_relationships =
+        exec_system_template(state, "count_total_relationships", &params(&[]))
+            .await
+            .map(|r| extract_count(&r))
+            .unwrap_or(0);
 
     // Get Qdrant point count
     let qdrant_points = match state
@@ -676,20 +678,19 @@ async fn get_data_quality(state: &AppState, code_collection: &str) -> DataQualit
     let has_embeddings = qdrant_points > 0;
 
     // Check for call graph (CALLS relationships exist)
-    let has_call_graph = execute_neo4j_query(
+    let has_call_graph = exec_system_template(
         state,
-        "MATCH ()-[r:CALLS]->() RETURN count(r) > 0 as has",
-        serde_json::json!({}),
+        "has_relationship",
+        &params(&[("rel_type", serde_json::json!("CALLS"))]),
     )
     .await
     .map(|r| extract_bool(&r))
     .unwrap_or(false);
 
-    // Check for trait implementations (IMPLEMENTS relationships exist)
-    let has_trait_impls = execute_neo4j_query(
+    let has_trait_impls = exec_system_template(
         state,
-        "MATCH ()-[r:IMPLEMENTS]->() RETURN count(r) > 0 as has",
-        serde_json::json!({}),
+        "has_relationship",
+        &params(&[("rel_type", serde_json::json!("IMPLEMENTS"))]),
     )
     .await
     .map(|r| extract_bool(&r))

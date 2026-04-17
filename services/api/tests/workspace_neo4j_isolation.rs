@@ -505,23 +505,60 @@ async fn test_query_graph_without_workspace_returns_400() {
 
 #[tokio::test]
 #[ignore]
-async fn test_query_graph_with_invalid_workspace_returns_404() {
-    let fake_workspace_id = "00000000-0000-0000-0000-000000000000";
+async fn test_query_graph_with_nonexistent_workspace_returns_empty() {
+    // A valid-but-nonexistent workspace ID passes WorkspaceContext::new() validation
+    // (alphanumeric + hyphens) but the Workspace_000000000000 label matches no nodes.
+    // The handler returns 200 with empty results — no data leak, no crash.
+    let nonexistent_workspace_id = "0000000000000000";
 
     let resp = client()
         .post(format!("{BASE}/tools/query_graph"))
-        .header("X-Workspace-Id", fake_workspace_id)
+        .header("X-Workspace-Id", nonexistent_workspace_id)
         .json(&json!({
             "query_name": "find_functions_by_name",
             "parameters": {"name": "main", "limit": 10}
         }))
         .send()
         .await
-        .expect("query_graph with invalid workspace failed");
+        .expect("query_graph with nonexistent workspace failed");
 
+    // Must not return 5xx — the server handles nonexistent workspaces gracefully
     assert!(
-        resp.status() == 404 || resp.status() == 400,
-        "Invalid workspace ID should return 404 or 400, got {}",
+        resp.status().is_success(),
+        "Nonexistent workspace should return 200 with empty results, got {}",
+        resp.status()
+    );
+
+    let body: Value = resp.json().await.unwrap();
+    // Results must be empty (no data leaked from other workspaces)
+    if let Some(results) = body.as_array() {
+        assert!(
+            results.is_empty(),
+            "Nonexistent workspace should return empty results, got {} nodes — possible data leak",
+            results.len()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_query_graph_with_malformed_workspace_returns_400() {
+    // Semicolons and other special characters fail WorkspaceContext::new() validation
+    let resp = client()
+        .post(format!("{BASE}/tools/query_graph"))
+        .header("X-Workspace-Id", "evil;workspace")
+        .json(&json!({
+            "query_name": "find_functions_by_name",
+            "parameters": {"name": "main", "limit": 10}
+        }))
+        .send()
+        .await
+        .expect("query_graph with malformed workspace failed");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "Malformed workspace ID should return 400, got {}",
         resp.status()
     );
 }

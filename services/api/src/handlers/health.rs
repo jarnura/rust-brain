@@ -239,14 +239,18 @@ async fn check_neo4j_with_counts(state: &AppState) -> DependencyStatus {
     match crate::neo4j::check_neo4j(&state.neo4j_graph).await {
         Ok(_) => {
             let latency_ms = start.elapsed().as_millis() as u64;
-            // RUSA-194-EXEMPT: system-level health check - queries global node/edge counts
-            let count_result = crate::neo4j::execute_neo4j_query(
-                state,
-                "MATCH (n) WITH count(n) AS nodes OPTIONAL MATCH ()-[r]->() WITH nodes, count(r) AS rels RETURN nodes, rels",
-                serde_json::json!({}),
-            )
-            .await
-            .ok();
+            let empty_params = std::collections::HashMap::new();
+            let count_result = match crate::handlers::graph_templates::resolve_system(
+                "health_node_edge_counts",
+                &empty_params,
+            ) {
+                Ok((cypher, query_params)) => {
+                    crate::neo4j::execute_neo4j_query(state, &cypher, query_params) // RUSA-194-EXEMPT: system-level health check
+                        .await
+                        .ok()
+                }
+                Err(_) => None,
+            };
 
             let (nodes_count, edges_count) = count_result
                 .and_then(|rows| rows.into_iter().next())

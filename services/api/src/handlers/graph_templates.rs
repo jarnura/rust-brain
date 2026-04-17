@@ -6,6 +6,12 @@
 //! User-provided property values (names, FQNs, crate names) are always bound
 //! as Neo4j parameters (`$param`) — never interpolated into Cypher strings.
 //! Only validated labels and clamped depth bounds are interpolated.
+//!
+//! Two resolution modes:
+//! - [`resolve_with_workspace`] — injects `:Workspace_<id>` labels into every
+//!   node pattern. Used by all workspace-scoped API handlers.
+//! - [`resolve_system`] — no workspace labels. Used by system-level checks
+//!   (health, gap analysis, consistency fallback) that query global stats.
 
 use std::collections::HashMap;
 
@@ -452,6 +458,122 @@ pub fn resolve_with_workspace(
     }
 }
 
+// ── system-level templates (no workspace label) ─────────────────────────────
+
+/// Resolves a named query template without workspace labels.
+///
+/// For system-level diagnostics: health checks, gap analysis, consistency
+/// fallback when no workspace context is available. Every node pattern
+/// matches globally across all workspaces.
+pub fn resolve_system(
+    query_name: &str,
+    parameters: &HashMap<String, serde_json::Value>,
+) -> Result<(String, serde_json::Value), AppError> {
+    match query_name {
+        "health_node_edge_counts" => Ok((
+            "MATCH (n) WITH count(n) AS nodes \
+             OPTIONAL MATCH ()-[r]->() WITH nodes, count(r) AS rels \
+             RETURN nodes, rels"
+                .to_string(),
+            serde_json::json!({}),
+        )),
+
+        "consistency_fqns_system" => Ok((
+            "MATCH (n) \
+             WHERE n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias \
+             RETURN n.fqn AS fqn"
+                .to_string(),
+            serde_json::json!({}),
+        )),
+
+        "consistency_fqns_filtered_system" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                "MATCH (n) \
+                 WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias) \
+                 AND split(n.fqn, '::')[0] = $crate_name \
+                 RETURN n.fqn AS fqn"
+                    .to_string(),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        "consistency_count_system" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                "MATCH (n) \
+                 WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias) \
+                 AND split(n.fqn, '::')[0] = $crate_name \
+                 RETURN count(n) AS count"
+                    .to_string(),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        "count_label" => {
+            let label = require_label(parameters)?;
+            Ok((
+                format!("MATCH (n:{label}) RETURN count(n) AS count"),
+                serde_json::json!({}),
+            ))
+        }
+
+        "count_relationship" => {
+            let rel_type = require_str(parameters, &["rel_type"])?;
+            validate_rel_type(&rel_type)?;
+            Ok((
+                format!("MATCH ()-[r:{rel_type}]->() RETURN count(r) AS count"),
+                serde_json::json!({}),
+            ))
+        }
+
+        "has_relationship" => {
+            let rel_type = require_str(parameters, &["rel_type"])?;
+            validate_rel_type(&rel_type)?;
+            Ok((
+                format!("MATCH ()-[r:{rel_type}]->() RETURN count(r) > 0 AS has"),
+                serde_json::json!({}),
+            ))
+        }
+
+        "count_total_nodes" => Ok((
+            "MATCH (n) RETURN count(n) AS count".to_string(),
+            serde_json::json!({}),
+        )),
+
+        "count_total_relationships" => Ok((
+            "MATCH ()-[r]->() RETURN count(r) AS count".to_string(),
+            serde_json::json!({}),
+        )),
+
+        "ping" => Ok(("RETURN 1 AS test".to_string(), serde_json::json!({}))),
+
+        _ => Err(AppError::BadRequest(format!(
+            "Unknown system query template: '{}'. Available: \
+             health_node_edge_counts, consistency_fqns_system, \
+             consistency_fqns_filtered_system, consistency_count_system, \
+             count_label, count_relationship, has_relationship, \
+             count_total_nodes, count_total_relationships, ping",
+            query_name,
+        ))),
+    }
+}
+
+/// Relationship types allowed in system-level `count_relationship` / `has_relationship` templates.
+const VALID_REL_TYPES: &[&str] = &["CALLS", "IMPLEMENTS", "USES_TYPE", "CONTAINS", "DEPENDS_ON"];
+
+fn validate_rel_type(rel_type: &str) -> Result<(), AppError> {
+    if VALID_REL_TYPES.contains(&rel_type) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "Invalid relationship type: '{}'. Valid types: {}",
+            rel_type,
+            VALID_REL_TYPES.join(", "),
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,6 +835,141 @@ mod tests {
     fn resolve_consistency_count_missing_crate() {
         let err = resolve_with_workspace("consistency_count", &HashMap::new(), "Workspace_ws")
             .unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    // ── resolve_system tests ───────────────────────────────────────────
+
+    #[test]
+    fn resolve_system_health_node_edge_counts() {
+        let (cypher, p) = resolve_system("health_node_edge_counts", &HashMap::new()).unwrap();
+        assert!(cypher.contains("count(n) AS nodes"));
+        assert!(cypher.contains("count(r) AS rels"));
+        assert!(p.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_system_consistency_fqns_system() {
+        let (cypher, p) = resolve_system("consistency_fqns_system", &HashMap::new()).unwrap();
+        assert!(cypher.contains("n.fqn AS fqn"));
+        assert!(p.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_system_consistency_fqns_filtered_system() {
+        let (cypher, p) = resolve_system(
+            "consistency_fqns_filtered_system",
+            &params(&[("crate_name", serde_json::json!("api"))]),
+        )
+        .unwrap();
+        assert!(cypher.contains("split(n.fqn, '::')[0] = $crate_name"));
+        assert_eq!(p["crate_name"], "api");
+    }
+
+    #[test]
+    fn resolve_system_consistency_count_system() {
+        let (cypher, p) = resolve_system(
+            "consistency_count_system",
+            &params(&[("crate_name", serde_json::json!("api"))]),
+        )
+        .unwrap();
+        assert!(cypher.contains("count(n) AS count"));
+        assert_eq!(p["crate_name"], "api");
+    }
+
+    #[test]
+    fn resolve_system_count_label() {
+        let (cypher, p) = resolve_system(
+            "count_label",
+            &params(&[("label", serde_json::json!("Function"))]),
+        )
+        .unwrap();
+        assert!(cypher.contains("MATCH (n:Function)"));
+        assert!(p.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_system_count_relationship() {
+        let (cypher, p) = resolve_system(
+            "count_relationship",
+            &params(&[("rel_type", serde_json::json!("CALLS"))]),
+        )
+        .unwrap();
+        assert!(cypher.contains("MATCH ()-[r:CALLS]->()"));
+        assert!(p.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_system_has_relationship() {
+        let (cypher, p) = resolve_system(
+            "has_relationship",
+            &params(&[("rel_type", serde_json::json!("IMPLEMENTS"))]),
+        )
+        .unwrap();
+        assert!(cypher.contains("MATCH ()-[r:IMPLEMENTS]->()"));
+        assert!(cypher.contains("count(r) > 0 AS has"));
+        assert!(p.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_system_count_total_nodes() {
+        let (cypher, _) = resolve_system("count_total_nodes", &HashMap::new()).unwrap();
+        assert!(cypher.contains("MATCH (n) RETURN count(n)"));
+    }
+
+    #[test]
+    fn resolve_system_count_total_relationships() {
+        let (cypher, _) = resolve_system("count_total_relationships", &HashMap::new()).unwrap();
+        assert!(cypher.contains("MATCH ()-[r]->() RETURN count(r)"));
+    }
+
+    #[test]
+    fn resolve_system_ping() {
+        let (cypher, _) = resolve_system("ping", &HashMap::new()).unwrap();
+        assert!(cypher.contains("RETURN 1 AS test"));
+    }
+
+    #[test]
+    fn resolve_system_unknown_template() {
+        let err = resolve_system("nonexistent", &HashMap::new()).unwrap_err();
+        assert!(err.to_string().contains("Unknown system query template"));
+    }
+
+    #[test]
+    fn resolve_system_count_label_invalid() {
+        let err = resolve_system(
+            "count_label",
+            &params(&[("label", serde_json::json!("EvilLabel"))]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid label"));
+    }
+
+    #[test]
+    fn resolve_system_count_relationship_invalid_type() {
+        let err = resolve_system(
+            "count_relationship",
+            &params(&[("rel_type", serde_json::json!("EVIL_REL"))]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid relationship type"));
+    }
+
+    #[test]
+    fn resolve_system_has_relationship_missing_rel_type() {
+        let err = resolve_system("has_relationship", &HashMap::new()).unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_system_consistency_fqns_filtered_missing_crate() {
+        let err = resolve_system("consistency_fqns_filtered_system", &HashMap::new()).unwrap_err();
+        assert!(err.to_string().contains("Missing required parameter"));
+    }
+
+    #[test]
+    fn resolve_system_consistency_count_missing_crate() {
+        let err = resolve_system("consistency_count_system", &HashMap::new()).unwrap_err();
         assert!(err.to_string().contains("Missing required parameter"));
     }
 }

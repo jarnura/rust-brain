@@ -431,30 +431,21 @@ async fn query_neo4j_fqns(
             .filter_map(|r| r.get("fqn").and_then(|v| v.as_str()).map(String::from))
             .collect())
     } else {
-        // SAFETY: system-level consistency check — no workspace context available
-        let cypher = if crate_name == "all" {
-            r#"
-            MATCH (n) 
-            WHERE n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias
-            RETURN n.fqn as fqn
-            "#
+        let template_name = if crate_name == "all" {
+            "consistency_fqns_system"
         } else {
-            r#"
-            MATCH (n) 
-            WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias)
-            AND split(n.fqn, '::')[0] = $crate_name
-            RETURN n.fqn as fqn
-            "#
+            "consistency_fqns_filtered_system"
         };
 
-        let params = if crate_name == "all" {
-            serde_json::json!({})
-        } else {
-            serde_json::json!({ "crate_name": crate_name })
-        };
+        let mut params = std::collections::HashMap::new();
+        if crate_name != "all" {
+            params.insert("crate_name".to_string(), serde_json::json!(crate_name));
+        }
 
-        // RUSA-194-EXEMPT: system-level fallback when no workspace context
-        let results = execute_neo4j_query(state, cypher, params).await?;
+        let (cypher, query_params) =
+            crate::handlers::graph_templates::resolve_system(template_name, &params)?;
+
+        let results = execute_neo4j_query(state, &cypher, query_params).await?; // RUSA-194-EXEMPT: system-level fallback when no workspace context
         Ok(results
             .into_iter()
             .filter_map(|r| r.get("fqn").and_then(|v| v.as_str()).map(String::from))
@@ -488,17 +479,13 @@ async fn query_neo4j_count(
             .sum();
         Ok(total as usize)
     } else {
-        // SAFETY: system-level consistency check — no workspace context available
-        let cypher = r#"
-            MATCH (n) 
-            WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias)
-            AND split(n.fqn, '::')[0] = $crate_name
-            RETURN count(n) as count
-        "#;
+        let mut params = std::collections::HashMap::new();
+        params.insert("crate_name".to_string(), serde_json::json!(crate_name));
 
-        let params = serde_json::json!({ "crate_name": crate_name });
-        // RUSA-194-EXEMPT: system-level fallback when no workspace context
-        let results = execute_neo4j_query(state, cypher, params).await?;
+        let (cypher, query_params) =
+            crate::handlers::graph_templates::resolve_system("consistency_count_system", &params)?;
+
+        let results = execute_neo4j_query(state, &cypher, query_params).await?; // RUSA-194-EXEMPT: system-level fallback when no workspace context
 
         Ok(results
             .first()

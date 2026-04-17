@@ -31,6 +31,12 @@ pub struct QueryGraphRequest {
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
+    pub trait_name: Option<String>,
+    #[serde(default)]
+    pub type_name: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
     pub limit: Option<i64>,
     #[serde(default)]
     pub depth: Option<i64>,
@@ -46,6 +52,9 @@ impl QueryGraphRequest {
         if let Some(ref v) = self.crate_name { params.insert("crate_name".into(), serde_json::json!(v)); }
         if let Some(ref v) = self.label { params.insert("label".into(), serde_json::json!(v)); }
         if let Some(ref v) = self.path { params.insert("path".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.trait_name { params.insert("trait_name".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.type_name { params.insert("type_name".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.prefix { params.insert("prefix".into(), serde_json::json!(v)); }
         if let Some(v) = self.limit { params.insert("limit".into(), serde_json::json!(v)); }
         if let Some(v) = self.depth { params.insert("depth".into(), serde_json::json!(v)); }
         params
@@ -173,7 +182,17 @@ pub fn definition() -> serde_json::Value {
                         "count_by_label",
                         "find_crate_overview",
                         "find_crate_dependencies",
-                        "find_crate_dependents"
+                        "find_crate_dependents",
+                        "get_trait_impls_api",
+                        "find_usages_of_type",
+                        "get_module_tree",
+                        "get_callers",
+                        "get_callers_for_impl",
+                        "get_callees_for_impl",
+                        "get_callees",
+                        "consistency_fqns",
+                        "consistency_fqns_filtered",
+                        "consistency_count"
                     ]
                 },
                 "name": {
@@ -196,6 +215,18 @@ pub fn definition() -> serde_json::Value {
                 "path": {
                     "type": "string",
                     "description": "Module path (for find_module_contents)"
+                },
+                "trait_name": {
+                    "type": "string",
+                    "description": "Trait name (for get_trait_impls_api)"
+                },
+                "type_name": {
+                    "type": "string",
+                    "description": "Type name (for find_usages_of_type)"
+                },
+                "prefix": {
+                    "type": "string",
+                    "description": "FQN prefix (for get_callers_for_impl, get_callees_for_impl)"
                 },
                 "limit": {
                     "type": "integer",
@@ -435,7 +466,8 @@ mod tests {
             query_name: "find_functions_by_name".to_string(),
             parameters: params,
             name: None, fqn: None, crate_name: None, label: None,
-            path: None, limit: None, depth: None,
+            path: None, trait_name: None, type_name: None, prefix: None,
+            limit: None, depth: None,
         };
 
         assert_eq!(request.query_name, "find_functions_by_name");
