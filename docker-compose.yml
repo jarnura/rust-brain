@@ -461,6 +461,41 @@ services:
   # INGESTION LAYER
   # ---------------------------------------------------------------------------
 
+  # Audit service — workspace leak detection and compliance scanning
+  # Runs periodic Cypher queries against Neo4j to detect cross-workspace
+  # contamination and orphan nodes. Exposes metrics at :8090/metrics.
+  audit:
+    build:
+      context: ./services/audit
+      dockerfile: Dockerfile
+    container_name: rustbrain-audit
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      AUDIT_PORT: "8090"
+      AUDIT_INTERVAL_SECS: ${AUDIT_INTERVAL_SECS:-600}
+      RUST_LOG: ${RUST_LOG:-info,rustbrain_audit=debug}
+    ports:
+      - "${AUDIT_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8090/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   ingestion:
     build:
       context: .

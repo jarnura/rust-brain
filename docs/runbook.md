@@ -619,6 +619,79 @@ curl -s "http://localhost:8088/api/consistency?crate=my_crate" | jq '.store_coun
 - Prometheus alerts: `http://localhost:9090/alerts`
 - The blackbox exporter probes `/health/consistency` every 15 seconds
 
+### 13. Cross-Workspace Leak Alert
+
+**Symptoms:**
+- Prometheus alert `CrossWorkspaceLeakDetected` fires (severity: critical)
+- Prometheus alert `OrphanNodesDetected` fires (severity: warning)
+- Grafana "Workspace Isolation" dashboard shows non-zero leak counts
+
+**Diagnosis:**
+```bash
+# Check leak metrics directly
+curl -s http://localhost:8088/metrics | grep rustbrain_workspace_leak
+
+# Run the detection query manually against Neo4j
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) WITH labels(n) AS labels WHERE size([l IN labels WHERE l STARTS WITH 'Workspace_']) <> 1 RETURN labels, count(*) AS count"
+
+# Find specific contaminated nodes (multi-workspace labels)
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) WHERE size([l IN labels(n) WHERE l STARTS WITH 'Workspace_']) > 1 RETURN id(n), labels(n), properties(n) LIMIT 50"
+
+# Find orphan nodes (zero workspace labels)
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) WHERE size([l IN labels(n) WHERE l STARTS WITH 'Workspace_']) = 0 RETURN id(n), labels(n), properties(n) LIMIT 50"
+
+# Correlate with audit logs (search for workspace_id in structured logs)
+docker logs rustbrain-api 2>&1 | grep -i "workspace_id" | tail -100
+```
+
+**Containment steps:**
+
+1. **Disable the affected workspace** to prevent further contamination:
+   ```bash
+   curl -X PATCH http://localhost:8088/api/workspaces/{workspace_id} \
+     -H 'Content-Type: application/json' -d '{"status": "suspended"}'
+   ```
+
+2. **Snapshot data before investigation:**
+   ```bash
+   docker exec rustbrain-neo4j neo4j-admin database dump neo4j --to-path=/backup/
+   docker exec rustbrain-postgres pg_dump -U rustbrain rustbrain > /tmp/pre-investigation.sql
+   ```
+
+3. **Investigate the middleware path** — review audit logs for the affected workspace_id to trace which API endpoint bypassed workspace isolation. Common paths:
+   - Direct Neo4j bolt connection bypassing API middleware
+   - Batch ingestion writing to wrong workspace label
+   - Template query missing workspace label filter
+
+4. **Remediate contaminated nodes:**
+   ```cypher
+   MATCH (n:Workspace_X:Workspace_Y) WHERE id(n) = <node_id>
+   REMOVE n:Workspace_Y
+   ```
+
+5. **Label orphan nodes** if they belong to a known workspace:
+   ```cypher
+   MATCH (n) WHERE id(n) = <node_id>
+   SET n:Workspace_<correct_id>
+   ```
+
+6. **Verify remediation:**
+   ```bash
+   curl -s http://localhost:8088/api/audit/leak-check | jq '.'
+   ```
+
+**Pre-migration baseline:**
+
+Before Phase 3 ships, all existing Neo4j nodes have zero workspace labels (they pre-date workspace isolation). The leak detection job establishes a baseline count of these "legacy orphans" so the `OrphanNodesDetected` alert only fires for *new* orphans.
+
+The baseline is stored as a Prometheus metric `rustbrain_workspace_leak_baseline_orphan_nodes`. To update it after migration:
+```bash
+curl -X POST http://localhost:8088/api/audit/baseline/recalculate
+```
+
 ## Resetting Data
 
 ### Reset All Data

@@ -75,3 +75,10 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+
+  # Audit service — workspace leak detection metrics
+  - job_name: 'rustbrain-audit'
+    static_configs:
+      - targets: ['audit:8090']
+    metrics_path: /metrics
+    scrape_interval: 30s

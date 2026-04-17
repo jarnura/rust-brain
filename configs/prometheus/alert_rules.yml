@@ -32,3 +32,36 @@ groups:
             The /health/consistency endpoint cannot be reached by the
             blackbox exporter probe. The API service may be down or
             the endpoint is not responding.
+
+  - name: rustbrain-workspace-leak
+    rules:
+      - alert: CrossWorkspaceLeakDetected
+        expr: rustbrain_workspace_leak_multi_label_nodes > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: workspace-isolation
+        annotations:
+          summary: "Cross-workspace contamination detected in Neo4j"
+          description: |
+            {{ $value }} node(s) have multiple Workspace_ labels, indicating
+            cross-workspace data contamination. This means the middleware
+            enforcement has a bug allowing data to be written to the wrong workspace.
+            Immediate investigation required — see runbook section
+            "Cross-workspace leak alert".
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-leak-alert"
+
+      - alert: OrphanNodesDetected
+        expr: rustbrain_workspace_leak_orphan_nodes - rustbrain_workspace_leak_baseline_orphan_nodes > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: workspace-isolation
+        annotations:
+          summary: "New orphan nodes detected in Neo4j (post-migration baseline)"
+          description: |
+            {{ $value }} new orphan node(s) detected beyond the pre-migration
+            baseline of {{ $labels.baseline }}. These nodes have zero Workspace_
+            labels and may indicate a label-injection bug or pre-Phase-3 data
+            that was not labeled during migration. Review during business hours.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-leak-alert"
