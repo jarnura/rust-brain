@@ -1,0 +1,57 @@
+# =============================================================================
+# rust-brain — Postgres 16 with Apache AGE Graph Extension
+# =============================================================================
+# Multi-stage build: compile AGE v1.7.0-pre from source, then copy into clean image.
+# Built against the PG16 branch of apache/age for Postgres 16 compatibility.
+#
+# Usage:
+#   docker compose build postgres
+#   docker compose up -d postgres
+#
+# Verify:
+#   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+#     -c "SELECT * FROM ag_catalog.ag_graph;"
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build Apache AGE from source
+# ---------------------------------------------------------------------------
+FROM postgres:16-bookworm AS age-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    flex \
+    bison \
+    postgresql-server-dev-16 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# AGE v1.7.0-pre for PG16. The PG16 branch contains 1.7.0 features
+# (index scans, RLS, upgrade scripts) ahead of the PG16/v1.6.0-rc0 tag.
+# Pinned commit: 8c74fd24 — "Update PG16 prior to 1.7.0 part 2 (#2375)"
+# To update: change AGE_COMMIT and rebuild with --no-cache.
+ARG AGE_COMMIT=8c74fd24dd91bba54fdf4793fccd0fb7bd2bb9d8
+RUN cd /tmp && \
+    git clone --filter=blob:none --no-checkout https://github.com/apache/age.git && \
+    cd age && \
+    git checkout ${AGE_COMMIT} && \
+    make -j$(nproc) && \
+    make install
+
+# ---------------------------------------------------------------------------
+# Stage 2: Production image with AGE extension
+# ---------------------------------------------------------------------------
+FROM postgres:16-bookworm
+
+# Copy AGE extension files from builder
+COPY --from=age-builder /usr/share/postgresql/16/extension/ /usr/share/postgresql/16/extension/
+COPY --from=age-builder /usr/lib/postgresql/16/lib/ /usr/lib/postgresql/16/lib/
+
+# Configure shared_preload_libraries so AGE loads on startup
+# Using postgresql.conf.sample so it applies on first init and subsequent starts
+RUN echo "shared_preload_libraries = 'age'" >> /usr/share/postgresql/postgresql.conf.sample
+
+# Default search_path includes ag_catalog for Cypher queries
+# Users can override per-session or per-database
+RUN echo "search_path = '\"$user\", public, ag_catalog'" >> /usr/share/postgresql/postgresql.conf.sample

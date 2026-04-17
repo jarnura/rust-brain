@@ -167,6 +167,31 @@ docker-compose exec postgres psql -U rustbrain -d rustbrain -c "SELECT 1"
 docker-compose exec postgres pg_isready -U rustbrain -d rustbrain
 ```
 
+##### Apache AGE Graph Extension
+
+AGE is compiled into the Postgres image but only activated when the `age-poc` compose override is used.
+
+```bash
+# Start Postgres with AGE (POC/dev)
+docker compose -f docker-compose.yml -f docker-compose.age-poc.yml up -d postgres
+
+# Verify AGE extension is loaded
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT * FROM ag_catalog.ag_graph;"
+
+# Create a test graph and run a Cypher query
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT create_graph('test_graph');"
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT * FROM cypher('test_graph', \$\$ CREATE (n:Test {name: 'hello'}) RETURN n \$\$) AS (n agtype);"
+
+# Clean up test graph
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT drop_graph('test_graph', true);"
+```
+
+Production uses only `docker compose -f docker-compose.yml up -d postgres` — no AGE init script is mounted.
+
 #### Neo4j
 
 ```bash
@@ -462,7 +487,74 @@ docker-compose restart prometheus grafana
 bash scripts/stop.sh && bash scripts/start.sh
 ```
 
-### 11. Cross-Store Consistency Failure
+### 11. Apache AGE Extension Not Loading
+
+**Symptoms:**
+- `ERROR: could not open extension control file "/usr/share/postgresql/16/extension/age.control"`
+- `ERROR: shared library "age" not found` on container startup
+- `SELECT create_graph(...)` fails with `function does not exist`
+- `SELECT * FROM cypher(...)` returns `function cypher does not exist`
+
+**Diagnosis:**
+```bash
+# Check if AGE shared library loaded at startup
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SHOW shared_preload_libraries;"
+
+# Check if extension is installed
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT * FROM pg_available_extensions WHERE name = 'age';"
+
+# Check search_path (must include ag_catalog for Cypher)
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SHOW search_path;"
+
+# Check container logs for AGE errors
+docker logs rustbrain-postgres 2>&1 | grep -i age
+```
+
+**Fixes:**
+
+1. **Extension not found (build failed):**
+   ```bash
+   # Rebuild the Docker image from scratch
+   docker compose build --no-cache postgres
+   docker compose up -d postgres
+   ```
+
+2. **Shared library not loaded:**
+   ```bash
+   # Verify postgresql.conf has shared_preload_libraries
+   docker exec rustbrain-postgres cat /usr/share/postgresql/postgresql.conf.sample | grep shared_preload
+   # Should show: shared_preload_libraries = 'age'
+   # If missing, rebuild: docker compose build --no-cache postgres
+   ```
+
+3. **search_path missing ag_catalog:**
+   ```bash
+   # Manually set for current session
+   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+     -c "SET search_path = ag_catalog, \"$user\", public;"
+
+   # Fix permanently for the database
+   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+     -c "ALTER DATABASE rustbrain SET search_path = ag_catalog, \"$user\", public;"
+   ```
+
+4. **Init script didn't run (existing volume):**
+   The `/docker-entrypoint-initdb.d/` scripts only run on first container initialization.
+   If the `postgres_data` volume already existed, AGE setup was skipped.
+   ```bash
+   # Option A: Run the setup SQL manually
+   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+     -f /docker-entrypoint-initdb.d/02-age-setup.sql
+
+   # Option B: Reset the database (DESTRUCTIVE — loses all data)
+   docker compose down -v postgres_data
+   docker compose up -d postgres
+   ```
+
+### 12. Cross-Store Consistency Failure
 
 **Symptoms:**
 - Prometheus alert `ConsistencyCheckFailed` fires (severity: critical)

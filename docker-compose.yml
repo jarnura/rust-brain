@@ -11,7 +11,12 @@ services:
   # ---------------------------------------------------------------------------
 
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+      args:
+        AGE_COMMIT: ${AGE_COMMIT:-8c74fd24dd91bba54fdf4793fccd0fb7bd2bb9d8}
+    image: rustbrain-postgres:latest
     container_name: rustbrain-postgres
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
