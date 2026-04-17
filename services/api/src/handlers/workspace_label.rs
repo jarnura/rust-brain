@@ -113,7 +113,7 @@ pub fn inject_workspace_label(query: &str, workspace_id: &str) -> Result<String,
 /// # Errors
 ///
 /// Returns [`AppError::BadRequest`] for unclosed block comments.
-fn strip_comments(query: &str) -> Result<String, AppError> {
+pub fn strip_comments(query: &str) -> Result<String, AppError> {
     let mut result = String::with_capacity(query.len());
     let chars: Vec<char> = query.chars().collect();
     let mut i = 0;
@@ -275,7 +275,6 @@ const APOC_READONLY_NAMESPACES: &[&str] = &[
     "apoc.date.",
     "apoc.meta.",
     "apoc.util.",
-    "apoc.graph.",
     "apoc.help",
     "apoc.version",
 ];

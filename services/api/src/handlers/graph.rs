@@ -465,7 +465,6 @@ const APOC_READONLY_NAMESPACES: &[&str] = &[
     "apoc.date.",
     "apoc.meta.",
     "apoc.util.",
-    "apoc.graph.",
     "apoc.help",
     "apoc.version",
 ];
@@ -485,6 +484,7 @@ const APOC_PLANNER_REENTRY_PREFIXES: &[&str] = &[
     "apoc.case",
     "apoc.periodic.commit",
     "apoc.periodic.iterate",
+    "apoc.graph.fromcypher",
 ];
 
 /// Cypher write keyword tokens that must be rejected in raw user queries.
@@ -497,7 +497,8 @@ const CYPHER_WRITE_TOKENS: &[&str] = &["create", "delete", "set", "remove", "mer
 /// - CALL of any APOC procedure not in [`APOC_READONLY_NAMESPACES`]
 /// - CALL of any APOC procedure in [`APOC_PLANNER_REENTRY_PREFIXES`]
 fn validate_cypher(query: &str) -> Result<(), AppError> {
-    let query_lower = super::workspace_label::normalize_whitespace(&query.to_lowercase());
+    let stripped = super::workspace_label::strip_comments(query)?;
+    let query_lower = super::workspace_label::normalize_whitespace(&stripped.to_lowercase());
 
     // First check: reject planner-reentry APOC procedures
     if query_lower.contains("call apoc.") {
@@ -817,5 +818,70 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("apoc.periodic.iterate"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_graph_fromcypher() {
+        let err = validate_cypher(
+            "CALL apoc.graph.fromCypher('MATCH (n) RETURN n', {}) YIELD graph RETURN graph",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("apoc.graph.fromcypher"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_graph_namespace() {
+        assert!(
+            validate_cypher("CALL apoc.graph.fromDB('neo4j', {}) YIELD graph RETURN graph")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_rejects_load_csv() {
+        assert!(validate_cypher(
+            "LOAD CSV FROM 'http://example.com/data.csv' AS line RETURN line"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_rejects_load_csv_with_headers() {
+        assert!(validate_cypher(
+            "LOAD CSV WITH HEADERS FROM 'http://example.com/data.csv' AS row RETURN row"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_rejects_load_csv_whitespace_variant() {
+        assert!(validate_cypher(
+            "LOAD\tCSV FROM 'http://169.254.169.254/latest/meta-data/' AS line RETURN line"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_rejects_apoc_call_double_space() {
+        assert!(validate_cypher("CALL  apoc.cypher.run('MATCH (n) RETURN n', {})").is_err());
+    }
+
+    #[test]
+    fn test_rejects_apoc_call_tab() {
+        assert!(validate_cypher("CALL\tapoc.cypher.run('MATCH (n) RETURN n', {})").is_err());
+    }
+
+    #[test]
+    fn test_rejects_apoc_call_newline() {
+        assert!(validate_cypher("CALL\napoc.cypher.run('MATCH (n) RETURN n', {})").is_err());
+    }
+
+    #[test]
+    fn test_rejects_apoc_hidden_in_comment() {
+        let err = validate_cypher(
+            "CALL /* sneaky */ apoc.cypher.run('MATCH (n) RETURN n', {})",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("apoc.cypher.run"));
     }
 }
