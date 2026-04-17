@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::errors::AppError;
 use crate::extractors::OptionalWorkspaceId;
-use crate::neo4j::{execute_neo4j_query, WorkspaceContext, WorkspaceGraphClient};
+use crate::neo4j::{execute_neo4j_query, WorkspaceContext, WorkspaceGraphClient}; // RUSA-194-EXEMPT: fallback for system-level checks without workspace
 use crate::state::AppState;
 use crate::workspace::acquire_conn;
 
@@ -453,6 +453,7 @@ async fn query_neo4j_fqns(
             serde_json::json!({ "crate_name": crate_name })
         };
 
+        // RUSA-194-EXEMPT: system-level fallback when no workspace context
         let results = execute_neo4j_query(state, cypher, params).await?;
         Ok(results
             .into_iter()
@@ -496,6 +497,7 @@ async fn query_neo4j_count(
         "#;
 
         let params = serde_json::json!({ "crate_name": crate_name });
+        // RUSA-194-EXEMPT: system-level fallback when no workspace context
         let results = execute_neo4j_query(state, cypher, params).await?;
 
         Ok(results

@@ -15,6 +15,19 @@ env:
 
 jobs:
   # ===========================================================================
+  # Neo4j isolation check - ensures handlers use WorkspaceGraphClient
+  # ===========================================================================
+  neo4j-isolation:
+    name: Neo4j Isolation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check handler Neo4j access isolation
+        run: ./scripts/check-neo4j-isolation.sh
+
+  # ===========================================================================
   # Format check - fails if code is not properly formatted
   # ===========================================================================
   fmt:

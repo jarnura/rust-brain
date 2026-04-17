@@ -154,29 +154,46 @@ impl WorkspaceGraphClient {
     ///
     /// For user-provided Cypher that needs label injection, use
     /// [`Self::execute_user_cypher`] instead.
+    ///
+    /// # Audit Logging
+    ///
+    /// Every call is logged at INFO level with workspace_id, elapsed time,
+    /// and row count for audit trail purposes. Callers that need more
+    /// specific query_name tracking should use [`Self::resolve_and_execute_template`]
+    /// or [`Self::execute_user_cypher`] which add template name context.
     pub async fn execute_query(
         &self,
         query: &str,
         params: serde_json::Value,
     ) -> Result<Vec<serde_json::Value>, AppError> {
         let start = std::time::Instant::now();
+        let span = info_span!(
+            "neo4j_query",
+            workspace.id = %self.ctx.workspace_id(),
+            query_name = "internal"
+        );
+
         debug!(
             workspace_id = %self.ctx.workspace_id(),
             query_len = query.len(),
             "Executing workspace-scoped Neo4j query"
         );
 
-        let result = execute_on_graph(&self.graph, query, params).await?;
+        let result = execute_on_graph(&self.graph, query, params)
+            .instrument(span.clone())
+            .await;
 
         let elapsed = start.elapsed();
-        debug!(
+        let row_count = result.as_ref().map(|r| r.len()).unwrap_or(0);
+        info!(
             workspace_id = %self.ctx.workspace_id(),
-            elapsed_ms = elapsed.as_millis(),
-            row_count = result.len(),
-            "Neo4j query completed"
+            query_name = "internal",
+            duration_ms = elapsed.as_millis(),
+            row_count = row_count,
+            "Neo4j query executed"
         );
 
-        Ok(result)
+        result
     }
 
     /// Executes user-provided Cypher with workspace label injection.
@@ -271,13 +288,9 @@ impl WorkspaceGraphClient {
         params.insert("depth".to_string(), serde_json::json!(depth));
         params.insert("limit".to_string(), serde_json::json!(50i64));
 
-        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
-            "get_callers",
-            &params,
-            &self.ctx.workspace_label(),
-        )?;
-
-        let results = self.execute_query(&cypher, query_params).await?;
+        let results = self
+            .resolve_and_execute_template("get_callers", &params)
+            .await?;
 
         Ok(results
             .into_iter()
@@ -312,13 +325,9 @@ impl WorkspaceGraphClient {
         params.insert("depth".to_string(), serde_json::json!(depth));
         params.insert("limit".to_string(), serde_json::json!(50i64));
 
-        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
-            "get_callers_for_impl",
-            &params,
-            &self.ctx.workspace_label(),
-        )?;
-
-        let results = self.execute_query(&cypher, query_params).await?;
+        let results = self
+            .resolve_and_execute_template("get_callers_for_impl", &params)
+            .await?;
 
         Ok(results
             .into_iter()
@@ -349,13 +358,9 @@ impl WorkspaceGraphClient {
         params.insert("prefix".to_string(), serde_json::json!(method_prefix));
         params.insert("limit".to_string(), serde_json::json!(100i64));
 
-        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
-            "get_callees_for_impl",
-            &params,
-            &self.ctx.workspace_label(),
-        )?;
-
-        let results = self.execute_query(&cypher, query_params).await?;
+        let results = self
+            .resolve_and_execute_template("get_callees_for_impl", &params)
+            .await?;
 
         Ok(results
             .into_iter()
@@ -375,13 +380,9 @@ impl WorkspaceGraphClient {
         let mut params = std::collections::HashMap::new();
         params.insert("fqn".to_string(), serde_json::json!(fqn));
 
-        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
-            "get_callees",
-            &params,
-            &self.ctx.workspace_label(),
-        )?;
-
-        let results = self.execute_query(&cypher, query_params).await?;
+        let results = self
+            .resolve_and_execute_template("get_callees", &params)
+            .await?;
 
         Ok(results
             .into_iter()
