@@ -184,3 +184,103 @@ pub fn assert_no_nodes_have_workspace_label(results: &[Value], forbidden_label: 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn all_nodes_have_label_passes_when_labels_match() {
+        let nodes = vec![
+            json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc123"]}),
+            json!({"fqn": "crate::b", "_labels": ["Struct", "Workspace_abc123"]}),
+        ];
+        let count = assert_all_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn all_nodes_have_label_exactly_matches_label() {
+        let nodes = vec![json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc"]})];
+        let count = assert_all_nodes_have_workspace_label(&nodes, "Workspace_abc");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn all_nodes_have_label_substring_match() {
+        let nodes =
+            vec![json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc123def"]})];
+        let count = assert_all_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "missing workspace label")]
+    fn all_nodes_have_label_panics_on_wrong_label() {
+        let nodes = vec![json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_other"]})];
+        assert_all_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+    }
+
+    #[test]
+    fn all_nodes_have_label_skips_nodes_without_labels_field() {
+        let nodes = vec![
+            json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc123"]}),
+            json!({"fqn": "crate::b"}),
+        ];
+        let count = assert_all_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn all_nodes_have_label_returns_zero_for_empty_array() {
+        let nodes: Vec<Value> = vec![];
+        let count = assert_all_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn no_nodes_have_label_passes_when_no_match() {
+        let nodes = vec![
+            json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc123"]}),
+            json!({"fqn": "crate::b", "_labels": ["Struct", "Workspace_abc123"]}),
+        ];
+        assert_no_nodes_have_workspace_label(&nodes, "Workspace_xyz789");
+    }
+
+    #[test]
+    #[should_panic(expected = "CROSS-WORKSPACE LEAK DETECTED")]
+    fn no_nodes_have_label_panics_on_forbidden_label() {
+        let nodes = vec![json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc123"]})];
+        assert_no_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+    }
+
+    #[test]
+    #[should_panic(expected = "CROSS-WORKSPACE LEAK DETECTED")]
+    fn no_nodes_have_label_panics_on_substring_match() {
+        let nodes =
+            vec![json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_abc123def"]})];
+        assert_no_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+    }
+
+    #[test]
+    fn no_nodes_have_label_skips_nodes_without_labels() {
+        let nodes = vec![json!({"fqn": "crate::a"})];
+        assert_no_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+    }
+
+    #[test]
+    fn no_nodes_have_label_passes_for_empty_array() {
+        let nodes: Vec<Value> = vec![];
+        assert_no_nodes_have_workspace_label(&nodes, "Workspace_abc123");
+    }
+
+    #[test]
+    fn no_nodes_have_label_passes_when_labels_dont_contain_forbidden() {
+        let nodes = vec![
+            json!({"fqn": "crate::a", "_labels": ["Function", "Workspace_ws1"]}),
+            json!({"fqn": "crate::b", "_labels": ["Struct", "Workspace_ws2"]}),
+        ];
+        assert_no_nodes_have_workspace_label(&nodes, "Workspace_ws3");
+    }
+}

@@ -275,5 +275,104 @@ curl -s -u neo4j:rustbrain_dev_2024 -H "Content-Type: application/json" \
 # Check DEPENDS_ON
 curl -s -u neo4j:rustbrain_dev_2024 -H "Content-Type: application/json" \
   -d '{"statements":[{"statement":"MATCH (dep)-[:DEPENDS_ON]->(c:Crate {name: $name}) RETURN dep.name", "parameters":{"name":"router"}}]}' \
-  http://localhost:7474/db/neo4j/tx/commit
+   http://localhost:7474/db/neo4j/tx/commit
+   ```
+
+---
+
+## 7. RUSA-199 — Cross-Workspace Neo4j Isolation Tests
+
+This section documents the test matrix for verifying that workspace-scoped graph queries cannot leak data across workspace boundaries. Workspace isolation is enforced via `Workspace_<id>` labels injected into Neo4j nodes at ingestion time and filtered at query time.
+
+### Architecture
+
 ```
+Request → WorkspaceId extractor → WorkspaceGraphClient → inject_workspace_label() → Neo4j
+                                    ↓
+                              resolve_with_workspace() (graph templates)
+                                    ↓
+                              execute_user_cypher() (raw Cypher, server-side label injection)
+```
+
+**Key components:**
+- `WorkspaceId` / `OptionalWorkspaceId` extractors (`extractors.rs`) — resolve workspace from header or path
+- `WorkspaceGraphClient` (`neo4j.rs`) — wraps all graph queries with workspace context
+- `inject_workspace_label` (`neo4j.rs`) — prepends `:Workspace_<id>` MATCH clause to Cypher
+- `resolve_with_workspace` (`graph_templates.rs`) — resolves template queries with workspace label filter
+
+### Test Categories
+
+| Category | File | Count | Requires Docker | Status |
+|----------|------|-------|-----------------|--------|
+| Unit tests (assertion helpers) | `tests/common/mod.rs` | 12 | No | ✅ Passing |
+| Integration (per-template isolation) | `tests/workspace_neo4j_isolation.rs` | 22 | Yes | ⏳ `#[ignore]` |
+| E2E (full workspace lifecycle) | `tests/workspace_e2e_isolation.rs` | 8 | Yes | ⏳ `#[ignore]` |
+| Graph template `resolve_with_workspace` | `handlers/graph_templates.rs` | ~3 | No | ✅ Passing |
+
+### Unit Tests (No Docker Required)
+
+The 12 unit tests in `tests/common/mod.rs` verify the isolation assertion helpers `assert_all_nodes_have_workspace_label` and `assert_no_nodes_have_workspace_label`:
+
+- Exact label matching
+- Substring label matching (e.g., `Workspace_abc123` matches `Workspace_abc123def`)
+- Panic on wrong/forbidden labels (`CROSS-WORKSPACE LEAK DETECTED`)
+- Graceful handling of nodes without `_labels` field
+- Empty result arrays
+
+These run as part of `cargo test --workspace` without any external dependencies.
+
+### Integration Tests (Docker Required)
+
+The 22 `#[ignore]` tests in `workspace_neo4j_isolation.rs` cover:
+
+| Test Group | Count | What It Verifies |
+|------------|-------|-----------------|
+| Per-template isolation | 8 | Each graph template returns only nodes with the caller's `Workspace_<id>` label |
+| Direct endpoint isolation | 6 | `query_graph`, `search_semantic`, `aggregate_search` scoped to workspace |
+| Error paths | 4 | Missing workspace header, invalid workspace ID, unauthenticated access |
+| User Cypher isolation | 2 | `execute_user_cypher` injects `:Workspace_<id>` server-side; cannot bypass with MATCH |
+| Concurrent queries | 2 | Parallel requests from two workspaces don't intermix results |
+
+### E2E Tests (Docker Required)
+
+The 8 `#[ignore]` tests in `workspace_e2e_isolation.rs` cover the full workspace lifecycle:
+
+1. Create two workspaces from the same repo
+2. Wait for ingestion to complete
+3. Query each workspace and verify no cross-workspace leaks
+4. Delete one workspace and verify the other's data is intact
+5. Verify cleanup removes `Workspace_<id>` labels from Neo4j
+
+### Running the Tests
+
+```bash
+# Unit tests only (no Docker)
+cargo test --test common
+# Or the full workspace unit test suite
+cargo test --workspace
+
+# Integration tests (requires Docker stack running)
+cargo test --test workspace_neo4j_isolation -- --include-ignored
+
+# E2E isolation tests
+cargo test --test workspace_e2e_isolation -- --include-ignored
+
+# All isolation tests together
+cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored
+```
+
+### CI Status
+
+Integration and E2E tests are marked `#[ignore]` because they require the Docker stack (Postgres, Neo4j, Qdrant). The CI workflow (`.github/workflows/ci.yml`, commit ef80049) includes service containers but the `--include-ignored` flag is **commented out** pending workspace label injection during ingestion.
+
+**Current CI runs:** Unit tests only (`cargo test --workspace` runs ignored tests as skipped).
+
+**Unblock criteria:** Once ingestion applies `Workspace_<id>` labels to all Neo4j nodes, uncomment the `--include-ignored` line in CI and remove `continue-on-error: true`.
+
+### Known Gaps
+
+| Gap | Status | Issue |
+|-----|--------|-------|
+| Ingestion does not yet inject `Workspace_<id>` labels | Open | Blocks integration test enablement |
+| `--include-ignored` commented out in CI | Waiting | Dependent on ingestion labels |
+| `continue-on-error: true` on integration test step | Active | Remove once tests pass reliably |
