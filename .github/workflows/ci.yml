@@ -246,27 +246,44 @@ jobs:
   # ===========================================================================
   # Workspace isolation tests - verifies cross-workspace data leak prevention
   # Triggers on PRs touching graph-layer, workspace, or test files.
-  # All tests are #[ignore] until implementation dependencies land (RUSA-199).
   # ===========================================================================
   workspace-isolation-tests:
     name: Workspace Isolation Tests
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request'
-      && (
-        contains(github.event.pull_request.changed_files_url, 'services/api/src/graph_')
-        || contains(github.event.pull_request.changed_files_url, 'services/api/src/workspace')
-        || contains(github.event.pull_request.changed_files_url, 'services/api/src/handlers')
-        || contains(github.event.pull_request.changed_files_url, 'services/api/tests/workspace')
-      )
+    needs: [test]
+    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check changed files
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            graph-layer:
+              - 'services/api/src/neo4j.rs'
+              - 'services/api/src/graph_templates.rs'
+              - 'services/api/src/handlers/graph.rs'
+              - 'services/api/src/handlers/search.rs'
+              - 'services/ingestion/src/graph/**'
+              - '**/workspace*.rs'
+            workspace-tests:
+              - 'services/api/tests/workspace_*.rs'
+              - 'services/api/tests/common/**'
+
+      - name: Skip if no relevant changes
+        if: steps.changes.outputs.graph-layer == 'false' && steps.changes.outputs.workspace-tests == 'false'
+        run: |
+          echo "No graph-layer or workspace test changes detected. Skipping."
+          exit 0
+
       - name: Install Rust toolchain
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -277,6 +294,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Cache cargo target
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
         uses: actions/cache@v4
         with:
           path: target
@@ -284,19 +302,80 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-ws-iso-
 
+      # Postgres: per-workspace schema isolation
+      # Neo4j: graph store (workspace labels filter data)
+      # Qdrant: vector store (per-workspace collections)
+
       - name: Verify isolation test compilation
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
         run: |
           cargo test --test workspace_neo4j_isolation --no-run
           cargo test --test workspace_e2e_isolation --no-run
 
-      # Full run requires docker-compose stack (Postgres, Neo4j, Qdrant).
-      # Uncomment the --include-ignored line when services are configured.
-      - name: Run workspace isolation tests (ignored)
+      - name: Run workspace isolation tests
+        if: steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true'
+        env:
+          DATABASE_URL: postgresql://rustbrain:rustbrain_ci@localhost:5432/rustbrain
+          NEO4J_URL: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: rustbrain_ci_2024
+          QDRANT_HOST: http://localhost:6333
+          RUST_LOG: debug
+          RUST_BACKTRACE: 1
         run: |
-          echo "Workspace isolation tests require docker-compose stack."
-          echo "Run locally with:"
-          echo "  cargo test --test workspace_neo4j_isolation -- --include-ignored"
-          echo "  cargo test --test workspace_e2e_isolation -- --include-ignored"
-          echo "Skipping full run until service containers are configured."
-        # Uncomment when services are configured:
-        # run: cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored
+          # First run non-ignored tests (should always pass)
+          cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation 2>&1 | tee test-output.txt
+          # Then run ignored tests (will fail until implementation lands)
+          # Uncomment the line below when WorkspaceGraphClient + label injection are implemented:
+          # cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored 2>&1 | tee -a test-output.txt
+        continue-on-error: true
+
+      - name: Upload test artifacts on failure
+        if: failure() && (steps.changes.outputs.graph-layer == 'true' || steps.changes.outputs.workspace-tests == 'true')
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-isolation-test-logs
+          path: |
+            test-output.txt
+            target/debug/workspace_neo4j_isolation-*.txt
+            target/debug/workspace_e2e_isolation-*.txt
+          retention-days: 14
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rustbrain
+          POSTGRES_PASSWORD: rustbrain_ci
+          POSTGRES_DB: rustbrain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/rustbrain_ci_2024
+        ports:
+          - 7474:7474
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p rustbrain_ci_2024 'RETURN 1' || exit 1"
+          --health-interval 15s
+          --health-timeout 10s
+          --health-retries 10
+          --health-start-period 30s
+
+      qdrant:
+        image: qdrant/qdrant:v1.12.1
+        ports:
+          - 6333:6333
+        options: >-
+          --health-cmd "bash -c 'echo > /dev/tcp/localhost/6333'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
