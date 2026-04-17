@@ -19,6 +19,7 @@ use crate::errors::AppError;
 use crate::extractors::OptionalWorkspaceId;
 use crate::neo4j::{execute_neo4j_query, WorkspaceContext, WorkspaceGraphClient};
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Request/Response Types
@@ -137,7 +138,11 @@ pub async fn check_consistency(
     let timeout_duration = Duration::from_secs(30);
 
     let pg_future = async {
-        tokio::time::timeout(timeout_duration, query_postgres_fqns(&state, &crate_name)).await
+        tokio::time::timeout(
+            timeout_duration,
+            query_postgres_fqns(&state, &crate_name, ws.as_ref()),
+        )
+        .await
     };
 
     let neo4j_future = async {
@@ -265,7 +270,7 @@ pub async fn health_consistency(
     debug!("Running aggregate consistency health check");
 
     // Get list of all crates from Postgres
-    let crates = get_all_crate_names(&state).await?;
+    let crates = get_all_crate_names(&state, ws.as_ref()).await?;
 
     if crates.is_empty() {
         // No crates ingested - return healthy with empty stats
@@ -285,8 +290,10 @@ pub async fn health_consistency(
     let collection_name = crate::workspace::resolve_code_collection(ws.as_ref(), &state.config);
     for crate_name in &crates {
         // Run quick count-only check for each crate
-        let pg_future =
-            tokio::time::timeout(timeout_duration, query_postgres_count(&state, crate_name));
+        let pg_future = tokio::time::timeout(
+            timeout_duration,
+            query_postgres_count(&state, crate_name, ws.as_ref()),
+        );
         let neo4j_future = tokio::time::timeout(
             timeout_duration,
             query_neo4j_count(&state, crate_name, ws.as_ref()),
@@ -346,11 +353,17 @@ pub async fn health_consistency(
 // =============================================================================
 
 /// Query Postgres for FQNs matching a crate.
-async fn query_postgres_fqns(state: &AppState, crate_name: &str) -> Result<Vec<String>, AppError> {
+async fn query_postgres_fqns(
+    state: &AppState,
+    crate_name: &str,
+    ws: Option<&WorkspaceContext>,
+) -> Result<Vec<String>, AppError> {
+    let mut conn = acquire_conn(&state.pg_pool, ws).await?;
+
     let query = if crate_name == "all" {
         // Get all FQNs from extracted_items
         sqlx::query_as::<_, (String,)>("SELECT fqn FROM extracted_items WHERE fqn IS NOT NULL")
-            .fetch_all(&state.pg_pool)
+            .fetch_all(&mut *conn)
             .await
     } else {
         // Filter by crate name extracted from FQN
@@ -358,7 +371,7 @@ async fn query_postgres_fqns(state: &AppState, crate_name: &str) -> Result<Vec<S
             "SELECT fqn FROM extracted_items WHERE split_part(fqn, '::', 1) = $1",
         )
         .bind(crate_name)
-        .fetch_all(&state.pg_pool)
+        .fetch_all(&mut *conn)
         .await
     };
 
@@ -368,12 +381,18 @@ async fn query_postgres_fqns(state: &AppState, crate_name: &str) -> Result<Vec<S
 }
 
 /// Query Postgres for count of items in a crate.
-async fn query_postgres_count(state: &AppState, crate_name: &str) -> Result<usize, AppError> {
+async fn query_postgres_count(
+    state: &AppState,
+    crate_name: &str,
+    ws: Option<&WorkspaceContext>,
+) -> Result<usize, AppError> {
+    let mut conn = acquire_conn(&state.pg_pool, ws).await?;
+
     let result = sqlx::query_as::<_, (i64,)>(
         "SELECT COUNT(*) FROM extracted_items WHERE split_part(fqn, '::', 1) = $1",
     )
     .bind(crate_name)
-    .fetch_one(&state.pg_pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to query Postgres count: {}", e)))?;
 
@@ -626,11 +645,16 @@ async fn query_qdrant_count(
 }
 
 /// Get all unique crate names from Postgres.
-async fn get_all_crate_names(state: &AppState) -> Result<Vec<String>, AppError> {
+async fn get_all_crate_names(
+    state: &AppState,
+    ws: Option<&WorkspaceContext>,
+) -> Result<Vec<String>, AppError> {
+    let mut conn = acquire_conn(&state.pg_pool, ws).await?;
+
     let result = sqlx::query_as::<_, (String,)>(
         "SELECT DISTINCT split_part(fqn, '::', 1) as crate_name FROM extracted_items ORDER BY crate_name",
     )
-    .fetch_all(&state.pg_pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to get crate names: {}", e)))?;
 

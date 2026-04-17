@@ -9,7 +9,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 /// Progress of a single pipeline stage (e.g., expand, parse, embed).
 #[derive(Debug, Serialize)]
@@ -48,8 +50,11 @@ pub struct IngestionProgress {
 /// Returns the latest ingestion run status with stage-level progress.
 pub async fn ingestion_progress(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
 ) -> Result<Json<IngestionProgress>, AppError> {
     state.metrics.record_request("ingestion_progress", "GET");
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let row = sqlx::query_as::<_, IngestionRow>(
         r#"
@@ -60,7 +65,7 @@ pub async fn ingestion_progress(
         LIMIT 1
         "#,
     )
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
