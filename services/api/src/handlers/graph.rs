@@ -497,7 +497,7 @@ const CYPHER_WRITE_TOKENS: &[&str] = &["create", "delete", "set", "remove", "mer
 /// - CALL of any APOC procedure not in [`APOC_READONLY_NAMESPACES`]
 /// - CALL of any APOC procedure in [`APOC_PLANNER_REENTRY_PREFIXES`]
 fn validate_cypher(query: &str) -> Result<(), AppError> {
-    let query_lower = query.to_lowercase();
+    let query_lower = super::workspace_label::normalize_whitespace(&query.to_lowercase());
 
     // First check: reject planner-reentry APOC procedures
     if query_lower.contains("call apoc.") {
@@ -506,7 +506,7 @@ fn validate_cypher(query: &str) -> Result<(), AppError> {
             let after_call = &remaining[pos + 5..];
             let proc_name: String = after_call
                 .chars()
-                .take_while(|c| !c.is_whitespace() && *c != '(' && *c != '\n' && *c != '\r')
+                .take_while(|c| !c.is_whitespace() && *c != '(')
                 .collect();
 
             for prefix in APOC_PLANNER_REENTRY_PREFIXES {
@@ -546,7 +546,7 @@ fn validate_cypher(query: &str) -> Result<(), AppError> {
             // Collect the procedure identifier up to the first whitespace or `(`
             let proc_name: String = after_call
                 .chars()
-                .take_while(|c| !c.is_whitespace() && *c != '(' && *c != '\n' && *c != '\r')
+                .take_while(|c| !c.is_whitespace() && *c != '(')
                 .collect();
 
             let is_allowed = APOC_READONLY_NAMESPACES
@@ -563,6 +563,16 @@ fn validate_cypher(query: &str) -> Result<(), AppError> {
             // Advance past this occurrence to look for the next
             remaining = &remaining[pos + 10..];
         }
+    }
+
+    // Reject LOAD CSV — SSRF vector
+    if query_lower
+        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+        .any(|token| token == "load")
+    {
+        return Err(AppError::BadRequest(
+            "LOAD CSV is not allowed — potential SSRF vector".to_string(),
+        ));
     }
 
     Ok(())
