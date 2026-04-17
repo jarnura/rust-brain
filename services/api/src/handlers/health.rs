@@ -3,6 +3,13 @@
 //! - `GET /health` — checks all dependencies and returns aggregate status
 //! - `GET /metrics` — Prometheus-format metrics
 //! - `GET /api/snapshot` — snapshot manifest metadata
+//!
+//! # Neo4j Access Exemption
+//!
+//! This module uses raw Neo4j access (`check_neo4j`, `execute_neo4j_query`) for
+//! system-level health checks. These queries are NOT workspace-scoped because they
+//! check infrastructure availability and global statistics (total node/edge counts).
+//! This is explicitly exempt from the WorkspaceGraphClient requirement per RUSA-194.
 
 use axum::{
     extract::State,
@@ -221,11 +228,18 @@ async fn check_ollama(state: &AppState) -> DependencyStatus {
     }
 }
 
+/// System-level Neo4j health check with aggregate statistics.
+///
+/// **Exempt from WorkspaceGraphClient** (RUSA-194): This function checks
+/// infrastructure availability and returns global node/edge counts, not
+/// workspace-scoped data. It intentionally uses raw Neo4j access.
 async fn check_neo4j_with_counts(state: &AppState) -> DependencyStatus {
     let start = std::time::Instant::now();
+    // RUSA-194-EXEMPT: system-level health check - uses raw Neo4j for global stats
     match crate::neo4j::check_neo4j(&state.neo4j_graph).await {
         Ok(_) => {
             let latency_ms = start.elapsed().as_millis() as u64;
+            // RUSA-194-EXEMPT: system-level health check - queries global node/edge counts
             let count_result = crate::neo4j::execute_neo4j_query(
                 state,
                 "MATCH (n) WITH count(n) AS nodes OPTIONAL MATCH ()-[r]->() WITH nodes, count(r) AS rels RETURN nodes, rels",

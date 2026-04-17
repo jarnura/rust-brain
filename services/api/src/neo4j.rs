@@ -22,7 +22,7 @@ use crate::errors::AppError;
 use crate::handlers::{CalleeInfo, CallerNode};
 use crate::state::AppState;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info, info_span, Instrument};
 
 // =============================================================================
 // WorkspaceContext
@@ -80,9 +80,21 @@ impl WorkspaceContext {
 
     /// Returns the Neo4j composite label for this workspace.
     ///
-    /// Format: `Workspace_<id>` (e.g., `Workspace_550e8400e29b`).
+    /// Format: `Workspace_<12hex>` (e.g., `Workspace_550e8400e29b`).
+    ///
+    /// Derives the 12-character hex short ID from the workspace UUID by
+    /// stripping hyphens and taking the first 12 characters, matching the
+    /// Postgres schema naming convention (`ws_<12hex>`).
     pub fn workspace_label(&self) -> String {
-        format!("Workspace_{}", self.workspace_id)
+        let hex: String = self.workspace_id.chars().filter(|c| *c != '-').collect();
+        let short = &hex[..12.min(hex.len())];
+        format!("Workspace_{short}")
+    }
+
+    /// Returns the 12-character hex short ID derived from the workspace UUID.
+    pub fn short_id(&self) -> String {
+        let hex: String = self.workspace_id.chars().filter(|c| *c != '-').collect();
+        hex[..12.min(hex.len())].to_string()
     }
 
     /// Returns the raw workspace ID string.
@@ -187,15 +199,34 @@ impl WorkspaceGraphClient {
         cypher: &str,
         params: serde_json::Value,
     ) -> Result<Vec<serde_json::Value>, AppError> {
-        let ws_label = self.ctx.workspace_label();
-        let injected = inject_workspace_label(cypher, &ws_label);
+        let start = std::time::Instant::now();
+        let short_id = self.ctx.short_id();
+        let injected = crate::handlers::workspace_label::inject_workspace_label(cypher, &short_id)?;
         debug!(
             workspace_id = %self.ctx.workspace_id(),
             original_len = cypher.len(),
             injected_len = injected.len(),
             "Injected workspace labels into user Cypher"
         );
-        self.execute_query(&injected, params).await
+        let span = info_span!(
+            "neo4j_query",
+            workspace.id = %self.ctx.workspace_id(),
+            query_name = "user_cypher"
+        );
+        let result = self
+            .execute_query(&injected, params)
+            .instrument(span.clone())
+            .await;
+        let elapsed = start.elapsed();
+        let row_count = result.as_ref().map(|r| r.len()).unwrap_or(0);
+        info!(
+            workspace_id = %self.ctx.workspace_id(),
+            query_name = "user_cypher",
+            duration_ms = elapsed.as_millis(),
+            row_count = row_count,
+            "Neo4j query executed"
+        );
+        result
     }
 
     /// Resolves a named query template and executes it with workspace labels.
@@ -207,11 +238,26 @@ impl WorkspaceGraphClient {
         query_name: &str,
         parameters: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Vec<serde_json::Value>, AppError> {
+        let start = std::time::Instant::now();
         let ws_label = self.ctx.workspace_label();
         let (cypher, params) = crate::handlers::graph_templates::resolve_with_workspace(
             query_name, parameters, &ws_label,
         )?;
-        self.execute_query(&cypher, params).await
+        let span = info_span!("neo4j_query", workspace.id = %self.ctx.workspace_id(), query_name = %query_name);
+        let result = self
+            .execute_query(&cypher, params)
+            .instrument(span.clone())
+            .await;
+        let elapsed = start.elapsed();
+        let row_count = result.as_ref().map(|r| r.len()).unwrap_or(0);
+        info!(
+            workspace_id = %self.ctx.workspace_id(),
+            query_name = %query_name,
+            duration_ms = elapsed.as_millis(),
+            row_count = row_count,
+            "Neo4j query executed"
+        );
+        result
     }
 
     /// Finds functions that call the function identified by `fqn`.
@@ -219,21 +265,19 @@ impl WorkspaceGraphClient {
     /// Workspace-scoped: only returns callers within the same workspace.
     pub async fn get_callers(&self, fqn: &str, depth: usize) -> Result<Vec<CallerNode>, AppError> {
         let depth = depth.clamp(1, 5);
-        let ws = &self.ctx.workspace_label();
 
-        let cypher = format!(
-            r#"
-            MATCH (caller:Function:{ws})-[:CALLS*1..{depth}]->(callee:Function:{ws} {{fqn: $fqn}})
-            WHERE caller.fqn <> $fqn
-            RETURN DISTINCT caller.fqn as fqn, caller.name as name, caller.file_path as file_path,
-                   caller.start_line as line
-            ORDER BY fqn
-            LIMIT 50
-            "#
-        );
+        let mut params = std::collections::HashMap::new();
+        params.insert("fqn".to_string(), serde_json::json!(fqn));
+        params.insert("depth".to_string(), serde_json::json!(depth));
+        params.insert("limit".to_string(), serde_json::json!(50i64));
 
-        let params = serde_json::json!({"fqn": fqn});
-        let results = self.execute_query(&cypher, params).await?;
+        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
+            "get_callers",
+            &params,
+            &self.ctx.workspace_label(),
+        )?;
+
+        let results = self.execute_query(&cypher, query_params).await?;
 
         Ok(results
             .into_iter()
@@ -262,24 +306,19 @@ impl WorkspaceGraphClient {
         depth: usize,
     ) -> Result<Vec<CallerNode>, AppError> {
         let depth = depth.clamp(1, 5);
-        let ws = &self.ctx.workspace_label();
 
-        let cypher = format!(
-            r#"
-            MATCH (method:Function:{ws})
-            WHERE method.fqn STARTS WITH $prefix
-            WITH method
-            MATCH (caller:Function:{ws})-[:CALLS*1..{depth}]->(method)
-            WHERE NOT caller.fqn STARTS WITH $prefix
-            RETURN DISTINCT caller.fqn as fqn, caller.name as name,
-                   caller.file_path as file_path, caller.start_line as line
-            ORDER BY fqn
-            LIMIT 50
-            "#
-        );
+        let mut params = std::collections::HashMap::new();
+        params.insert("prefix".to_string(), serde_json::json!(method_prefix));
+        params.insert("depth".to_string(), serde_json::json!(depth));
+        params.insert("limit".to_string(), serde_json::json!(50i64));
 
-        let params = serde_json::json!({"prefix": method_prefix});
-        let results = self.execute_query(&cypher, params).await?;
+        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
+            "get_callers_for_impl",
+            &params,
+            &self.ctx.workspace_label(),
+        )?;
+
+        let results = self.execute_query(&cypher, query_params).await?;
 
         Ok(results
             .into_iter()
@@ -306,23 +345,17 @@ impl WorkspaceGraphClient {
         &self,
         method_prefix: &str,
     ) -> Result<Vec<CalleeInfo>, AppError> {
-        let ws = &self.ctx.workspace_label();
+        let mut params = std::collections::HashMap::new();
+        params.insert("prefix".to_string(), serde_json::json!(method_prefix));
+        params.insert("limit".to_string(), serde_json::json!(100i64));
 
-        let cypher = format!(
-            r#"
-            MATCH (method:Function:{ws})
-            WHERE method.fqn STARTS WITH $prefix
-            WITH method
-            MATCH (method)-[:CALLS]->(callee:Function:{ws})
-            WHERE NOT callee.fqn STARTS WITH $prefix
-            RETURN DISTINCT callee.fqn as fqn, callee.name as name
-            ORDER BY name
-            LIMIT 100
-            "#
-        );
+        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
+            "get_callees_for_impl",
+            &params,
+            &self.ctx.workspace_label(),
+        )?;
 
-        let params = serde_json::json!({"prefix": method_prefix});
-        let results = self.execute_query(&cypher, params).await?;
+        let results = self.execute_query(&cypher, query_params).await?;
 
         Ok(results
             .into_iter()
@@ -339,18 +372,16 @@ impl WorkspaceGraphClient {
     ///
     /// Workspace-scoped: only returns callees within the same workspace.
     pub async fn get_callees(&self, fqn: &str) -> Result<Vec<CalleeInfo>, AppError> {
-        let ws = &self.ctx.workspace_label();
+        let mut params = std::collections::HashMap::new();
+        params.insert("fqn".to_string(), serde_json::json!(fqn));
 
-        let cypher = format!(
-            r#"
-            MATCH (caller:Function:{ws} {{fqn: $fqn}})-[:CALLS]->(callee:Function:{ws})
-            RETURN callee.fqn as fqn, callee.name as name
-            ORDER BY name
-            "#
-        );
+        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
+            "get_callees",
+            &params,
+            &self.ctx.workspace_label(),
+        )?;
 
-        let params = serde_json::json!({"fqn": fqn});
-        let results = self.execute_query(&cypher, params).await?;
+        let results = self.execute_query(&cypher, query_params).await?;
 
         Ok(results
             .into_iter()
@@ -367,252 +398,6 @@ impl WorkspaceGraphClient {
 // =============================================================================
 // Workspace Label Injection for User Cypher
 // =============================================================================
-
-/// Injects `:Workspace_<id>` labels into all node patterns in a Cypher query.
-///
-/// **Trust boundary**: This function is the server-side enforcement point.
-/// Users cannot bypass workspace isolation because this injection happens
-/// after the user submits their Cypher but before it reaches Neo4j.
-///
-/// # Strategy (v1)
-///
-/// Iterates through the Cypher string and finds node patterns in MATCH and
-/// OPTIONAL MATCH clauses. For each node pattern:
-/// - `(var:Label1:Label2 {props})` → `(var:Label1:Label2:Workspace_<id> {props})`
-/// - `(var:Label1:Label2)` → `(var:Label1:Label2:Workspace_<id>)`
-/// - `(var {props})` → `(var:Workspace_<id> {props})`
-/// - `(var)` → `(var:Workspace_<id>)`
-///
-/// Relationship patterns `-[r:REL]->` are NOT modified.
-///
-/// # Limitations (v1)
-///
-/// - Does not parse WITH clause node references
-/// - Does not handle CALL {} subqueries
-/// - Simple heuristic: any `(` after MATCH/OPTIONAL MATCH/arrow is treated
-///   as a node pattern start
-///
-/// A future v2 should use AST-based Cypher parsing for complete coverage.
-fn inject_workspace_label(cypher: &str, workspace_label: &str) -> String {
-    let mut result = String::with_capacity(cypher.len() + cypher.len() / 4);
-    let bytes = cypher.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    // Track whether we're inside a MATCH context where node patterns should
-    // be modified. We set this to true after MATCH/OPTIONAL MATCH keywords
-    // and after relationship arrows ->  or  -[...]->.
-    let mut in_match_context = false;
-
-    while i < len {
-        // Detect MATCH keyword (but not OPTIONAL MATCH which we handle separately)
-        if starts_with_ignore_case(&bytes[i..], "MATCH")
-            && !starts_with_ignore_case(&bytes[i..], "MATCHES")
-        {
-            // Check it's not preceded by "OPTIONAL " (we handle that below)
-            // Check that the character after MATCH is whitespace or end
-            let after_match = i + 5;
-            if after_match >= len || !bytes[after_match].is_ascii_alphabetic() {
-                result.push_str("MATCH");
-                i += 5;
-                in_match_context = true;
-                // Consume whitespace
-                while i < len && bytes[i] == b' ' {
-                    result.push(' ');
-                    i += 1;
-                }
-                continue;
-            }
-        }
-
-        // Detect OPTIONAL MATCH
-        if starts_with_ignore_case(&bytes[i..], "OPTIONAL MATCH") {
-            let after = i + 14;
-            if after >= len || !bytes[after].is_ascii_alphabetic() {
-                result.push_str("OPTIONAL MATCH");
-                i += 14;
-                in_match_context = true;
-                while i < len && bytes[i] == b' ' {
-                    result.push(' ');
-                    i += 1;
-                }
-                continue;
-            }
-        }
-
-        // If we're in a match context and see a '(', process a node pattern
-        if in_match_context && i < len && bytes[i] == b'(' {
-            let node_end = find_matching_paren(bytes, i);
-            if node_end > i {
-                let node_content = &cypher[i + 1..node_end];
-                let injected = inject_label_into_node(node_content, workspace_label);
-                result.push('(');
-                result.push_str(&injected);
-                result.push(')');
-                i = node_end + 1;
-                // After a node pattern, we might see relationship patterns
-                // or more node patterns. Stay in match context.
-                continue;
-            }
-        }
-
-        // Detect end of match context (WHERE, WITH, RETURN, SET, etc.)
-        if in_match_context && is_clause_boundary(&bytes[i..]) {
-            in_match_context = false;
-        }
-
-        // Detect relationship arrow patterns: -> or -[...]-> or <- or <-
-        // After a relationship, we're back in match context for the next node
-        if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'>' {
-            result.push_str("->");
-            i += 2;
-            in_match_context = true;
-            continue;
-        }
-        if i + 1 < len && bytes[i] == b'<' && bytes[i + 1] == b'-' {
-            result.push_str("<-");
-            i += 2;
-            in_match_context = true;
-            continue;
-        }
-
-        result.push(bytes[i] as char);
-        i += 1;
-    }
-
-    result
-}
-
-/// Injects a workspace label into a single node pattern's content.
-///
-/// Input is the content between `(` and `)` of a node pattern, e.g.:
-/// - `f:Function` → `f:Function:Workspace_abc`
-/// - `n:Function:Exported {fqn: $fqn}` → `n:Function:Exported:Workspace_abc {fqn: $fqn}`
-/// - `n` → `n:Workspace_abc`
-/// - `n {fqn: $fqn}` → `n:Workspace_abc {fqn: $fqn}`
-fn inject_label_into_node(content: &str, workspace_label: &str) -> String {
-    let trimmed = content.trim();
-
-    // Find the end of the variable name + labels portion.
-    // This is before any '{' (property map) or end of string.
-    let prop_start = trimmed.find('{');
-    let labels_end = prop_start.unwrap_or(trimmed.len());
-
-    let var_labels_part = &trimmed[..labels_end];
-    let props_part = if let Some(ps) = prop_start {
-        &trimmed[ps..]
-    } else {
-        ""
-    };
-
-    // Check if there are already labels (contains ':')
-    if var_labels_part.contains(':') {
-        // Has labels: append workspace label after the last label
-        format!(
-            "{}:{} {}",
-            var_labels_part.trim_end(),
-            workspace_label,
-            props_part
-        )
-        .trim_end()
-        .to_string()
-    } else {
-        // No labels: just a variable name
-        let var_name = var_labels_part.trim();
-        if var_name.is_empty() {
-            // Bare () — just add the label
-            format!(":{}", workspace_label)
-        } else if props_part.is_empty() {
-            format!("{}:{}", var_name, workspace_label)
-        } else {
-            format!("{}:{} {}", var_name, workspace_label, props_part)
-        }
-    }
-}
-
-/// Finds the matching closing parenthesis for an opening one at position `start`.
-fn find_matching_paren(bytes: &[u8], start: usize) -> usize {
-    let mut depth = 0;
-    let mut i = start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return i;
-                }
-            }
-            b'\'' => {
-                // Skip string literal
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'\'' {
-                    if bytes[i] == b'\\' {
-                        i += 1; // skip escaped char
-                    }
-                    i += 1;
-                }
-            }
-            b'"' => {
-                // Skip string literal
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1; // skip escaped char
-                    }
-                    i += 1;
-                }
-            }
-            b'[' => {
-                // Skip to matching ] (relationship pattern)
-                let mut bracket_depth = 1;
-                i += 1;
-                while i < bytes.len() && bracket_depth > 0 {
-                    match bytes[i] {
-                        b'[' => bracket_depth += 1,
-                        b']' => bracket_depth -= 1,
-                        b'\'' | b'"' => {
-                            let quote = bytes[i];
-                            i += 1;
-                            while i < bytes.len() && bytes[i] != quote {
-                                if bytes[i] == b'\\' {
-                                    i += 1;
-                                }
-                                i += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                continue;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    // No matching paren found; return start to avoid panic
-    start
-}
-
-/// Checks if the byte slice starts with the given string (case-insensitive).
-fn starts_with_ignore_case(bytes: &[u8], pattern: &str) -> bool {
-    if bytes.len() < pattern.len() {
-        return false;
-    }
-    bytes[..pattern.len()]
-        .iter()
-        .zip(pattern.bytes())
-        .all(|(b, p)| b.eq_ignore_ascii_case(&p))
-}
-
-/// Checks if the position is a clause boundary (WHERE, WITH, RETURN, etc.).
-fn is_clause_boundary(bytes: &[u8]) -> bool {
-    let boundaries = [
-        "WHERE ", "WITH ", "RETURN ", "SET ", "DELETE ", "REMOVE ", "MERGE ", "CREATE ",
-    ];
-    boundaries.iter().any(|b| starts_with_ignore_case(bytes, b))
-}
 
 // =============================================================================
 // Legacy Functions (for internal/system use only)
@@ -871,7 +656,7 @@ mod tests {
     #[test]
     fn test_workspace_context_with_underscores_and_hyphens() {
         let ctx = WorkspaceContext::new("my-workspace_123".to_string()).unwrap();
-        assert_eq!(ctx.workspace_label(), "Workspace_my-workspace_123");
+        assert_eq!(ctx.workspace_label(), "Workspace_myworkspace_");
     }
 
     #[test]
@@ -906,109 +691,11 @@ mod tests {
         }
     }
 
-    // ── inject_workspace_label tests ────────────────────────────────────
-
     #[test]
-    fn test_inject_label_basic_match() {
-        let cypher = "MATCH (f:Function) RETURN f";
-        let result = inject_workspace_label(cypher, "Workspace_abc");
-        assert!(result.contains("(f:Function:Workspace_abc)"));
-    }
-
-    #[test]
-    fn test_inject_label_optional_match() {
-        let cypher = "OPTIONAL MATCH (c:Crate) RETURN c";
-        let result = inject_workspace_label(cypher, "Workspace_ws1");
-        assert!(result.contains("(c:Crate:Workspace_ws1)"));
-    }
-
-    #[test]
-    fn test_inject_label_bare_node() {
-        let cypher = "MATCH (n) RETURN n";
-        let result = inject_workspace_label(cypher, "Workspace_test");
-        assert!(result.contains("(n:Workspace_test)"));
-    }
-
-    #[test]
-    fn test_inject_label_node_with_props() {
-        let cypher = "MATCH (f:Function {fqn: $fqn}) RETURN f";
-        let result = inject_workspace_label(cypher, "Workspace_ws");
-        assert!(result.contains("Function:Workspace_ws {fqn: $fqn}"));
-    }
-
-    #[test]
-    fn test_inject_label_multiple_nodes_in_match() {
-        let cypher = "MATCH (a:Function)-[:CALLS]->(b:Function) RETURN a, b";
-        let result = inject_workspace_label(cypher, "Workspace_x");
-        assert!(result.contains("(a:Function:Workspace_x)"));
-        assert!(result.contains("(b:Function:Workspace_x)"));
-    }
-
-    #[test]
-    fn test_inject_label_skips_relationship_labels() {
-        let cypher = "MATCH (a:Function)-[r:CALLS]->(b:Function) RETURN r";
-        let result = inject_workspace_label(cypher, "Workspace_y");
-        assert!(result.contains("(a:Function:Workspace_y)"));
-        assert!(result.contains("(b:Function:Workspace_y)"));
-        assert!(
-            result.contains("[r:CALLS]"),
-            "Relationship label should be preserved"
-        );
-        assert!(
-            !result.contains("CALLS:Workspace_y"),
-            "Relationship label should not get workspace injected"
-        );
-    }
-
-    #[test]
-    fn test_inject_label_clause_boundary() {
-        let cypher = "MATCH (f:Function) WHERE f.name = $name RETURN f";
-        let result = inject_workspace_label(cypher, "Workspace_z");
-        assert!(result.contains("(f:Function:Workspace_z)"));
-    }
-
-    #[test]
-    fn test_inject_label_preserves_return_clause() {
-        let cypher = "MATCH (n:Function) RETURN n.fqn AS fqn";
-        let result = inject_workspace_label(cypher, "Workspace_w");
-        assert!(result.contains("RETURN n.fqn AS fqn"));
-    }
-
-    // ── inject_label_into_node tests ────────────────────────────────────
-
-    #[test]
-    fn test_inject_label_into_node_labeled() {
-        let result = inject_label_into_node("f:Function", "Workspace_abc");
-        assert_eq!(result, "f:Function:Workspace_abc");
-    }
-
-    #[test]
-    fn test_inject_label_into_node_labeled_with_props() {
-        let result = inject_label_into_node("f:Function {fqn: $fqn}", "Workspace_abc");
-        assert_eq!(result, "f:Function:Workspace_abc {fqn: $fqn}");
-    }
-
-    #[test]
-    fn test_inject_label_into_node_bare_var() {
-        let result = inject_label_into_node("n", "Workspace_test");
-        assert_eq!(result, "n:Workspace_test");
-    }
-
-    #[test]
-    fn test_inject_label_into_node_var_with_props() {
-        let result = inject_label_into_node("n {name: $name}", "Workspace_ws");
-        assert_eq!(result, "n:Workspace_ws {name: $name}");
-    }
-
-    #[test]
-    fn test_inject_label_into_node_multiple_labels() {
-        let result = inject_label_into_node("n:Function:Exported", "Workspace_x");
-        assert_eq!(result, "n:Function:Exported:Workspace_x");
-    }
-
-    #[test]
-    fn test_inject_label_into_node_empty() {
-        let result = inject_label_into_node("", "Workspace_x");
-        assert_eq!(result, ":Workspace_x");
+    fn test_workspace_label_from_uuid() {
+        let ctx =
+            WorkspaceContext::new("550e8400-e29b-41d4-a716-446655440000".to_string()).unwrap();
+        assert_eq!(ctx.workspace_label(), "Workspace_550e8400e29b");
+        assert_eq!(ctx.short_id(), "550e8400e29b");
     }
 }

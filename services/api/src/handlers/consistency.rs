@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::errors::AppError;
 use crate::extractors::OptionalWorkspaceId;
-use crate::neo4j::execute_neo4j_query;
+use crate::neo4j::{execute_neo4j_query, WorkspaceContext, WorkspaceGraphClient};
 use crate::state::AppState;
 
 // =============================================================================
@@ -141,7 +141,11 @@ pub async fn check_consistency(
     };
 
     let neo4j_future = async {
-        tokio::time::timeout(timeout_duration, query_neo4j_fqns(&state, &crate_name)).await
+        tokio::time::timeout(
+            timeout_duration,
+            query_neo4j_fqns(&state, &crate_name, ws.as_ref()),
+        )
+        .await
     };
 
     let collection_name = crate::workspace::resolve_code_collection(ws.as_ref(), &state.config);
@@ -283,8 +287,10 @@ pub async fn health_consistency(
         // Run quick count-only check for each crate
         let pg_future =
             tokio::time::timeout(timeout_duration, query_postgres_count(&state, crate_name));
-        let neo4j_future =
-            tokio::time::timeout(timeout_duration, query_neo4j_count(&state, crate_name));
+        let neo4j_future = tokio::time::timeout(
+            timeout_duration,
+            query_neo4j_count(&state, crate_name, ws.as_ref()),
+        );
         let qdrant_future = tokio::time::timeout(
             timeout_duration,
             query_qdrant_count(&state, crate_name, &collection_name),
@@ -375,54 +381,110 @@ async fn query_postgres_count(state: &AppState, crate_name: &str) -> Result<usiz
 }
 
 /// Query Neo4j for FQNs matching a crate.
-async fn query_neo4j_fqns(state: &AppState, crate_name: &str) -> Result<Vec<String>, AppError> {
-    let cypher = if crate_name == "all" {
-        r#"
-        MATCH (n) 
-        WHERE n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias
-        RETURN n.fqn as fqn
-        "#
+async fn query_neo4j_fqns(
+    state: &AppState,
+    crate_name: &str,
+    ws: Option<&WorkspaceContext>,
+) -> Result<Vec<String>, AppError> {
+    if let Some(ctx) = ws {
+        let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ctx.clone());
+
+        let template_name = if crate_name == "all" {
+            "consistency_fqns"
+        } else {
+            "consistency_fqns_filtered"
+        };
+
+        let mut params = std::collections::HashMap::new();
+        if crate_name != "all" {
+            params.insert("crate_name".to_string(), serde_json::json!(crate_name));
+        }
+
+        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
+            template_name,
+            &params,
+            &ctx.workspace_label(),
+        )?;
+
+        let results = client.execute_query(&cypher, query_params).await?;
+        Ok(results
+            .into_iter()
+            .filter_map(|r| r.get("fqn").and_then(|v| v.as_str()).map(String::from))
+            .collect())
     } else {
-        r#"
-        MATCH (n) 
-        WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias)
-        AND split(n.fqn, '::')[0] = $crate_name
-        RETURN n.fqn as fqn
-        "#
-    };
+        // SAFETY: system-level consistency check — no workspace context available
+        let cypher = if crate_name == "all" {
+            r#"
+            MATCH (n) 
+            WHERE n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias
+            RETURN n.fqn as fqn
+            "#
+        } else {
+            r#"
+            MATCH (n) 
+            WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias)
+            AND split(n.fqn, '::')[0] = $crate_name
+            RETURN n.fqn as fqn
+            "#
+        };
 
-    let params = if crate_name == "all" {
-        serde_json::json!({})
-    } else {
-        serde_json::json!({ "crate_name": crate_name })
-    };
+        let params = if crate_name == "all" {
+            serde_json::json!({})
+        } else {
+            serde_json::json!({ "crate_name": crate_name })
+        };
 
-    let results = execute_neo4j_query(state, cypher, params).await?;
-
-    Ok(results
-        .into_iter()
-        .filter_map(|r| r.get("fqn").and_then(|v| v.as_str()).map(String::from))
-        .collect())
+        let results = execute_neo4j_query(state, cypher, params).await?;
+        Ok(results
+            .into_iter()
+            .filter_map(|r| r.get("fqn").and_then(|v| v.as_str()).map(String::from))
+            .collect())
+    }
 }
 
 /// Query Neo4j for count of nodes matching a crate.
-async fn query_neo4j_count(state: &AppState, crate_name: &str) -> Result<usize, AppError> {
-    let cypher = r#"
-        MATCH (n) 
-        WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias)
-        AND split(n.fqn, '::')[0] = $crate_name
-        RETURN count(n) as count
-    "#;
+async fn query_neo4j_count(
+    state: &AppState,
+    crate_name: &str,
+    ws: Option<&WorkspaceContext>,
+) -> Result<usize, AppError> {
+    if let Some(ctx) = ws {
+        let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ctx.clone());
 
-    let params = serde_json::json!({ "crate_name": crate_name });
+        let mut params = std::collections::HashMap::new();
+        params.insert("crate_name".to_string(), serde_json::json!(crate_name));
 
-    let results = execute_neo4j_query(state, cypher, params).await?;
+        let (cypher, query_params) = crate::handlers::graph_templates::resolve_with_workspace(
+            "consistency_count",
+            &params,
+            &ctx.workspace_label(),
+        )?;
 
-    Ok(results
-        .first()
-        .and_then(|r| r.get("count"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0) as usize)
+        let results = client.execute_query(&cypher, query_params).await?;
+
+        let total: i64 = results
+            .iter()
+            .filter_map(|r| r.get("count").and_then(|v| v.as_i64()))
+            .sum();
+        Ok(total as usize)
+    } else {
+        // SAFETY: system-level consistency check — no workspace context available
+        let cypher = r#"
+            MATCH (n) 
+            WHERE (n:Function OR n:Struct OR n:Enum OR n:Trait OR n:Impl OR n:TypeAlias)
+            AND split(n.fqn, '::')[0] = $crate_name
+            RETURN count(n) as count
+        "#;
+
+        let params = serde_json::json!({ "crate_name": crate_name });
+        let results = execute_neo4j_query(state, cypher, params).await?;
+
+        Ok(results
+            .first()
+            .and_then(|r| r.get("count"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as usize)
+    }
 }
 
 /// Query Qdrant for FQNs matching a crate.

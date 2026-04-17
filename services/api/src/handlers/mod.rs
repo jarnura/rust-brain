@@ -32,6 +32,7 @@ pub mod validator;
 pub mod workspace;
 pub mod workspace_commit;
 pub mod workspace_diff;
+pub mod workspace_label;
 pub mod workspace_reset;
 pub mod workspace_stream;
 

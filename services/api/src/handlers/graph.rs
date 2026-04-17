@@ -470,6 +470,23 @@ const APOC_READONLY_NAMESPACES: &[&str] = &[
     "apoc.version",
 ];
 
+/// APOC procedure prefixes that re-enter the Cypher planner — always rejected.
+///
+/// These procedures can execute arbitrary Cypher strings, bypassing read-only
+/// restrictions and workspace label injection. They must be blocked even if
+/// they don't match standard write keywords.
+const APOC_PLANNER_REENTRY_PREFIXES: &[&str] = &[
+    "apoc.cypher.run",
+    "apoc.cypher.runmany",
+    "apoc.cypher.runfile",
+    "apoc.do.when",
+    "apoc.do.case",
+    "apoc.when",
+    "apoc.case",
+    "apoc.periodic.commit",
+    "apoc.periodic.iterate",
+];
+
 /// Cypher write keyword tokens that must be rejected in raw user queries.
 const CYPHER_WRITE_TOKENS: &[&str] = &["create", "delete", "set", "remove", "merge"];
 
@@ -478,8 +495,32 @@ const CYPHER_WRITE_TOKENS: &[&str] = &["create", "delete", "set", "remove", "mer
 /// Rejects:
 /// - Queries containing DML write keywords (CREATE, DELETE, SET, REMOVE, MERGE)
 /// - CALL of any APOC procedure not in [`APOC_READONLY_NAMESPACES`]
+/// - CALL of any APOC procedure in [`APOC_PLANNER_REENTRY_PREFIXES`]
 fn validate_cypher(query: &str) -> Result<(), AppError> {
     let query_lower = query.to_lowercase();
+
+    // First check: reject planner-reentry APOC procedures
+    if query_lower.contains("call apoc.") {
+        let mut remaining = query_lower.as_str();
+        while let Some(pos) = remaining.find("call apoc.") {
+            let after_call = &remaining[pos + 5..];
+            let proc_name: String = after_call
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '(' && *c != '\n' && *c != '\r')
+                .collect();
+
+            for prefix in APOC_PLANNER_REENTRY_PREFIXES {
+                if proc_name.starts_with(prefix) {
+                    return Err(AppError::BadRequest(format!(
+                        "APOC procedure '{}' is not allowed — it can execute arbitrary Cypher",
+                        proc_name
+                    )));
+                }
+            }
+
+            remaining = &remaining[pos + 10..];
+        }
+    }
 
     // Reject write keywords
     for keyword in CYPHER_WRITE_TOKENS {
@@ -544,11 +585,14 @@ fn validate_cypher(query: &str) -> Result<(), AppError> {
 pub async fn query_graph(
     State(state): State<AppState>,
     WorkspaceId(ws): WorkspaceId,
-    Json(req): Json<QueryGraphRequest>,
+    Json(mut req): Json<QueryGraphRequest>,
 ) -> Result<Json<GraphQueryResponse>, AppError> {
     state.metrics.record_request("query_graph", "POST");
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+
+    // Defense-in-depth: strip any workspace-related parameters to prevent injection attempts
+    super::workspace_label::sanitize_parameters(&mut req.parameters);
 
     let (cypher, results) = if let Some(ref query) = req.query {
         validate_cypher(query)?;
@@ -720,5 +764,48 @@ mod tests {
     #[test]
     fn test_rejects_apoc_export() {
         assert!(validate_cypher("CALL apoc.export.csv.all('out.csv', {})").is_err());
+    }
+
+    #[test]
+    fn test_rejects_apoc_cypher_run() {
+        let err = validate_cypher("CALL apoc.cypher.run('MATCH (n) RETURN n', {})").unwrap_err();
+        assert!(err.to_string().contains("apoc.cypher.run"));
+        assert!(err.to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_cypher_run_many() {
+        let err =
+            validate_cypher("CALL apoc.cypher.runMany('MATCH (n) RETURN n', [{}])").unwrap_err();
+        assert!(err.to_string().contains("apoc.cypher.runmany"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_do_case() {
+        let err =
+            validate_cypher("CALL apoc.do.case([true, 'RETURN 1'], 'RETURN 0', {})").unwrap_err();
+        assert!(err.to_string().contains("apoc.do.case"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_when() {
+        let err = validate_cypher("CALL apoc.when(true, 'RETURN 1', 'RETURN 0', {})").unwrap_err();
+        assert!(err.to_string().contains("apoc.when"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_case() {
+        let err =
+            validate_cypher("CALL apoc.case([true, 'RETURN 1'], 'RETURN 0', {})").unwrap_err();
+        assert!(err.to_string().contains("apoc.case"));
+    }
+
+    #[test]
+    fn test_rejects_apoc_periodic_iterate() {
+        let err = validate_cypher(
+            "CALL apoc.periodic.iterate('MATCH (n) RETURN n', 'SET n.x = 1', {batchSize: 100})",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("apoc.periodic.iterate"));
     }
 }

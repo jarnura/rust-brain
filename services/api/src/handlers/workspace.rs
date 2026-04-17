@@ -637,6 +637,7 @@ async fn run_clone(
         qdrant_host: &config.qdrant_host,
         embedding_model: &config.embedding_model,
         ingestion_image: &config.ingestion_image,
+        workspace_id: &ws_id.to_string(),
     };
 
     match docker.run_ingestion(&ingestion_cfg).await {

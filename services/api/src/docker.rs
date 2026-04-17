@@ -76,6 +76,22 @@ pub struct IngestionConfig<'a> {
     pub embedding_model: &'a str,
     /// Docker image to run (e.g. `rustbrain-ingestion:latest`).
     pub ingestion_image: &'a str,
+    /// Workspace UUID. Forwarded as `INGESTION_WORKSPACE_ID`; the derived
+    /// `Workspace_<12hex>` label is also sent as `INGESTION_WORKSPACE_LABEL`.
+    pub workspace_id: &'a str,
+}
+
+/// Derive `Workspace_<12hex>` label from a workspace UUID string.
+///
+/// Strips hyphens, takes the first 12 characters, prepends `Workspace_`.
+/// Matches the Postgres schema naming convention `ws_<12hex>`.
+fn workspace_label_from_id(workspace_id: &str) -> String {
+    let short: String = workspace_id
+        .chars()
+        .filter(|c| *c != '-')
+        .take(12)
+        .collect();
+    format!("Workspace_{short}")
 }
 
 /// Client for creating and destroying Docker volumes that back workspaces.
@@ -393,6 +409,7 @@ impl DockerClient {
         // Mount the named Docker volume (not a host path) so this works whether the
         // API is running bare-metal or as a sibling container talking to the host daemon.
         let volume_mount = format!("{}:/workspace/target-repo:ro", cfg.volume_name);
+        let workspace_label = workspace_label_from_id(cfg.workspace_id);
 
         let output = Command::new("docker")
             .args([
@@ -416,6 +433,10 @@ impl DockerClient {
                 &format!("QDRANT_HOST={}", cfg.qdrant_host),
                 "-e",
                 &format!("EMBEDDING_MODEL={}", cfg.embedding_model),
+                "-e",
+                &format!("INGESTION_WORKSPACE_ID={}", cfg.workspace_id),
+                "-e",
+                &format!("INGESTION_WORKSPACE_LABEL={}", workspace_label),
                 cfg.ingestion_image,
                 "--crate-path",
                 "/workspace/target-repo",
@@ -643,9 +664,22 @@ mod tests {
             qdrant_host: "http://unused:6333",
             embedding_model: "nomic-embed-text",
             ingestion_image: "rustbrain-ingestion-test-nonexistent:latest",
+            workspace_id: "00000000-0000-0000-0000-000000000000",
         };
         let result = client.run_ingestion(&cfg).await;
         // No panic is the assertion — docker may be absent or the image may be missing.
         assert!(result.is_err() || result.is_ok());
+    }
+
+    #[test]
+    fn test_workspace_label_from_id() {
+        assert_eq!(
+            super::workspace_label_from_id("abc12345-0000-0000-0000-000000000000"),
+            "Workspace_abc123450000"
+        );
+        assert_eq!(
+            super::workspace_label_from_id("550e8400-e29b-41d4-a716-446655440000"),
+            "Workspace_550e8400e29b"
+        );
     }
 }
