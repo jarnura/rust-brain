@@ -463,11 +463,12 @@ services:
 
   # Audit service — workspace leak detection and compliance scanning
   # Runs periodic Cypher queries against Neo4j to detect cross-workspace
-  # contamination and orphan nodes. Exposes metrics at :8090/metrics.
+  # contamination and orphan nodes. Also detects orphaned Docker volumes
+  # and containers not tracked in Postgres. Exposes metrics at :8090/metrics.
   audit:
     build:
-      context: ./services/audit
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/audit/Dockerfile
     container_name: rustbrain-audit
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -476,9 +477,17 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       AUDIT_PORT: "8090"
       AUDIT_INTERVAL_SECS: ${AUDIT_INTERVAL_SECS:-600}
+      LEAK_DETECTION_DRY_RUN: ${LEAK_DETECTION_DRY_RUN:-true}
+      AUDIT_LOG_RETENTION_DAYS: ${AUDIT_LOG_RETENTION_DAYS:-90}
       RUST_LOG: ${RUST_LOG:-info,rustbrain_audit=debug}
     ports:
       - "${AUDIT_PORT:-8090}:8090"
+    volumes:
+      # Docker socket access for detecting orphaned volumes/containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Grant access to Docker socket (same GID as API container)
+    group_add:
+      - "${DOCKER_GID:-999}"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8090/health || exit 1"]
       interval: 30s

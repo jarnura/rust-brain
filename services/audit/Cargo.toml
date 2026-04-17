@@ -1,0 +1,44 @@
+[package]
+name = "rustbrain-audit"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace leak detection and audit logging service for rust-brain"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.37", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+
+# Graph database
+neo4rs = "0.7"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Metrics
+prometheus = "0.13"
+lazy_static = "1.4"
+
+# Shared types
+rustbrain-common = { path = "../../crates/rustbrain-common" }
+
+# Pin home to avoid Rust 1.88 requirement
+home = "=0.5.9"
