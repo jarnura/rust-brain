@@ -218,7 +218,7 @@ async fn check_ollama(state: &AppState) -> DependencyStatus {
 
 async fn check_neo4j_with_counts(state: &AppState) -> DependencyStatus {
     let start = std::time::Instant::now();
-    match crate::neo4j::check_neo4j(state).await {
+    match crate::neo4j::check_neo4j(&state.neo4j_graph).await {
         Ok(_) => {
             let latency_ms = start.elapsed().as_millis() as u64;
             let count_result = crate::neo4j::execute_neo4j_query(

@@ -13,10 +13,8 @@ use tracing::debug;
 
 use super::{default_depth, CalleeInfo, CallerInfo, CallerNode};
 use crate::errors::AppError;
-use crate::neo4j::{
-    get_callees_for_impl_with_prefix, get_callees_from_neo4j, get_callers_for_impl_with_prefix,
-    get_callers_from_neo4j,
-};
+use crate::extractors::WorkspaceId;
+use crate::neo4j::WorkspaceGraphClient;
 use crate::state::AppState;
 
 // =============================================================================
@@ -106,10 +104,13 @@ pub struct CallersResponse {
 /// an empty caller list.
 pub async fn get_function(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetFunctionQuery>,
 ) -> Result<Json<FunctionDetail>, AppError> {
     state.metrics.record_request("get_function", "GET");
     debug!("Get function: {}", query.fqn);
+
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
 
     let row = sqlx::query_as::<
         _,
@@ -184,8 +185,8 @@ pub async fn get_function(
         );
 
         let (caller_result, callee_result) = tokio::join!(
-            get_callers_for_impl_with_prefix(&state, &method_prefix, 1),
-            get_callees_for_impl_with_prefix(&state, &method_prefix),
+            client.get_callers_for_impl(&method_prefix, 1),
+            client.get_callees_for_impl(&method_prefix),
         );
 
         let callers: Vec<CallerInfo> = caller_result
@@ -202,8 +203,8 @@ pub async fn get_function(
     } else {
         // Standard function/method: direct CALLS query
         let (caller_result, callee_result) = tokio::join!(
-            get_callers_from_neo4j(&state, &query.fqn, 1),
-            get_callees_from_neo4j(&state, &query.fqn),
+            client.get_callers(&query.fqn, 1),
+            client.get_callees(&query.fqn),
         );
 
         let callers: Vec<CallerInfo> = caller_result
@@ -249,6 +250,7 @@ pub async fn get_function(
 /// Returns [`AppError::Neo4j`] if the graph query fails.
 pub async fn get_callers(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetCallersQuery>,
 ) -> Result<Json<CallersResponse>, AppError> {
     state.metrics.record_request("get_callers", "GET");
@@ -262,7 +264,8 @@ pub async fn get_callers(
 
     debug!("Get callers for: {} (depth: {})", query.fqn, query.depth);
 
-    let callers = get_callers_from_neo4j(&state, &query.fqn, query.depth).await?;
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+    let callers = client.get_callers(&query.fqn, query.depth).await?;
 
     Ok(Json(CallersResponse {
         fqn: query.fqn,

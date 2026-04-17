@@ -284,6 +284,194 @@ pub fn resolve(
     }
 }
 
+/// Resolves a named query template with workspace labels injected.
+///
+/// Same as [`resolve`] but every node pattern in the generated Cypher
+/// receives the `workspace_label` composite label (e.g., `Workspace_abc123`).
+/// Called by [`crate::neo4j::WorkspaceGraphClient::resolve_and_execute_template`].
+pub fn resolve_with_workspace(
+    query_name: &str,
+    parameters: &HashMap<String, serde_json::Value>,
+    workspace_label: &str,
+) -> Result<(String, serde_json::Value), AppError> {
+    let limit = extract_limit(parameters);
+    let ws = workspace_label;
+
+    match query_name {
+        "find_functions_by_name" => {
+            let name = require_str(parameters, &["name"])?;
+            Ok((
+                format!(
+                    "MATCH (f:Function:{ws}) WHERE f.name = $name \
+                     AND f.file_path IS NOT NULL \
+                     RETURN f.fqn AS fqn, f.name AS name, f.file_path AS file_path, \
+                     f.start_line AS start_line, f.visibility AS visibility, \
+                     f.signature AS signature \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"name": name, "limit": limit}),
+            ))
+        }
+
+        "find_callers" => {
+            let name = require_str(parameters, &["name", "fqn"])?;
+            let depth = clamp_depth(parameters);
+            Ok((
+                format!(
+                    "MATCH (caller:{ws})-[:CALLS*1..{}]->(target:{ws}) \
+                     WHERE (target.name = $name OR target.fqn = $name) \
+                     AND caller.file_path IS NOT NULL \
+                     RETURN DISTINCT caller.fqn AS fqn, caller.name AS name, \
+                     caller.file_path AS file_path, caller.start_line AS start_line \
+                     LIMIT $limit",
+                    depth
+                ),
+                serde_json::json!({"name": name, "limit": limit}),
+            ))
+        }
+
+        "find_callees" => {
+            let name = require_str(parameters, &["name", "fqn"])?;
+            Ok((
+                format!(
+                    "MATCH (source:{ws})-[:CALLS]->(callee:{ws}) \
+                     WHERE (source.name = $name OR source.fqn = $name) \
+                     AND callee.file_path IS NOT NULL \
+                     RETURN DISTINCT callee.fqn AS fqn, callee.name AS name, \
+                     callee.file_path AS file_path \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"name": name, "limit": limit}),
+            ))
+        }
+
+        "find_trait_implementations" => {
+            let name = require_str(parameters, &["name"])?;
+            Ok((
+                format!(
+                    "MATCH (impl:{ws})-[:IMPLEMENTS]->(trait:{ws}) \
+                     WHERE trait.name = $name OR trait.fqn = $name \
+                     AND impl.file_path IS NOT NULL \
+                     RETURN impl.fqn AS fqn, impl.name AS name, \
+                     impl.file_path AS file_path, impl.for_type AS for_type \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"name": name, "limit": limit}),
+            ))
+        }
+
+        "find_by_fqn" => {
+            let fqn = require_str(parameters, &["fqn", "name"])?;
+            let label = label_or_default(parameters, "Function")?;
+            Ok((
+                format!(
+                    "MATCH (n:{label}:{ws}) WHERE n.fqn = $fqn OR n.name = $fqn \
+                     RETURN n \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"fqn": fqn, "limit": limit}),
+            ))
+        }
+
+        "find_neighbors" => {
+            let fqn = require_str(parameters, &["fqn", "name"])?;
+            let depth = clamp_depth(parameters);
+            Ok((
+                format!(
+                    "MATCH (n:{ws})-[r*1..{depth}]-(neighbor:{ws}) \
+                     WHERE n.fqn = $fqn OR n.name = $fqn \
+                     RETURN DISTINCT type(last(r)) AS relationship, \
+                     neighbor.fqn AS fqn, neighbor.name AS name, \
+                     labels(neighbor) AS labels \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"fqn": fqn, "limit": limit}),
+            ))
+        }
+
+        "find_nodes_by_label" => {
+            let label = require_label(parameters)?;
+            Ok((
+                format!(
+                    "MATCH (n:{label}:{ws}) RETURN n.fqn AS fqn, n.name AS name \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"limit": limit}),
+            ))
+        }
+
+        "find_module_contents" => {
+            let path = require_str(parameters, &["path", "name"])?;
+            Ok((
+                format!(
+                    "MATCH (m:Module:{ws})-[:CONTAINS]->(item:{ws}) \
+                     WHERE m.fqn = $path OR m.name = $path \
+                     RETURN item.fqn AS fqn, item.name AS name, \
+                     labels(item) AS labels, item.visibility AS visibility \
+                     LIMIT $limit"
+                ),
+                serde_json::json!({"path": path, "limit": limit}),
+            ))
+        }
+
+        "count_by_label" => {
+            let label = require_label(parameters)?;
+            Ok((
+                format!("MATCH (n:{label}:{ws}) RETURN count(n) AS count"),
+                serde_json::json!({}),
+            ))
+        }
+
+        "find_crate_overview" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                format!(
+                    "MATCH (c:Crate:{ws}) WHERE c.name = $crate_name \
+                     OPTIONAL MATCH (c)-[:CONTAINS]->(item:{ws}) \
+                     WITH c, labels(item)[0] AS item_type, count(item) AS cnt \
+                     RETURN c.name AS name, item_type, cnt \
+                     ORDER BY cnt DESC"
+                ),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        "find_crate_dependencies" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                format!(
+                    "MATCH (c:Crate:{ws})-[:DEPENDS_ON]->(dep:Crate:{ws}) \
+                     WHERE c.name = $crate_name \
+                     RETURN dep.name AS name \
+                     ORDER BY dep.name"
+                ),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        "find_crate_dependents" => {
+            let crate_name = require_str(parameters, &["crate_name"])?;
+            Ok((
+                format!(
+                    "MATCH (dependent:Crate:{ws})-[:DEPENDS_ON]->(c:Crate:{ws}) \
+                     WHERE c.name = $crate_name \
+                     RETURN dependent.name AS name \
+                     ORDER BY dependent.name"
+                ),
+                serde_json::json!({"crate_name": crate_name}),
+            ))
+        }
+
+        _ => Err(AppError::BadRequest(format!(
+            "Unknown query template: '{}'. Available: find_functions_by_name, \
+             find_callers, find_callees, find_trait_implementations, find_by_fqn, \
+             find_neighbors, find_nodes_by_label, find_module_contents, count_by_label, \
+             find_crate_overview, find_crate_dependencies, find_crate_dependents",
+            query_name,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,5 +785,77 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p["limit"], 50);
+    }
+
+    // ── resolve_with_workspace tests ────────────────────────────────────
+
+    #[test]
+    fn resolve_with_workspace_injects_label() {
+        let (cypher, _) = resolve_with_workspace(
+            "find_functions_by_name",
+            &params(&[("name", serde_json::json!("main"))]),
+            "Workspace_abc",
+        )
+        .unwrap();
+        assert!(cypher.contains("Function:Workspace_abc"));
+    }
+
+    #[test]
+    fn resolve_with_workspace_find_callers() {
+        let (cypher, _) = resolve_with_workspace(
+            "find_callers",
+            &params(&[
+                ("name", serde_json::json!("f")),
+                ("depth", serde_json::json!(2)),
+            ]),
+            "Workspace_ws1",
+        )
+        .unwrap();
+        assert!(cypher.contains("caller:Workspace_ws1"));
+        assert!(cypher.contains("target:Workspace_ws1"));
+    }
+
+    #[test]
+    fn resolve_with_workspace_find_nodes_by_label() {
+        let (cypher, _) = resolve_with_workspace(
+            "find_nodes_by_label",
+            &params(&[("label", serde_json::json!("Struct"))]),
+            "Workspace_test",
+        )
+        .unwrap();
+        assert!(cypher.contains("Struct:Workspace_test"));
+    }
+
+    #[test]
+    fn resolve_with_workspace_find_crate_overview() {
+        let (cypher, _) = resolve_with_workspace(
+            "find_crate_overview",
+            &params(&[("crate_name", serde_json::json!("api"))]),
+            "Workspace_xyz",
+        )
+        .unwrap();
+        assert!(cypher.contains("Crate:Workspace_xyz"));
+        assert!(cypher.contains("item:Workspace_xyz"));
+    }
+
+    #[test]
+    fn resolve_with_workspace_unknown_template() {
+        let err =
+            resolve_with_workspace("nonexistent", &HashMap::new(), "Workspace_abc").unwrap_err();
+        assert!(err.to_string().contains("Unknown query template"));
+    }
+
+    #[test]
+    fn resolve_with_workspace_find_by_fqn_with_label() {
+        let (cypher, _) = resolve_with_workspace(
+            "find_by_fqn",
+            &params(&[
+                ("fqn", serde_json::json!("crate::MyStruct")),
+                ("label", serde_json::json!("Struct")),
+            ]),
+            "Workspace_ws",
+        )
+        .unwrap();
+        assert!(cypher.contains("Struct:Workspace_ws"));
     }
 }

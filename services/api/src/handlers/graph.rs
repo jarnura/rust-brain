@@ -16,7 +16,8 @@ use tracing::debug;
 
 use super::default_limit;
 use crate::errors::AppError;
-use crate::neo4j::execute_neo4j_query;
+use crate::extractors::WorkspaceId;
+use crate::neo4j::WorkspaceGraphClient;
 use crate::state::AppState;
 
 // =============================================================================
@@ -171,25 +172,31 @@ pub struct GraphQueryResponse {
 /// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn get_trait_impls(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetTraitImplsQuery>,
 ) -> Result<Json<TraitImplsResponse>, AppError> {
     state.metrics.record_request("get_trait_impls", "GET");
     debug!("Get trait impls for: {}", query.trait_name);
 
-    let cypher = r#"
-        MATCH (impl:Impl)-[:IMPLEMENTS]->(trait:Trait)
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+    let ws_label = client.workspace().workspace_label();
+
+    let cypher = format!(
+        r#"
+        MATCH (impl:Impl:{ws_label})-[:IMPLEMENTS]->(trait:Trait:{ws_label})
         WHERE trait.name = $trait_name OR trait.fqn CONTAINS $trait_name OR trait.fqn = $trait_name
         RETURN impl.fqn as impl_fqn, impl.name as impl_name, trait.name as trait_name, trait.fqn as trait_fqn,
                impl.start_line as start_line
         LIMIT $limit
-        "#;
+        "#
+    );
 
     let params = serde_json::json!({
         "trait_name": query.trait_name,
         "limit": query.limit as i32,
     });
 
-    let results = execute_neo4j_query(&state, cypher, params).await?;
+    let results = client.execute_query(&cypher, params).await?;
 
     let implementations = results
         .into_iter()
@@ -229,18 +236,24 @@ pub async fn get_trait_impls(
 /// Returns [`AppError::Neo4j`] if the Cypher query fails.
 pub async fn find_usages_of_type(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<FindUsagesOfTypeQuery>,
 ) -> Result<Json<UsagesResponse>, AppError> {
     state.metrics.record_request("find_usages_of_type", "GET");
     debug!("Find usages of type: {}", query.type_name);
 
-    let cypher = r#"
-        MATCH (n)-[:USES_TYPE]->(t)
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+    let ws_label = client.workspace().workspace_label();
+
+    let cypher = format!(
+        r#"
+        MATCH (n:{ws_label})-[:USES_TYPE]->(t:{ws_label})
         WHERE (t:Struct OR t:Enum OR t:Trait OR t:TypeAlias OR t:Type)
         AND (t.name = $type_name OR t.fqn = $type_name OR t.fqn ENDS WITH $fqn_suffix)
         RETURN n.fqn as fqn, n.name as name, labels(n)[0] as kind, n.file_path as file_path, n.start_line as line
         LIMIT $limit
-        "#;
+        "#
+    );
 
     let fqn_suffix = format!("::{}", query.type_name);
 
@@ -250,7 +263,7 @@ pub async fn find_usages_of_type(
         "limit": query.limit as i32,
     });
 
-    let results = execute_neo4j_query(&state, cypher, params).await?;
+    let results = client.execute_query(&cypher, params).await?;
 
     let usages = results
         .into_iter()
@@ -282,36 +295,42 @@ pub async fn find_usages_of_type(
 /// empty tree (root with no children) if no modules are found.
 pub async fn get_module_tree(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetModuleTreeQuery>,
 ) -> Result<Json<ModuleTreeResponse>, AppError> {
     state.metrics.record_request("get_module_tree", "GET");
     debug!("Get module tree for crate: {}", query.crate_name);
 
-    let cypher = r#"
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+    let ws_label = client.workspace().workspace_label();
+
+    let cypher = format!(
+        r#"
         // Get all modules for this crate (crate name is first part of FQN)
-        MATCH (m:Module)
+        MATCH (m:Module:{ws_label})
         WHERE split(m.fqn, '::')[0] = $crate_name
         WITH collect(m) as all_modules
 
         // Get all parent-child module relationships within this crate
-        OPTIONAL MATCH (parent:Module)-[:CONTAINS]->(child:Module)
+        OPTIONAL MATCH (parent:Module:{ws_label})-[:CONTAINS]->(child:Module:{ws_label})
         WHERE split(parent.fqn, '::')[0] = $crate_name AND split(child.fqn, '::')[0] = $crate_name
-        WITH all_modules, collect({parent: parent.fqn, child: child.fqn}) as module_hierarchy
+        WITH all_modules, collect({{parent: parent.fqn, child: child.fqn}}) as module_hierarchy
 
         // Get items for each module (using CONTAINS, not DEFINES)
-        OPTIONAL MATCH (m:Module)-[:CONTAINS]->(item)
+        OPTIONAL MATCH (m:Module:{ws_label})-[:CONTAINS]->(item:{ws_label})
         WHERE split(m.fqn, '::')[0] = $crate_name AND NOT item:Module
         WITH all_modules, module_hierarchy,
-             collect({module_fqn: m.fqn, name: item.name, kind: labels(item)[0], visibility: item.visibility}) as all_items
+             collect({{module_fqn: m.fqn, name: item.name, kind: labels(item)[0], visibility: item.visibility}}) as all_items
 
         RETURN all_modules, module_hierarchy, all_items
-        "#;
+        "#
+    );
 
     let params = serde_json::json!({
         "crate_name": query.crate_name,
     });
 
-    let results = execute_neo4j_query(&state, cypher, params).await?;
+    let results = client.execute_query(&cypher, params).await?;
 
     let root = if let Some(first) = results.first() {
         // Parse all modules
@@ -538,9 +557,10 @@ fn validate_cypher(query: &str) -> Result<(), AppError> {
 /// Executes a read-only Cypher query against Neo4j.
 ///
 /// Supports two request formats:
-/// - **Raw Cypher**: `{"query": "MATCH ..."}` — validated to reject writes.
+/// - **Raw Cypher**: `{"query": "MATCH ..."}` — validated to reject writes,
+///   workspace labels injected server-side.
 /// - **Named template**: `{"query_name": "find_callers", "parameters": {...}}`
-///   — resolved to Cypher via [`super::graph_templates::resolve`].
+///   — resolved to workspace-scoped Cypher via [`super::graph_templates::resolve_with_workspace`].
 ///
 /// # Errors
 ///
@@ -550,18 +570,26 @@ fn validate_cypher(query: &str) -> Result<(), AppError> {
 /// Returns [`AppError::Neo4j`] if execution fails.
 pub async fn query_graph(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Json(req): Json<QueryGraphRequest>,
 ) -> Result<Json<GraphQueryResponse>, AppError> {
     state.metrics.record_request("query_graph", "POST");
 
-    let (cypher, params) = if let Some(ref query) = req.query {
-        // Raw Cypher mode — validate read-only (DML + APOC whitelist)
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+
+    let (cypher, results) = if let Some(ref query) = req.query {
         validate_cypher(query)?;
         let params = serde_json::Value::Object(req.parameters.into_iter().collect());
-        (query.clone(), params)
+        let results = client.execute_user_cypher(query, params).await?;
+        (query.clone(), results)
     } else if let Some(ref query_name) = req.query_name {
-        // Named template mode — resolve to Cypher + params
-        super::graph_templates::resolve(query_name, &req.parameters)?
+        let (cypher, params) = crate::handlers::graph_templates::resolve_with_workspace(
+            query_name,
+            &req.parameters,
+            &client.workspace().workspace_label(),
+        )?;
+        let results = client.execute_query(&cypher, params).await?;
+        (cypher, results)
     } else {
         return Err(AppError::BadRequest(
             "Either 'query' (raw Cypher) or 'query_name' (template name) is required".into(),
@@ -570,7 +598,6 @@ pub async fn query_graph(
 
     debug!("Executing Cypher query: {}", cypher);
 
-    let results = execute_neo4j_query(&state, &cypher, params).await?;
     let row_count = results.len();
 
     Ok(Json(GraphQueryResponse {

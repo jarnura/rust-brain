@@ -6,6 +6,7 @@ pub mod config;
 pub mod docker;
 pub mod errors;
 pub mod execution;
+pub mod extractors;
 mod gaps;
 pub mod github;
 pub mod handlers;
