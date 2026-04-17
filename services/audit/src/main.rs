@@ -114,10 +114,10 @@ async fn run_single_scan(state: &AppState) {
 
     match leak_detector::detect_docker_leaks(&state.pg_pool, state.config.dry_run).await {
         Ok(result) => {
-            metrics::ORPHAN_VOLUMES.set(result.orphan_volumes as i64);
-            metrics::ORPHAN_CONTAINERS.set(result.orphan_containers as i64);
-            metrics::CLEANUP_VOLUMES_REMOVED.set(result.cleaned_volumes as i64);
-            metrics::CLEANUP_CONTAINERS_REMOVED.set(result.cleaned_containers as i64);
+            metrics::ORPHAN_VOLUMES.set(result.orphan_volumes as f64);
+            metrics::ORPHAN_CONTAINERS.set(result.orphan_containers as f64);
+            metrics::CLEANUP_VOLUMES_REMOVED.set(result.cleaned_volumes as f64);
+            metrics::CLEANUP_CONTAINERS_REMOVED.set(result.cleaned_containers as f64);
 
             if result.orphan_volumes > 0 || result.orphan_containers > 0 {
                 warn!(
@@ -185,9 +185,9 @@ async fn run_single_scan(state: &AppState) {
 
     match neo4j_scanner::scan_neo4j_leaks(&state.neo4j_graph).await {
         Ok(result) => {
-            metrics::MULTI_LABEL_NODES.set(result.multi_label_nodes as i64);
-            metrics::ORPHAN_NODES.set(result.orphan_nodes as i64);
-            metrics::BASELINE_ORPHAN_NODES.set(result.baseline_orphan_nodes as i64);
+            metrics::MULTI_LABEL_NODES.set(result.multi_label_nodes as f64);
+            metrics::ORPHAN_NODES.set(result.orphan_nodes as f64);
+            metrics::BASELINE_ORPHAN_NODES.set(result.baseline_orphan_nodes as f64);
 
             if result.multi_label_nodes > 0 {
                 warn!(
@@ -219,7 +219,7 @@ async fn run_single_scan(state: &AppState) {
     }
 
     let now = chrono::Utc::now().timestamp();
-    metrics::DETECTION_TIMESTAMP.set(now);
+    metrics::DETECTION_TIMESTAMP.set(now as f64);
 
     info!("Leak detection scan cycle complete");
 }

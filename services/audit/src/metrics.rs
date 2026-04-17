@@ -91,7 +91,7 @@ pub fn init() {
         .unwrap();
 
     // Set initial baseline to 0; operators should adjust after initial scan
-    BASELINE_ORPHAN_NODES.set(0);
+    BASELINE_ORPHAN_NODES.set(0.0);
 }
 
 /// Axum handler for GET /metrics — returns Prometheus-format metrics.
@@ -100,7 +100,11 @@ pub async fn metrics_handler(State(_state): State<Arc<AppState>>) -> impl IntoRe
     let metric_families = REGISTRY.gather();
     let mut buffer = Vec::new();
     if encoder.encode(&metric_families, &mut buffer).is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "failed to encode metrics".to_string());
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("content-type", "text/plain")],
+            "failed to encode metrics".to_string(),
+        );
     }
     match String::from_utf8(buffer) {
         Ok(text) => (
@@ -108,6 +112,10 @@ pub async fn metrics_handler(State(_state): State<Arc<AppState>>) -> impl IntoRe
             [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
             text,
         ),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "failed to convert metrics to string".to_string()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("content-type", "text/plain")],
+            "failed to convert metrics to string".to_string(),
+        ),
     }
 }
