@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 const VALID_STATUSES: &[&str] = &["draft", "final", "superseded"];
 
@@ -124,6 +126,7 @@ fn row_to_artifact(row: ArtifactRow) -> Artifact {
 /// Create a new artifact.
 pub async fn create_artifact(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(request): Json<CreateArtifactRequest>,
 ) -> Result<Json<Artifact>, AppError> {
     state.metrics.record_request("create_artifact", "POST");
@@ -135,6 +138,8 @@ pub async fn create_artifact(
             request.status, VALID_STATUSES
         )));
     }
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let row = sqlx::query_as::<_, ArtifactRow>(
         r#"
@@ -151,7 +156,7 @@ pub async fn create_artifact(
     .bind(request.confidence)
     .bind(&request.summary)
     .bind(&request.payload)
-    .fetch_one(&state.pg_pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| {
         if let sqlx::Error::Database(ref db_err) = e {
@@ -171,10 +176,13 @@ pub async fn create_artifact(
 /// Get an artifact by ID.
 pub async fn get_artifact(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Path(id): Path<String>,
 ) -> Result<Json<Artifact>, AppError> {
     state.metrics.record_request("get_artifact", "GET");
     debug!("Getting artifact: {}", id);
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let row = sqlx::query_as::<_, ArtifactRow>(
         r#"
@@ -183,7 +191,7 @@ pub async fn get_artifact(
         "#,
     )
     .bind(&id)
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to get artifact: {}", e)))?
     .ok_or_else(|| AppError::NotFound(format!("Artifact not found: {}", id)))?;
@@ -194,6 +202,7 @@ pub async fn get_artifact(
 /// List artifacts with optional filters (dynamic WHERE clause).
 pub async fn list_artifacts(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<ListArtifactsQuery>,
 ) -> Result<Json<Vec<Artifact>>, AppError> {
     state.metrics.record_request("list_artifacts", "GET");
@@ -203,6 +212,7 @@ pub async fn list_artifacts(
     );
 
     let limit = query.limit.min(100);
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let rows = sqlx::query_as::<_, ArtifactRow>(
         r#"
@@ -221,7 +231,7 @@ pub async fn list_artifacts(
     .bind(&query.status)
     .bind(&query.producer)
     .bind(limit)
-    .fetch_all(&state.pg_pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to list artifacts: {}", e)))?;
 
@@ -232,6 +242,7 @@ pub async fn list_artifacts(
 /// Update an artifact's status, superseded_by, and/or confidence.
 pub async fn update_artifact(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Path(id): Path<String>,
     Json(request): Json<UpdateArtifactRequest>,
 ) -> Result<Json<Artifact>, AppError> {
@@ -247,6 +258,8 @@ pub async fn update_artifact(
         }
     }
 
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
+
     let row = sqlx::query_as::<_, ArtifactRow>(
         r#"
         UPDATE artifacts
@@ -261,7 +274,7 @@ pub async fn update_artifact(
     .bind(&request.status)
     .bind(&request.superseded_by)
     .bind(request.confidence)
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to update artifact: {}", e)))?
     .ok_or_else(|| AppError::NotFound(format!("Artifact not found: {}", id)))?;

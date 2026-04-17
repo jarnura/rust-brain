@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Types
@@ -167,10 +169,13 @@ fn row_to_task(row: TaskRow) -> Task {
 /// Create a new task.
 pub async fn create_task(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(request): Json<CreateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
     state.metrics.record_request("create_task", "POST");
     debug!("Creating task: {}", request.id);
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let row = sqlx::query_as::<_, TaskRow>(
         r#"
@@ -188,7 +193,7 @@ pub async fn create_task(
     .bind(&request.inputs)
     .bind(&request.constraints)
     .bind(&request.acceptance)
-    .fetch_one(&state.pg_pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| {
         if let sqlx::Error::Database(ref db_err) = e {
@@ -208,10 +213,13 @@ pub async fn create_task(
 /// Get a task by ID.
 pub async fn get_task(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
     state.metrics.record_request("get_task", "GET");
     debug!("Getting task: {}", id);
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let row = sqlx::query_as::<_, TaskRow>(
         r#"
@@ -220,7 +228,7 @@ pub async fn get_task(
         "#,
     )
     .bind(&id)
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to get task: {}", e)))?
     .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", id)))?;
@@ -231,6 +239,7 @@ pub async fn get_task(
 /// List tasks with optional filters (dynamic WHERE clause).
 pub async fn list_tasks(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<ListTasksQuery>,
 ) -> Result<Json<Vec<Task>>, AppError> {
     state.metrics.record_request("list_tasks", "GET");
@@ -240,6 +249,7 @@ pub async fn list_tasks(
     );
 
     let limit = query.limit.min(100);
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let rows = sqlx::query_as::<_, TaskRow>(
         r#"
@@ -258,7 +268,7 @@ pub async fn list_tasks(
     .bind(&query.phase)
     .bind(&query.class)
     .bind(limit)
-    .fetch_all(&state.pg_pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to list tasks: {}", e)))?;
 
@@ -272,17 +282,20 @@ pub async fn list_tasks(
 /// Auto-sets `updated_at = NOW()` on every update.
 pub async fn update_task(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Path(id): Path<String>,
     Json(request): Json<UpdateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
     state.metrics.record_request("update_task", "PUT");
     debug!("Updating task: {}", id);
 
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
+
     if let Some(ref new_status) = request.status {
         // Fetch current status for transition validation
         let current_row = sqlx::query_as::<_, (String,)>("SELECT status FROM tasks WHERE id = $1")
             .bind(&id)
-            .fetch_optional(&state.pg_pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|e| AppError::Database(format!("Failed to get task: {}", e)))?
             .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", id)))?;
@@ -308,7 +321,7 @@ pub async fn update_task(
         .bind(new_status)
         .bind(retry_increment)
         .bind(&request.error)
-        .fetch_one(&state.pg_pool)
+        .fetch_one(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("Failed to update task: {}", e)))?;
 
@@ -328,7 +341,7 @@ pub async fn update_task(
         .bind(&id)
         .bind(request.retry_count)
         .bind(&request.error)
-        .fetch_optional(&state.pg_pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("Failed to update task: {}", e)))?
         .ok_or_else(|| AppError::NotFound(format!("Task not found: {}", id)))?;
