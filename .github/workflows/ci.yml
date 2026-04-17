@@ -242,3 +242,61 @@ jobs:
           echo "Skipping in CI until service containers are configured."
         # Uncomment when services are configured:
         # run: cargo test --workspace -- --include-ignored
+
+  # ===========================================================================
+  # Workspace isolation tests - verifies cross-workspace data leak prevention
+  # Triggers on PRs touching graph-layer, workspace, or test files.
+  # All tests are #[ignore] until implementation dependencies land (RUSA-199).
+  # ===========================================================================
+  workspace-isolation-tests:
+    name: Workspace Isolation Tests
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request'
+      && (
+        contains(github.event.pull_request.changed_files_url, 'services/api/src/graph_')
+        || contains(github.event.pull_request.changed_files_url, 'services/api/src/workspace')
+        || contains(github.event.pull_request.changed_files_url, 'services/api/src/handlers')
+        || contains(github.event.pull_request.changed_files_url, 'services/api/tests/workspace')
+      )
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-ws-iso-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-ws-iso-
+
+      - name: Verify isolation test compilation
+        run: |
+          cargo test --test workspace_neo4j_isolation --no-run
+          cargo test --test workspace_e2e_isolation --no-run
+
+      # Full run requires docker-compose stack (Postgres, Neo4j, Qdrant).
+      # Uncomment the --include-ignored line when services are configured.
+      - name: Run workspace isolation tests (ignored)
+        run: |
+          echo "Workspace isolation tests require docker-compose stack."
+          echo "Run locally with:"
+          echo "  cargo test --test workspace_neo4j_isolation -- --include-ignored"
+          echo "  cargo test --test workspace_e2e_isolation -- --include-ignored"
+          echo "Skipping full run until service containers are configured."
+        # Uncomment when services are configured:
+        # run: cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored
