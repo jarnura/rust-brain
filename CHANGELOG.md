@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Documentation: Gap Analysis & Future Scope Audit (2026-04-17)
+
+- `docs/GAP_ANALYSIS.md` — Resolved Gap 5 (cross-DB aggregation) as RESOLVED. Updated architecture diagram (22→47+ endpoints, port 8080→8088, removed codellama, added qwen3-embedding:4b). Updated Gap 8 and Gap 10 to reflect partial progress. Revised phase recommendations to mark Phase 1 complete and Phase 2 mostly complete. Updated revision to v3.
+- `docs/future-scope.md` — Added "Current State" sections to all 6 feature areas. Updated Section 6 (Web UI) to reflect existing Playground instead of aspirational UI. Added workspace isolation, MCP integration, OpenCode IDE, and snapshot distribution as completed work. Updated priority table with status column.
+- `RELEASE_CHECKLIST.md` — Corrected endpoint counts: Code Intelligence 10→12, Chat 6→9, Workspace 5→9. Added missing sections: Execution (4 routes), Artifacts (4 routes), Tasks (4 routes), Validator/Benchmarker (5 routes), System (6 routes).
+- `CHANGELOG.md` — Merged duplicate "### Changed" sections in [Unreleased]. Moved feature items from "Changed" to "Added" category. Removed duplicate chat timeout entry.
+- AGENTS.md — Updated doc list from "20 documentation files" to "20+ documentation files". Added docs/adr/ ADR count (001-006), docs/agent-prompts/, docs/prompts/, docs/issues/, docs/handoff/, docs/screenshots/ directories.
+
+#### Documentation: Workspace API & Editor Playground (RUSA-88)
+
+- `docs/api-spec.md` — Complete rewrite of Workspace Management section with accurate request/response schemas, cURL examples, error codes, and data model tables for all 13 workspace/execution endpoints. Fixed: `GET /workspaces/:id/files` returns root `FileNode` not array, `POST /workspaces/:id/execute` returns `status: "running"` not `"pending"`, `GET /workspaces/:id/diff` returns `{patch, clean}` not `{diff, stats}`, `POST /workspaces/:id/commit` only accepts `message` field, `POST /workspaces/:id/reset` returns `{message, head_sha}`, `GET /workspaces/:id/stream` requires `execution_id` query param, corrected agent event types
+- `docs/architecture.md` — Added Editor Playground section with service boundary diagram, data model tables, workspace lifecycle flow, multi-tenant schema isolation, Docker volume strategy, integration points, key design decisions, and failure modes
+- `docs/getting-started.md` — Added Editor Playground setup section with prerequisites, quick workflow cURL walkthrough, execution lifecycle explanation, timeout configuration, and workspace isolation overview
+- `README.md` — Added Workspace API (8 endpoints) and Execution (4 endpoints) to Agent Tool API table, added Editor Playground description with quick-start example
+
 #### Documentation Updates
 
 - `docs/api-spec.md` — Added 19 missing endpoints: workspace management (11), execution (2), consistency (2), validator (2), benchmarker (3), and search_docs
@@ -86,8 +101,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - API route count increased to 49 unique paths
 - Documentation file count increased to 20 files
 - Increased chat timeout from 2 to 10 minutes for long-running conversations
+- Switched embedding model from CodeLlama to qwen3-embedding:4b (2560 dimensions)
+- Multi-agent config moved to global OpenCode configuration
+- Call graph construction improvements (7 bugs fixed in FQN identity pipeline)
+- Embed stage now loads items from database when pipeline state unavailable
 
-#### Workspace Management System
+### Added
 - Workspace module with DB migrations and REST endpoints for project isolation
 - DockerClient for per-workspace volume orchestration
 - Workspace clone, diff, commit, reset, and SSE stream endpoints
@@ -137,14 +156,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Memory-bounded streaming pipeline with bounded channels
 - Comprehensive monitoring system for ingestion pipeline
 - GPU embedding support with qwen3-embedding:4b (2560 dimensions)
-
-### Changed
-
-- Increased chat timeout from 2 to 10 minutes for long-running conversations
-- Switched embedding model from CodeLlama to qwen3-embedding:4b (2560 dimensions)
-- Multi-agent config moved to global OpenCode configuration
-- Call graph construction improvements (7 bugs fixed in FQN identity pipeline)
-- Embed stage now loads items from database when pipeline state unavailable
 
 ### Fixed
 

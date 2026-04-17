@@ -16,6 +16,7 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::neo4j::execute_neo4j_query;
 use crate::state::AppState;
 
@@ -120,6 +121,7 @@ pub struct CrateHealthSummary {
 /// Returns [`AppError::Qdrant`] if Qdrant query fails.
 pub async fn check_consistency(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<ConsistencyQuery>,
 ) -> Result<Json<ConsistencyReport>, AppError> {
     state.metrics.record_request("check_consistency", "GET");
@@ -142,8 +144,13 @@ pub async fn check_consistency(
         tokio::time::timeout(timeout_duration, query_neo4j_fqns(&state, &crate_name)).await
     };
 
+    let collection_name = crate::workspace::resolve_code_collection(ws.as_ref(), &state.config);
     let qdrant_future = async {
-        tokio::time::timeout(timeout_duration, query_qdrant_fqns(&state, &crate_name)).await
+        tokio::time::timeout(
+            timeout_duration,
+            query_qdrant_fqns(&state, &crate_name, &collection_name),
+        )
+        .await
     };
 
     let (pg_result, neo4j_result, qdrant_result) =
@@ -246,7 +253,10 @@ pub async fn check_consistency(
 /// Returns HTTP 200 if all crates are consistent, HTTP 503 if any
 /// inconsistencies are found. The response body includes counts suitable
 /// for Prometheus scraping.
-pub async fn health_consistency(State(state): State<AppState>) -> Result<Response, AppError> {
+pub async fn health_consistency(
+    State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
+) -> Result<Response, AppError> {
     state.metrics.record_request("health_consistency", "GET");
     debug!("Running aggregate consistency health check");
 
@@ -268,14 +278,17 @@ pub async fn health_consistency(State(state): State<AppState>) -> Result<Respons
     let timeout_duration = Duration::from_secs(10);
     let mut crate_summaries: Vec<CrateHealthSummary> = Vec::new();
 
+    let collection_name = crate::workspace::resolve_code_collection(ws.as_ref(), &state.config);
     for crate_name in &crates {
         // Run quick count-only check for each crate
         let pg_future =
             tokio::time::timeout(timeout_duration, query_postgres_count(&state, crate_name));
         let neo4j_future =
             tokio::time::timeout(timeout_duration, query_neo4j_count(&state, crate_name));
-        let qdrant_future =
-            tokio::time::timeout(timeout_duration, query_qdrant_count(&state, crate_name));
+        let qdrant_future = tokio::time::timeout(
+            timeout_duration,
+            query_qdrant_count(&state, crate_name, &collection_name),
+        );
 
         let (pg_result, neo4j_result, qdrant_result) =
             tokio::join!(pg_future, neo4j_future, qdrant_future);
@@ -413,10 +426,14 @@ async fn query_neo4j_count(state: &AppState, crate_name: &str) -> Result<usize, 
 }
 
 /// Query Qdrant for FQNs matching a crate.
-async fn query_qdrant_fqns(state: &AppState, crate_name: &str) -> Result<Vec<String>, AppError> {
+async fn query_qdrant_fqns(
+    state: &AppState,
+    crate_name: &str,
+    collection_name: &str,
+) -> Result<Vec<String>, AppError> {
     let url = format!(
         "{}/collections/{}/points/scroll",
-        state.config.qdrant_host, state.config.collection_name
+        state.config.qdrant_host, collection_name
     );
 
     // Build filter for crate_name if specified
@@ -496,11 +513,15 @@ async fn query_qdrant_fqns(state: &AppState, crate_name: &str) -> Result<Vec<Str
 }
 
 /// Query Qdrant for count of points matching a crate.
-async fn query_qdrant_count(state: &AppState, crate_name: &str) -> Result<usize, AppError> {
+async fn query_qdrant_count(
+    state: &AppState,
+    crate_name: &str,
+    collection_name: &str,
+) -> Result<usize, AppError> {
     // Use the count API for faster count-only queries
     let url = format!(
         "{}/collections/{}/points/count",
-        state.config.qdrant_host, state.config.collection_name
+        state.config.qdrant_host, collection_name
     );
 
     let filter = if crate_name == "all" {
@@ -529,9 +550,8 @@ async fn query_qdrant_count(state: &AppState, crate_name: &str) -> Result<usize,
         .map_err(|e| AppError::Qdrant(format!("Failed to query Qdrant count: {}", e)))?;
 
     if !response.status().is_success() {
-        // If count endpoint fails, fall back to scroll and count
         warn!("Qdrant count endpoint failed, falling back to scroll");
-        let fqns = query_qdrant_fqns(state, crate_name).await?;
+        let fqns = query_qdrant_fqns(state, crate_name, collection_name).await?;
         return Ok(fqns.len());
     }
 

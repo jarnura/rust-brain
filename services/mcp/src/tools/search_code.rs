@@ -21,6 +21,9 @@ pub struct SearchCodeRequest {
     /// Restrict results to a specific crate name
     #[serde(default)]
     pub crate_filter: Option<String>,
+    /// Optional workspace ID to scope the search
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -72,7 +75,7 @@ pub async fn execute(client: &ApiClient, request: SearchCodeRequest) -> Result<S
     });
 
     let response: SearchCodeResponse = client
-        .post("/tools/search_semantic", &api_request)
+        .post_with_workspace("/tools/search_semantic", &api_request, request.workspace_id.as_deref())
         .await?;
 
     if response.results.is_empty() {
@@ -145,6 +148,10 @@ pub fn definition() -> serde_json::Value {
                 "crate_filter": {
                     "type": "string",
                     "description": "Optional: restrict results to a specific crate name."
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Optional: workspace ID to scope the search to a specific workspace. Use when searching within an isolated workspace."
                 }
             },
             "required": ["query"]
@@ -208,6 +215,16 @@ mod tests {
         assert_eq!(request.limit, 10); // default
         assert_eq!(request.score_threshold, None);
         assert_eq!(request.crate_filter, None);
+        assert_eq!(request.workspace_id, None);
+    }
+
+    #[test]
+    fn test_search_code_request_with_workspace_id() {
+        let json = r#"{"query": "parse json", "limit": 10, "workspace_id": "ws_123"}"#;
+        let request: SearchCodeRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(request.query, "parse json");
+        assert_eq!(request.workspace_id, Some("ws_123".to_string()));
     }
 
     #[test]

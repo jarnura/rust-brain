@@ -162,25 +162,42 @@ impl From<Vec<String>> for PropertyValue {
 /// Builder for creating relationships in Neo4j
 pub struct RelationshipBuilder {
     graph: Arc<Graph>,
+    workspace_label: Option<String>,
 }
 
 impl RelationshipBuilder {
     /// Create a new relationship builder
-    pub fn new(graph: Arc<Graph>) -> Self {
-        Self { graph }
+    pub fn new(graph: Arc<Graph>, workspace_label: Option<String>) -> Self {
+        Self {
+            graph,
+            workspace_label,
+        }
     }
 
     /// Create a relationship using MERGE for idempotency
     pub async fn merge_relationship(&self, rel: &RelationshipData) -> Result<()> {
-        let query_str = format!(
-            "MATCH (from:{} {{id: $from_id}}) \
-             MATCH (to:{} {{id: $to_id}}) \
-             MERGE (from)-[r:{}]->(to) \
-             SET r += $props",
-            rel.from_label,
-            rel.to_label,
-            rel.rel_type.name()
-        );
+        let query_str = match &self.workspace_label {
+            Some(ws) => format!(
+                "MATCH (from:{}:{} {{id: $from_id}}) \
+                 MATCH (to:{}:{} {{id: $to_id}}) \
+                 MERGE (from)-[r:{}]->(to) \
+                 SET r += $props",
+                rel.from_label,
+                ws,
+                rel.to_label,
+                ws,
+                rel.rel_type.name()
+            ),
+            None => format!(
+                "MATCH (from:{} {{id: $from_id}}) \
+                 MATCH (to:{} {{id: $to_id}}) \
+                 MERGE (from)-[r:{}]->(to) \
+                 SET r += $props",
+                rel.from_label,
+                rel.to_label,
+                rel.rel_type.name()
+            ),
+        };
 
         let props: HashMap<String, BoltType> = rel
             .properties

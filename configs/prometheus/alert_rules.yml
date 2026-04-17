@@ -65,3 +65,52 @@ groups:
             labels and may indicate a label-injection bug or pre-Phase-3 data
             that was not labeled during migration. Review during business hours.
           runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-leak-alert"
+
+  - name: rustbrain-docker-leaks
+    rules:
+      - alert: RustbrainOrphanVolumes
+        expr: rustbrain_leak_orphan_volumes_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: docker-resources
+        annotations:
+          summary: "Orphaned Docker volumes detected"
+          description: |
+            {{ $value }} Docker volume(s) with label rustbrain.workspace=true
+            exist but are not tracked in the workspaces table. These may be
+            left over from failed workspace deletions or crashes. Run
+            scripts/leak-detector.sh --cleanup to remove, or investigate
+            via the runbook.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"
+
+      - alert: RustbrainOrphanContainers
+        expr: rustbrain_leak_orphan_containers_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: docker-resources
+        annotations:
+          summary: "Orphaned Docker containers detected"
+          description: |
+            {{ $value }} execution container(s) named rustbrain-exec-* exist
+            but are not tracked in the executions table. These may be left
+            over from sweeper failures or API crashes. Run
+            scripts/leak-detector.sh --cleanup to remove, or investigate
+            via the runbook.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"
+
+      - alert: RustbrainLeakDetectionStale
+        expr: time() - rustbrain_leak_detection_timestamp_seconds > 3600
+        for: 10m
+        labels:
+          severity: warning
+          component: docker-resources
+        annotations:
+          summary: "Leak detection job has not run in over 1 hour"
+          description: |
+            The leak-detector.sh script has not updated its metrics in over
+            1 hour. The cron job or scheduled task may have stopped running.
+            Check that scripts/leak-detector.sh is scheduled and executing
+            successfully.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"

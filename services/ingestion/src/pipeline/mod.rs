@@ -85,6 +85,11 @@ pub struct PipelineConfig {
 
     /// Maximum concurrent operations
     pub max_concurrency: usize,
+
+    pub workspace_id: Option<Uuid>,
+
+    /// Neo4j label in format `Workspace_<12hex>` matching Postgres `ws_<12hex>` schema
+    pub workspace_label: Option<String>,
 }
 
 impl Default for PipelineConfig {
@@ -101,8 +106,27 @@ impl Default for PipelineConfig {
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
+            workspace_id: None,
+            workspace_label: None,
         }
     }
+}
+
+/// Validate workspace label format: must be "Workspace_" + 12 lowercase hex chars
+pub fn validate_workspace_label(label: &str) -> bool {
+    const PREFIX: &str = "Workspace_";
+    const HEX_LEN: usize = 12;
+
+    if !label.starts_with(PREFIX) {
+        return false;
+    }
+    let hex_part = &label[PREFIX.len()..];
+    if hex_part.len() != HEX_LEN {
+        return false;
+    }
+    hex_part
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && c.is_ascii_lowercase())
 }
 
 impl PipelineConfig {
@@ -116,6 +140,22 @@ impl PipelineConfig {
                 );
             }
         }
+
+        if let Some(ref label) = self.workspace_label {
+            if !validate_workspace_label(label) {
+                anyhow::bail!(
+                    "Invalid workspace_label '{}'. Expected format: 'Workspace_' followed by exactly 12 lowercase hex characters",
+                    label
+                );
+            }
+        }
+
+        if self.workspace_id.is_some() && self.workspace_label.is_none() {
+            tracing::warn!(
+                "workspace_id is set but workspace_label is None. Set workspace_label to match the workspace_id for graph stage consistency"
+            );
+        }
+
         Ok(())
     }
 }
@@ -314,6 +354,8 @@ mod tests {
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
+            workspace_id: None,
+            workspace_label: None,
         }
     }
 
@@ -448,5 +490,63 @@ mod tests {
         };
         // Empty list means no stages should run
         assert!(!should_run_stage(&config, "expand"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_valid() {
+        assert!(validate_workspace_label("Workspace_a1b2c3d4e5f6"));
+        assert!(validate_workspace_label("Workspace_abcdef123456"));
+        assert!(validate_workspace_label("Workspace_000000000000"));
+        assert!(validate_workspace_label("Workspace_ffffffffffff"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_invalid_format() {
+        // Lowercase 'w' in Workspace
+        assert!(!validate_workspace_label("workspace_a1b2c3d4e5f6"));
+        // Uppercase hex characters
+        assert!(!validate_workspace_label("Workspace_A1B2C3D4E5F6"));
+        // Too short (less than 12 hex chars)
+        assert!(!validate_workspace_label("Workspace_short"));
+        // Too long (more than 12 hex chars)
+        assert!(!validate_workspace_label("Workspace_a1b2c3d4e5f6extra"));
+        // No underscore separator
+        assert!(!validate_workspace_label("Workspacea1b2c3d4e5f6"));
+        // Wrong prefix entirely
+        assert!(!validate_workspace_label("Project_a1b2c3d4e5f6"));
+    }
+
+    #[test]
+    fn test_validate_config_with_valid_workspace() {
+        let mut config = test_config();
+        config.workspace_id = Some(Uuid::new_v4());
+        config.workspace_label = Some("Workspace_a1b2c3d4e5f6".to_string());
+
+        // Should validate successfully
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_workspace_label() {
+        let mut config = test_config();
+        config.workspace_id = Some(Uuid::new_v4());
+        config.workspace_label = Some("invalid_label".to_string());
+
+        // Should fail validation
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid workspace_label"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_none_ok() {
+        // Config with neither workspace_id nor workspace_label should validate fine
+        let config = test_config();
+        assert!(config.workspace_id.is_none());
+        assert!(config.workspace_label.is_none());
+
+        // Should validate successfully (graph stage will just skip)
+        assert!(config.validate().is_ok());
     }
 }

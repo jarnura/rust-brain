@@ -178,8 +178,20 @@ pub async fn create_workspace(
     let docker = state.docker.clone();
     let config = state.config.clone();
 
+    let http_client = state.http_client.clone();
+
     tokio::spawn(async move {
-        run_clone(pool, client, docker, config, ws_id, schema_name, source_url).await;
+        run_clone(
+            pool,
+            client,
+            docker,
+            config,
+            http_client,
+            ws_id,
+            schema_name,
+            source_url,
+        )
+        .await;
     });
 
     let body = CreateWorkspaceResponse {
@@ -225,6 +237,7 @@ pub async fn get_workspace(
 /// 1. Stop any running execution containers
 /// 2. Abort running executions in the database
 /// 3. Drop the per-workspace Postgres schema
+///    3b. Delete the per-workspace Qdrant collections
 /// 4. Remove the Docker volume
 /// 5. Clean up the host clone directory
 /// 6. Archive the workspace record
@@ -275,6 +288,8 @@ pub async fn delete_workspace(
     let volume_name = workspace.volume_name;
     let docker = state.docker.clone();
     let pool_clone = pool.clone();
+    let http_client = state.http_client.clone();
+    let qdrant_host = state.config.qdrant_host.clone();
 
     tokio::spawn(async move {
         // 1. Stop running execution containers
@@ -334,6 +349,21 @@ pub async fn delete_workspace(
                     schema = %schema,
                     error = %e,
                     "Failed to drop workspace schema"
+                );
+            }
+        }
+
+        // 3b. Delete Qdrant collections
+        if let Some(schema) = &schema_name {
+            info!(workspace_id = %id, schema = %schema, "Deleting Qdrant collections");
+            if let Err(e) =
+                lifecycle::delete_qdrant_collections(&http_client, &qdrant_host, schema).await
+            {
+                warn!(
+                    workspace_id = %id,
+                    schema = %schema,
+                    error = %e,
+                    "Failed to delete Qdrant collections"
                 );
             }
         }
@@ -426,11 +456,13 @@ const DEFAULT_VOLUME_SIZE_GB: u32 = 10;
 /// `schema_name` is appended to `DATABASE_URL` as `search_path` so the
 /// ingestion pipeline writes extracted items into the workspace-scoped
 /// Postgres schema rather than the default schema.
+#[allow(clippy::too_many_arguments)]
 async fn run_clone(
     pool: sqlx::postgres::PgPool,
     client: GithubClient,
     docker: DockerClient,
     config: Config,
+    http_client: reqwest::Client,
     ws_id: Uuid,
     schema_name: String,
     source_url: String,
@@ -550,6 +582,40 @@ async fn run_clone(
         workspace_id = %ws_id,
         schema = %schema_name,
         "Workspace schema created — starting ingestion pipeline"
+    );
+
+    // --- Stage 2b: Create Qdrant collections ---
+    if let Err(e) = lifecycle::create_qdrant_collections(
+        &http_client,
+        &config.qdrant_host,
+        &schema_name,
+        config.embedding_dimensions,
+    )
+    .await
+    {
+        error!(
+            workspace_id = %ws_id,
+            schema = %schema_name,
+            "Failed to create Qdrant collections: {}", e
+        );
+        if let Err(e2) = lifecycle::fail(
+            &pool,
+            ws_id,
+            &format!("Qdrant collection creation failed: {}", e),
+        )
+        .await
+        {
+            error!(
+                "Failed to mark workspace {} as error after Qdrant collection creation failure: {}",
+                ws_id, e2
+            );
+        }
+        return;
+    }
+    info!(
+        workspace_id = %ws_id,
+        schema = %schema_name,
+        "Qdrant collections created"
     );
 
     // --- Stage 3: Ingest ---

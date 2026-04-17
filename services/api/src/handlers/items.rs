@@ -16,6 +16,7 @@ use crate::errors::AppError;
 use crate::extractors::WorkspaceId;
 use crate::neo4j::WorkspaceGraphClient;
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Request/Response Types
@@ -110,10 +111,12 @@ pub async fn get_function(
     state.metrics.record_request("get_function", "GET");
     debug!("Get function: {}", query.fqn);
 
-    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws.clone());
+
+    let mut conn = acquire_conn(&state.pg_pool, Some(&ws)).await?;
 
     let row = sqlx::query_as::<
-        _,
+        sqlx::Postgres,
         (
             String,
             String,
@@ -138,7 +141,7 @@ pub async fn get_function(
         "#,
     )
     .bind(&query.fqn)
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to query function: {}", e)))?;
 

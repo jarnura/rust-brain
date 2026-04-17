@@ -86,7 +86,7 @@ impl GapAnalysis {
         let mut features = Vec::new();
 
         // Check each feature
-        features.push(check_semantic_search(state).await);
+        features.push(check_semantic_search(state, &state.config.collection_name).await);
         features.push(check_get_function(state).await);
         features.push(check_get_callers(state).await);
         features.push(check_trait_impls(state).await);
@@ -95,7 +95,7 @@ impl GapAnalysis {
         features.push(check_graph_query(state).await);
 
         // Get data quality metrics
-        let data_quality = get_data_quality(state).await;
+        let data_quality = get_data_quality(state, &state.config.collection_name).await;
 
         // Get known issues
         let known_issues = get_known_issues();
@@ -117,7 +117,7 @@ impl GapAnalysis {
 // =============================================================================
 
 /// Check semantic search functionality (Qdrant + Ollama embeddings)
-async fn check_semantic_search(state: &AppState) -> FeatureStatus {
+async fn check_semantic_search(state: &AppState, collection_name: &str) -> FeatureStatus {
     let mut details = Vec::new();
     let mut status = FeatureState::Working;
 
@@ -126,7 +126,7 @@ async fn check_semantic_search(state: &AppState) -> FeatureStatus {
         .http_client
         .get(format!(
             "{}/collections/{}",
-            state.config.qdrant_host, state.config.collection_name
+            state.config.qdrant_host, collection_name
         ))
         .send()
         .await
@@ -624,7 +624,7 @@ fn extract_bool(results: &[serde_json::Value]) -> bool {
         .unwrap_or(false)
 }
 
-async fn get_data_quality(state: &AppState) -> DataQuality {
+async fn get_data_quality(state: &AppState, code_collection: &str) -> DataQuality {
     // Get Neo4j node count
     let neo4j_nodes = execute_neo4j_query(
         state,
@@ -650,7 +650,7 @@ async fn get_data_quality(state: &AppState) -> DataQuality {
         .http_client
         .get(format!(
             "{}/collections/{}",
-            state.config.qdrant_host, state.config.collection_name
+            state.config.qdrant_host, code_collection
         ))
         .send()
         .await

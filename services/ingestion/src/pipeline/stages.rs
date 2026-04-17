@@ -3027,6 +3027,18 @@ impl PipelineStage for GraphStage {
             }
         };
 
+        // Validate workspace label is present — refuse to ingest without it
+        if ctx.config.workspace_label.is_none() {
+            error!("workspace_label is required for graph ingestion but was not provided");
+            return Ok(StageResult::failed(
+                "graph",
+                "workspace_label is required for graph ingestion. \
+                 Set PipelineConfig.workspace_label to a value like \"Workspace_<12hex>\" \
+                 matching the Postgres ws_<12hex> schema name."
+                    .to_string(),
+            ));
+        }
+
         let state = ctx.state.read().await;
         let mut parsed_items = state.parsed_items.clone();
         let source_files = state.source_files.clone();
@@ -3073,6 +3085,7 @@ impl PipelineStage for GraphStage {
             password: std::env::var("NEO4J_PASSWORD")
                 .expect("NEO4J_PASSWORD environment variable must be set"),
             database: std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string()),
+            workspace_label: ctx.config.workspace_label.clone(),
             ..Default::default()
         };
 
@@ -3108,6 +3121,16 @@ impl PipelineStage for GraphStage {
         // Create indexes for better performance
         if let Err(e) = graph_builder.create_indexes().await {
             warn!("Failed to create indexes (may already exist): {}", e);
+        }
+
+        // Create workspace-scoped constraints
+        if let Some(ref ws_label) = ctx.config.workspace_label {
+            if let Err(e) = graph_builder.create_workspace_constraints(ws_label).await {
+                warn!(
+                    "Failed to create workspace constraints (may already exist): {}",
+                    e
+                );
+            }
         }
 
         // Collect unique crate names

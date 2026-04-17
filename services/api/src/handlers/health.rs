@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use tracing::error;
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::state::AppState;
 
 /// JSON body returned by `GET /health`.
@@ -67,10 +68,14 @@ pub struct DependencyStatus {
 ///
 /// This handler does not return errors — individual dependency failures are
 /// reported within the response body.
-pub async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
+pub async fn health(
+    State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
+) -> Result<Json<HealthResponse>, AppError> {
+    let collection_name = crate::workspace::resolve_code_collection(ws.as_ref(), &state.config);
     let (postgres, qdrant, ollama, neo4j, opencode) = tokio::join!(
         check_postgres(&state),
-        check_qdrant(&state),
+        check_qdrant(&state, &collection_name),
         check_ollama(&state),
         check_neo4j_with_counts(&state),
         check_opencode(&state),
@@ -129,13 +134,13 @@ async fn check_postgres(state: &AppState) -> DependencyStatus {
     }
 }
 
-async fn check_qdrant(state: &AppState) -> DependencyStatus {
+async fn check_qdrant(state: &AppState, collection_name: &str) -> DependencyStatus {
     let start = std::time::Instant::now();
     match state
         .http_client
         .get(format!(
             "{}/collections/{}",
-            state.config.qdrant_host, state.config.collection_name
+            state.config.qdrant_host, collection_name
         ))
         .send()
         .await

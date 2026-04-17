@@ -3,6 +3,7 @@
 //! This module provides graph database integration for rust-brain, enabling
 //! construction and querying of code relationships using Neo4j.
 
+mod age_poc;
 mod batch;
 mod nodes;
 mod relationships;
@@ -59,6 +60,8 @@ pub struct GraphConfig {
     pub max_connections: usize,
     /// Batch size for bulk operations
     pub batch_size: usize,
+    /// Neo4j label in format `Workspace_<12hex>` for multi-tenant isolation
+    pub workspace_label: Option<String>,
 }
 
 impl Default for GraphConfig {
@@ -70,6 +73,7 @@ impl Default for GraphConfig {
             database: std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string()),
             max_connections: 10,
             batch_size: DEFAULT_BATCH_SIZE,
+            workspace_label: None,
         }
     }
 }
@@ -118,14 +122,16 @@ impl GraphBuilder {
 
         info!("Successfully connected to Neo4j");
 
-        let node_builder = NodeBuilder::new(Arc::clone(&graph));
-        let relationship_builder = RelationshipBuilder::new(Arc::clone(&graph));
+        let node_builder = NodeBuilder::new(Arc::clone(&graph), config.workspace_label.clone());
+        let relationship_builder =
+            RelationshipBuilder::new(Arc::clone(&graph), config.workspace_label.clone());
         let batch_insert = Arc::new(RwLock::new(BatchInsert::new(
             Arc::clone(&graph),
             BatchConfig {
                 batch_size: config.batch_size,
                 ..Default::default()
             },
+            config.workspace_label.clone(),
         )));
 
         Ok(Self {
@@ -220,6 +226,56 @@ impl GraphBuilder {
         }
 
         info!("Index creation complete");
+        Ok(())
+    }
+
+    /// Create workspace-scoped unique constraints for a specific workspace label
+    pub async fn create_workspace_constraints(&self, workspace_label: &str) -> Result<()> {
+        info!(
+            "Creating workspace-scoped constraints for {}",
+            workspace_label
+        );
+
+        let node_labels = [
+            "Crate",
+            "Module",
+            "Function",
+            "Struct",
+            "Enum",
+            "Trait",
+            "Impl",
+            "Type",
+            "TypeAlias",
+            "Const",
+            "Static",
+            "Macro",
+        ];
+
+        // Derive a safe constraint name suffix from workspace label
+        // e.g. "Workspace_a1b2c3d4e5f6" -> "ws_a1b2c3d4e5f6"
+        let ws_suffix = workspace_label
+            .strip_prefix("Workspace_")
+            .unwrap_or(workspace_label);
+
+        for label in &node_labels {
+            let constraint_name = format!("ws_{}_{}_fqn_unique", ws_suffix, label.to_lowercase());
+            let constraint_query = format!(
+                "CREATE CONSTRAINT {constraint_name} IF NOT EXISTS \
+                 FOR (n:{label}:{workspace_label}) REQUIRE n.fqn IS UNIQUE"
+            );
+            match self.graph.run(query(&constraint_query)).await {
+                Ok(_) => debug!("Created workspace constraint: {}", constraint_name),
+                Err(e) => warn!(
+                    "Failed to create workspace constraint (may already exist): {}",
+                    e
+                ),
+            }
+        }
+
+        info!(
+            "Workspace constraint creation complete for {}",
+            workspace_label
+        );
         Ok(())
     }
 

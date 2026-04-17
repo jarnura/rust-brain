@@ -32,6 +32,29 @@ CREATE INDEX crate_deps_idx IF NOT EXISTS FOR ()-[r:DEPENDS_ON]-() ON (r.is_dev)
 CREATE INDEX trait_methods_idx IF NOT EXISTS FOR ()-[r:HAS_METHOD]-() ON (r.is_required);
 
 // =============================================================================
+// Workspace-scoped constraints (template)
+// =============================================================================
+// For each workspace, create per-type fqn uniqueness constraints under the
+// workspace label. Replace <12hex> with the workspace hex ID.
+// Example for workspace "Workspace_a1b2c3d4e5f6":
+//
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_crate_fqn_unique IF NOT EXISTS FOR (n:Crate:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_module_fqn_unique IF NOT EXISTS FOR (n:Module:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_function_fqn_unique IF NOT EXISTS FOR (n:Function:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_struct_fqn_unique IF NOT EXISTS FOR (n:Struct:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_enum_fqn_unique IF NOT EXISTS FOR (n:Enum:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_trait_fqn_unique IF NOT EXISTS FOR (n:Trait:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_impl_fqn_unique IF NOT EXISTS FOR (n:Impl:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_type_fqn_unique IF NOT EXISTS FOR (n:Type:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_type_alias_fqn_unique IF NOT EXISTS FOR (n:TypeAlias:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_const_fqn_unique IF NOT EXISTS FOR (n:Const:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_static_fqn_unique IF NOT EXISTS FOR (n:Static:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+// CREATE CONSTRAINT ws_a1b2c3d4e5f6_macro_fqn_unique IF NOT EXISTS FOR (n:Macro:Workspace_a1b2c3d4e5f6) REQUIRE n.fqn IS UNIQUE;
+//
+// Migration for existing global nodes (run once per workspace):
+// MATCH (n) WHERE n.fqn STARTS WITH 'crate_name::' SET n:Workspace_<12hex>
+
+// =============================================================================
 // Read-only API user
 // =============================================================================
 // Used by the API service for the query_graph endpoint.

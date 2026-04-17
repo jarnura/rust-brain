@@ -803,6 +803,8 @@ mod tests {
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
+            workspace_id: None,
+            workspace_label: None,
         }
     }
 

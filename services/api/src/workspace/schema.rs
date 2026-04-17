@@ -1,11 +1,120 @@
-//! Per-workspace Postgres schema management.
+//! Per-workspace Postgres schema and Qdrant collection management.
 //!
 //! Each workspace gets its own schema named `ws_<short_id>` (first 12 chars of
 //! the workspace UUID without dashes). This schema contains the same table
 //! structure as the main rustbrain schema, scoped to the workspace's codebase.
+//!
+//! Qdrant collections follow the same naming convention:
+//! `ws_<short_id>_<collection_type>` (e.g., `ws_550e8400e29b_code_embeddings`).
 
 use anyhow::Context;
 use sqlx::PgPool;
+
+/// Known Qdrant collection types for a workspace.
+pub const COLLECTION_TYPE_CODE: &str = "code_embeddings";
+pub const COLLECTION_TYPE_DOC: &str = "doc_embeddings";
+pub const COLLECTION_TYPE_CRATE_DOCS: &str = "crate_docs";
+pub const COLLECTION_TYPE_EXTERNAL_DOCS: &str = "external_docs";
+
+/// All collection types that a workspace needs.
+pub const ALL_COLLECTION_TYPES: &[&str] = &[
+    COLLECTION_TYPE_CODE,
+    COLLECTION_TYPE_DOC,
+    COLLECTION_TYPE_CRATE_DOCS,
+    COLLECTION_TYPE_EXTERNAL_DOCS,
+];
+
+/// Resolve the code embeddings collection name for a given workspace context.
+///
+/// If `workspace_ctx` is `Some`, derives the per-workspace collection name using
+/// `collection_name_for()`. Otherwise returns the global default from `config`.
+pub fn resolve_code_collection(
+    workspace_ctx: Option<&crate::neo4j::WorkspaceContext>,
+    config: &crate::config::Config,
+) -> String {
+    match workspace_ctx {
+        Some(ctx) => {
+            let schema_name = schema_name_for(ctx.workspace_id());
+            collection_name_for(&schema_name, COLLECTION_TYPE_CODE)
+        }
+        None => config.collection_name.clone(),
+    }
+}
+
+/// Resolve the doc embeddings collection name for a given workspace context.
+///
+/// If `workspace_ctx` is `Some`, derives the per-workspace collection name using
+/// `collection_name_for()`. Otherwise returns the global default from `config`.
+pub fn resolve_doc_collection(
+    workspace_ctx: Option<&crate::neo4j::WorkspaceContext>,
+    config: &crate::config::Config,
+) -> String {
+    match workspace_ctx {
+        Some(ctx) => {
+            let schema_name = schema_name_for(ctx.workspace_id());
+            collection_name_for(&schema_name, COLLECTION_TYPE_DOC)
+        }
+        None => config.doc_collection_name.clone(),
+    }
+}
+
+/// Derive a per-workspace Qdrant collection name from the workspace schema name
+/// and the collection type.
+///
+/// Follows ADR-005 convention: `{schema_name}_{collection_type}`.
+///
+/// # Example
+/// ```
+/// use rustbrain_api::workspace::schema::collection_name_for;
+/// let name = collection_name_for("ws_550e8400e29b", "code_embeddings");
+/// assert_eq!(name, "ws_550e8400e29b_code_embeddings");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `schema_name` fails validation (must match `ws_[0-9a-f]{12}`).
+pub fn collection_name_for(schema_name: &str, collection_type: &str) -> String {
+    validate_schema_name(schema_name)
+        .unwrap_or_else(|e| panic!("Invalid schema name for collection derivation: {e}"));
+    format!("{schema_name}_{collection_type}")
+}
+
+/// Global (non-workspace) collection name for a collection type.
+pub fn default_collection_name(collection_type: &str) -> String {
+    match collection_type {
+        COLLECTION_TYPE_CODE => COLLECTION_TYPE_CODE.to_string(),
+        COLLECTION_TYPE_DOC => COLLECTION_TYPE_DOC.to_string(),
+        COLLECTION_TYPE_CRATE_DOCS => COLLECTION_TYPE_CRATE_DOCS.to_string(),
+        COLLECTION_TYPE_EXTERNAL_DOCS => COLLECTION_TYPE_EXTERNAL_DOCS.to_string(),
+        _ => collection_type.to_string(),
+    }
+}
+
+/// Derive all four Qdrant collection names for a workspace.
+pub fn workspace_collections(schema_name: &str) -> WorkspaceCollections {
+    WorkspaceCollections {
+        code: collection_name_for(schema_name, COLLECTION_TYPE_CODE),
+        doc: collection_name_for(schema_name, COLLECTION_TYPE_DOC),
+        crate_docs: collection_name_for(schema_name, COLLECTION_TYPE_CRATE_DOCS),
+        external_docs: collection_name_for(schema_name, COLLECTION_TYPE_EXTERNAL_DOCS),
+    }
+}
+
+/// All four Qdrant collection names for a single workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCollections {
+    pub code: String,
+    pub doc: String,
+    pub crate_docs: String,
+    pub external_docs: String,
+}
+
+impl WorkspaceCollections {
+    /// Return all collection names as a slice in canonical order.
+    pub fn all(&self) -> Vec<&str> {
+        vec![&self.code, &self.doc, &self.crate_docs, &self.external_docs]
+    }
+}
 
 /// Derive the schema name for a workspace from its UUID.
 ///
@@ -324,5 +433,68 @@ mod tests {
         let stmts = workspace_ddl_statements("ws_abcdef123456");
         let joined = stmts.join("\n");
         assert!(!joined.contains("public."));
+    }
+
+    #[test]
+    fn collection_name_for_derives_per_workspace_name() {
+        let name = collection_name_for("ws_550e8400e29b", "code_embeddings");
+        assert_eq!(name, "ws_550e8400e29b_code_embeddings");
+    }
+
+    #[test]
+    fn collection_name_for_all_types() {
+        let schema = "ws_abcdef123456";
+        assert_eq!(
+            collection_name_for(schema, COLLECTION_TYPE_CODE),
+            "ws_abcdef123456_code_embeddings"
+        );
+        assert_eq!(
+            collection_name_for(schema, COLLECTION_TYPE_DOC),
+            "ws_abcdef123456_doc_embeddings"
+        );
+        assert_eq!(
+            collection_name_for(schema, COLLECTION_TYPE_CRATE_DOCS),
+            "ws_abcdef123456_crate_docs"
+        );
+        assert_eq!(
+            collection_name_for(schema, COLLECTION_TYPE_EXTERNAL_DOCS),
+            "ws_abcdef123456_external_docs"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid schema name")]
+    fn collection_name_for_rejects_invalid_schema() {
+        collection_name_for("invalid", "code_embeddings");
+    }
+
+    #[test]
+    fn default_collection_name_returns_global_names() {
+        assert_eq!(
+            default_collection_name(COLLECTION_TYPE_CODE),
+            "code_embeddings"
+        );
+        assert_eq!(
+            default_collection_name(COLLECTION_TYPE_DOC),
+            "doc_embeddings"
+        );
+        assert_eq!(
+            default_collection_name(COLLECTION_TYPE_CRATE_DOCS),
+            "crate_docs"
+        );
+        assert_eq!(
+            default_collection_name(COLLECTION_TYPE_EXTERNAL_DOCS),
+            "external_docs"
+        );
+    }
+
+    #[test]
+    fn workspace_collections_derives_all_four() {
+        let cols = workspace_collections("ws_550e8400e29b");
+        assert_eq!(cols.code, "ws_550e8400e29b_code_embeddings");
+        assert_eq!(cols.doc, "ws_550e8400e29b_doc_embeddings");
+        assert_eq!(cols.crate_docs, "ws_550e8400e29b_crate_docs");
+        assert_eq!(cols.external_docs, "ws_550e8400e29b_external_docs");
+        assert_eq!(cols.all().len(), 4);
     }
 }

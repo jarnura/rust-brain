@@ -107,11 +107,12 @@ Review [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and verify documentation is accurate
 | Playground | GET | `http://localhost:8090` | 200 OK | ☐ |
 | Neo4j Browser | GET | `http://localhost:7474` | 200 OK | ☐ |
 
-### 3.2 Tool API Endpoints (10 Routes)
+### 3.2 Code Intelligence Endpoints (12 Routes)
 
 | Endpoint | Method | Sample Query | Response OK | Data Valid |
 |----------|--------|--------------|-------------|------------|
 | `search_semantic` | POST | `{ "query": "auth middleware" }` | ☐ | ☐ |
+| `search_docs` | POST | `{ "query": "how to authenticate" }` | ☐ | ☐ |
 | `aggregate_search` | POST | `{ "query": "config" }` | ☐ | ☐ |
 | `get_function` | GET | `?fqn=crate::module::fn_name` | ☐ | ☐ |
 | `get_callers` | GET | `?fqn=crate::module::fn_name` | ☐ | ☐ |
@@ -119,10 +120,11 @@ Review [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and verify documentation is accurate
 | `find_usages_of_type` | GET | `?type_name=String` | ☐ | ☐ |
 | `get_module_tree` | GET | `?crate=my_crate` | ☐ | ☐ |
 | `query_graph` | POST | `{ "cypher": "MATCH (n) LIMIT 5" }` | ☐ | ☐ |
+| `pg_query` | POST | `{ "query": "SELECT COUNT(*) FROM extracted_items" }` | ☐ | ☐ |
 | `find_calls_with_type` | GET | `?type_name=Vec<u8>` | ☐ | ☐ |
 | `find_trait_impls_for_type` | GET | `?type_name=MyStruct` | ☐ | ☐ |
 
-### 3.3 Chat API Endpoints (6 Routes)
+### 3.3 Chat API Endpoints (10 Routes)
 
 | Endpoint | Method | Status |
 |----------|--------|--------|
@@ -131,23 +133,78 @@ Review [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and verify documentation is accurate
 | `POST /tools/chat/send` | Send message | ☐ |
 | `POST /tools/chat/sessions` | Create session | ☐ |
 | `GET /tools/chat/sessions` | List sessions | ☐ |
+| `GET /tools/chat/sessions/:id` | Get session details | ☐ |
 | `DELETE /tools/chat/sessions/:id` | Delete session | ☐ |
+| `POST /tools/chat/sessions/:id/fork` | Fork a session | ☐ |
+| `POST /tools/chat/sessions/:id/abort` | Abort streaming session | ☐ |
 
-### 3.4 Workspace API Endpoints (5 Routes)
+### 3.4 Workspace API Endpoints (9 Routes)
 
 | Endpoint | Status |
 |----------|--------|
-| Clone workspace | ☐ |
-| Diff workspace | ☐ |
-| Commit workspace | ☐ |
-| Reset workspace | ☐ |
-| Stream workspace events | ☐ |
+| `POST /workspaces` — Create workspace | ☐ |
+| `GET /workspaces` — List all workspaces | ☐ |
+| `GET /workspaces/:id` — Get workspace details | ☐ |
+| `DELETE /workspaces/:id` — Archive workspace | ☐ |
+| `GET /workspaces/:id/files` — List file tree | ☐ |
+| `GET /workspaces/:id/stream` — SSE event stream | ☐ |
+| `GET /workspaces/:id/diff` — Get uncommitted changes | ☐ |
+| `POST /workspaces/:id/commit` — Commit changes | ☐ |
+| `POST /workspaces/:id/reset` — Discard changes | ☐ |
 
-### 3.5 Handler Verification Summary
+### 3.5 Execution Endpoints (4 Routes)
+
+| Endpoint | Status |
+|----------|--------|
+| `POST /workspaces/:id/execute` — Start execution | ☐ |
+| `GET /workspaces/:id/executions` — List executions | ☐ |
+| `GET /executions/:id` — Get execution status | ☐ |
+| `GET /executions/:id/events` — SSE event stream | ☐ |
+
+### 3.6 Artifacts Endpoints (4 Routes)
+
+| Endpoint | Status |
+|----------|--------|
+| `POST /api/artifacts` — Create artifact | ☐ |
+| `GET /api/artifacts` — List artifacts | ☐ |
+| `GET /api/artifacts/:id` — Get artifact | ☐ |
+| `PUT /api/artifacts/:id` — Update artifact | ☐ |
+
+### 3.7 Tasks Endpoints (4 Routes)
+
+| Endpoint | Status |
+|----------|--------|
+| `POST /api/tasks` — Create task | ☐ |
+| `GET /api/tasks` — List tasks | ☐ |
+| `GET /api/tasks/:id` — Get task | ☐ |
+| `PUT /api/tasks/:id` — Update task | ☐ |
+
+### 3.8 Validator & Benchmarker Endpoints (5 Routes)
+
+| Endpoint | Status |
+|----------|--------|
+| `GET /validator/runs` — List validation runs | ☐ |
+| `GET /validator/runs/:id` — Get validation run | ☐ |
+| `GET /benchmarker/runs` — List benchmark runs | ☐ |
+| `POST /benchmarker/runs` — Trigger benchmark | ☐ |
+| `GET /benchmarker/runs/:id` — Get benchmark run | ☐ |
+
+### 3.9 System Endpoints (6 Routes)
+
+| Endpoint | Status |
+|----------|--------|
+| `GET /health` — Health check | ☐ |
+| `GET /health/consistency` — Consistency health | ☐ |
+| `GET /metrics` — Prometheus metrics | ☐ |
+| `GET /api/snapshot` — Snapshot info | ☐ |
+| `GET /api/consistency` — Consistency check | ☐ |
+| `GET /api/ingestion/progress` — Ingestion progress | ☐ |
+
+### 3.10 Handler Verification Summary
 
 **Handler files checked**: 20 files  
 **Total handler functions**: 72  
-**Routes tested**: _____ / ~72  
+**Routes tested**: _____ / ~54 unique paths  
 **Pass rate**: _______
 
 ---

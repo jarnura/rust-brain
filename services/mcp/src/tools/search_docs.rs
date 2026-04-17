@@ -18,6 +18,9 @@ pub struct SearchDocsRequest {
     /// Minimum similarity score threshold (0.0 to 1.0)
     #[serde(default)]
     pub score_threshold: Option<f32>,
+    /// Optional workspace ID to scope the search
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -56,7 +59,7 @@ pub async fn execute(client: &ApiClient, request: SearchDocsRequest) -> Result<S
     });
 
     let response: SearchDocsResponse = client
-        .post("/tools/search_docs", &api_request)
+        .post_with_workspace("/tools/search_docs", &api_request, request.workspace_id.as_deref())
         .await?;
 
     if response.results.is_empty() {
@@ -107,6 +110,10 @@ pub fn definition() -> serde_json::Value {
                     "description": "Minimum similarity score (0.0 to 1.0). Higher values return more relevant results.",
                     "minimum": 0.0,
                     "maximum": 1.0
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Optional: workspace ID to scope the search to a specific workspace. Use when searching within an isolated workspace."
                 }
             },
             "required": ["query"]
@@ -158,6 +165,16 @@ mod tests {
         assert_eq!(request.query, "test");
         assert_eq!(request.limit, 10);
         assert_eq!(request.score_threshold, None);
+        assert_eq!(request.workspace_id, None);
+    }
+
+    #[test]
+    fn test_search_docs_request_with_workspace_id() {
+        let json = r#"{"query": "documentation", "limit": 10, "workspace_id": "ws_abc"}"#;
+        let request: SearchDocsRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(request.query, "documentation");
+        assert_eq!(request.workspace_id, Some("ws_abc".to_string()));
     }
 
     #[test]

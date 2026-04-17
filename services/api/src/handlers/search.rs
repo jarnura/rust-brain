@@ -16,8 +16,11 @@ use tracing::debug;
 
 use super::{default_limit, CalleeInfo, CallerInfo};
 use crate::errors::AppError;
-use crate::neo4j::{get_callees_from_neo4j, get_callers_from_neo4j};
+use crate::extractors::OptionalWorkspaceId;
+use crate::extractors::WorkspaceId;
+use crate::neo4j::WorkspaceGraphClient;
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Request/Response Types
@@ -227,6 +230,7 @@ struct PgEnrichmentWithBody {
 /// Ollama is down, instead of returning a hard `AppError::Ollama`.
 pub async fn search_semantic(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(req): Json<SearchSemanticRequest>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
     state.metrics.record_request("search_semantic", "POST");
@@ -256,7 +260,8 @@ pub async fn search_semantic(
 
             let search_url = format!(
                 "{}/collections/{}/points/search",
-                state.config.qdrant_host, state.config.collection_name
+                state.config.qdrant_host,
+                crate::workspace::resolve_code_collection(ws.as_ref(), &state.config)
             );
 
             let response = state
@@ -295,8 +300,14 @@ pub async fn search_semantic(
                 "Ollama unavailable ({}), falling back to keyword search",
                 ollama_err
             );
-            keyword_search_fallback(&state, &req.query, req.limit, req.crate_filter.as_deref())
-                .await
+            keyword_search_fallback(
+                &state,
+                &req.query,
+                req.limit,
+                req.crate_filter.as_deref(),
+                ws.as_ref(),
+            )
+            .await
         }
     }
 }
@@ -308,7 +319,10 @@ async fn keyword_search_fallback(
     query: &str,
     limit: usize,
     crate_filter: Option<&str>,
+    workspace_ctx: Option<&crate::neo4j::WorkspaceContext>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
+    let mut conn = acquire_conn(&state.pg_pool, workspace_ctx).await?;
+
     let pattern = format!("%{}%", query);
     let limit_i64 = limit as i64;
 
@@ -355,7 +369,7 @@ async fn keyword_search_fallback(
 
     let rows = if has_crate_filter {
         sqlx::query_as::<
-            _,
+            sqlx::Postgres,
             (
                 String,
                 String,
@@ -370,12 +384,12 @@ async fn keyword_search_fallback(
         .bind(&pattern)
         .bind(limit_i64)
         .bind(crate_filter.unwrap())
-        .fetch_all(&state.pg_pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?
     } else {
         sqlx::query_as::<
-            _,
+            sqlx::Postgres,
             (
                 String,
                 String,
@@ -389,7 +403,7 @@ async fn keyword_search_fallback(
         >(sql)
         .bind(&pattern)
         .bind(limit_i64)
-        .fetch_all(&state.pg_pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?
     };
@@ -434,6 +448,7 @@ async fn keyword_search_fallback(
 /// Returns [`AppError::Qdrant`] if the vector search request fails.
 pub async fn search_docs(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(req): Json<SearchDocsRequest>,
 ) -> Result<Json<SearchDocsResponse>, AppError> {
     state.metrics.record_request("search_docs", "POST");
@@ -450,7 +465,8 @@ pub async fn search_docs(
 
     let search_url = format!(
         "{}/collections/{}/points/search",
-        state.config.qdrant_host, state.config.doc_collection_name
+        state.config.qdrant_host,
+        crate::workspace::resolve_doc_collection(ws.as_ref(), &state.config)
     );
 
     let response = state
@@ -498,10 +514,14 @@ pub async fn search_docs(
 /// Postgres and Neo4j enrichment errors are silently ignored per-result.
 pub async fn aggregate_search(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Json(req): Json<AggregateSearchRequest>,
 ) -> Result<Json<AggregateSearchResponse>, AppError> {
     state.metrics.record_request("aggregate_search", "POST");
     debug!("Aggregate search for: {}", req.query);
+
+    let graph_client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws.clone());
+    let mut conn = acquire_conn(&state.pg_pool, Some(&ws)).await?;
 
     // Step 1: Get embedding from Ollama
     let embedding = get_embedding(&state, &req.query).await?;
@@ -516,7 +536,8 @@ pub async fn aggregate_search(
 
     let search_url = format!(
         "{}/collections/{}/points/search",
-        state.config.qdrant_host, state.config.collection_name
+        state.config.qdrant_host,
+        crate::workspace::resolve_code_collection(Some(&ws), &state.config)
     );
 
     let response = state
@@ -547,8 +568,14 @@ pub async fn aggregate_search(
     let mut aggregated = Vec::with_capacity(qdrant_results.len());
 
     for result in &qdrant_results {
-        let enriched =
-            enrich_search_result(&state, result, req.include_graph, req.include_source).await;
+        let enriched = enrich_search_result(
+            &mut conn,
+            &graph_client,
+            result,
+            req.include_graph,
+            req.include_source,
+        )
+        .await;
         aggregated.push(enriched);
     }
 
@@ -723,7 +750,8 @@ pub fn parse_doc_search_results(search_result: &serde_json::Value) -> Vec<DocRes
 
 /// Enrich a Qdrant search result with Postgres metadata and Neo4j graph context
 async fn enrich_search_result(
-    state: &AppState,
+    conn: &mut sqlx::PgConnection,
+    graph_client: &WorkspaceGraphClient,
     result: &SearchResult,
     include_graph: bool,
     include_source: bool,
@@ -748,7 +776,7 @@ async fn enrich_search_result(
     let pg_data: Option<PgEnrichment> = if include_source {
         sqlx::query_as::<_, PgEnrichmentWithBody>(&query_str)
             .bind(&result.fqn)
-            .fetch_optional(&state.pg_pool)
+            .fetch_optional(conn)
             .await
             .ok()
             .flatten()
@@ -766,7 +794,7 @@ async fn enrich_search_result(
     } else {
         sqlx::query_as::<_, PgEnrichmentBase>(&query_str)
             .bind(&result.fqn)
-            .fetch_optional(&state.pg_pool)
+            .fetch_optional(conn)
             .await
             .ok()
             .flatten()
@@ -783,9 +811,10 @@ async fn enrich_search_result(
             })
     };
 
-    // Get graph context from Neo4j (callers/callees)
+    // Get graph context from Neo4j (callers/callees) — workspace-scoped
     let (callers, callees) = if include_graph {
-        let callers = get_callers_from_neo4j(state, &result.fqn, 1)
+        let callers = graph_client
+            .get_callers(&result.fqn, 1)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -796,7 +825,8 @@ async fn enrich_search_result(
                 line: c.line,
             })
             .collect();
-        let callees = get_callees_from_neo4j(state, &result.fqn)
+        let callees = graph_client
+            .get_callees(&result.fqn)
             .await
             .unwrap_or_default();
         (callers, callees)

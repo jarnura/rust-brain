@@ -7,7 +7,7 @@ Roadmap and potential enhancements for the rust-brain code intelligence platform
 ## 1. Multi-Repository Support
 
 ### Current State
-Single repository ingestion with manual configuration.
+Single repository ingestion with workspace isolation for per-repo analysis. The workspace system (see `docs/workspace-volumes.md`) provides Docker volume isolation and Postgres schema isolation per workspace.
 
 ### Future Vision
 
@@ -58,6 +58,9 @@ rust-brain search "JSON serialization" --repos serde,my_app
 
 ## 2. IDE Integrations
 
+### Current State
+OpenCode IDE integration is built and running (see `docs/opencode-integration.md`). MCP server supports both stdio and SSE transports for Claude Code, Claude Desktop, Cline, and OpenCode.
+
 ### Language Server Protocol (LSP)
 
 Build a full LSP server for rust-brain features:
@@ -105,6 +108,11 @@ Lua plugin for Neovim:
 ---
 
 ## 3. Real-Time Indexing
+
+### Current State
+Batch ingestion pipeline with manual triggering. No file watching or incremental updates. Ingestion takes 30+ minutes for large codebases (see `docs/INGESTION_PERFORMANCE.md` for baselines).
+
+### Future Vision
 
 ### File Watcher Integration
 
@@ -154,6 +162,12 @@ Monitor file system changes and update the knowledge graph incrementally.
 ---
 
 ## 4. Performance Optimizations
+
+### Current State
+- Embedding: qwen3-embedding:4b (2560-dim), ~50-100 items/min CPU, ~500+/min GPU
+- Neo4j: batch writes with configurable batch size (default 1000)
+- Qdrant: HNSW index with 2560-dim vectors
+- No caching layer (all queries hit databases directly)
 
 ### Caching Layer
 
@@ -247,32 +261,38 @@ curl -H "X-API-Key: rb_live_xxx" http://localhost:8088/tools/search_semantic
 
 ## 6. Web UI
 
-### Dashboard Application
+### Current State
+The Playground UI is built and running at http://localhost:8088/playground:
+- **Dashboard** (`index.html`): Real-time service health, ingestion stats, quick actions
+- **Query Playground** (`playground.html`): 7 query types with JSON/table view toggle
+- **Audit Trail** (`audit.html`): Known issues and system audit information
+- **Gap Analysis** (`gaps.html`): Feature completeness tracking
+- **Benchmarker** (`benchmarker.html`): Validation run management
+- **Editor Playground**: Workspace creation, AI agent execution, diff review, and commit
 
-Modern web interface for rust-brain:
+Built with React 18 + Vite + Tailwind CSS. See `docs/playground.md` and `docs/playground-design.md` for details.
 
-**Features:**
-- **Code Explorer:** Browse code with semantic understanding
-- **Search Interface:** Natural language queries with filters
-- **Call Graph Visualization:** Interactive call hierarchy
-- **Impact Analysis:** Visualize change impact
+### Future Enhancements
+
+**Potential enhancements:**
+- **Code Explorer:** Browse code with semantic understanding (beyond current query playground)
+- **Impact Analysis:** Visualize change impact across the call graph
 - **Documentation Generator:** Auto-generate docs from graph
 
-**Technology Stack:**
+**Technology Stack (current):**
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Web UI Stack                          │
 │                                                          │
-│  Frontend:                                               │
-│  ├── Framework: React/Next.js or Svelte/SvelteKit      │
+│  Frontend (current):                                     │
+│  ├── Framework: React 18 + Vite                         │
+│  ├── Styling: Tailwind CSS                              │
+│  └── Serving: Static files via Axum                     │
+│                                                          │
+│  Future enhancements:                                    │
 │  ├── Graph Viz: D3.js, Cytoscape.js, or react-flow     │
 │  ├── Code Display: Monaco Editor or CodeMirror         │
-│  └── Styling: Tailwind CSS                              │
-│                                                          │
-│  Backend (optional separate API):                       │
-│  ├── Framework: Axum or Actix-web (Rust)               │
-│  ├── WebSocket: Real-time updates                       │
-│  └── Static: Served from /ui or CDN                    │
+│  └── Real-time: WebSocket for live updates              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -372,15 +392,16 @@ Modern web interface for rust-brain:
 
 ## Implementation Priority
 
-| Priority | Feature | Effort | Impact |
-|----------|---------|--------|--------|
-| P1 | Multi-repo support | High | High |
-| P1 | Caching layer | Medium | High |
-| P2 | IDE integrations | High | High |
-| P2 | Real-time indexing | Medium | Medium |
-| P2 | Authentication | Medium | Medium |
-| P3 | Web UI | High | Medium |
-| P3 | Performance optimizations | Medium | Medium |
+| Priority | Feature | Effort | Impact | Status |
+|----------|---------|--------|--------|--------|
+| P1 | Multi-repo support | High | High | Workspace isolation done; cross-repo queries pending |
+| P1 | Caching layer | Medium | High | Not started |
+| P1 | Incremental ingestion | High | High | Planned for v0.4.0 |
+| P2 | IDE integrations | High | High | OpenCode + MCP done; LSP/JetBrains pending |
+| P2 | Real-time indexing | Medium | Medium | Not started |
+| P2 | Authentication | Medium | Medium | Planned for v0.4.0 |
+| P3 | Web UI enhancements | High | Medium | Playground exists; graph viz, code explorer pending |
+| P3 | Performance optimizations | Medium | Medium | qwen3-embedding upgrade done; caching pending |
 
 ---
 

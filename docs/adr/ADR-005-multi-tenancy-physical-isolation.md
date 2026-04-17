@@ -3,7 +3,7 @@
 ## Status
 
 **Accepted (Phase 1)** — 2026-04-15
-**Proposed (Phase 2-3, pending AGE POC)** — 2026-04-15
+**Accepted (Phase 3 = Option B+, composite labels + enforced middleware)** — 2026-04-16
 
 Supersedes the "Phase 2" note in [ADR-003](ADR-003-workspace-isolation.md).
 
@@ -11,6 +11,22 @@ CEO decisions (2026-04-15):
 - Neo4j Enterprise budget: $0 — open-source platform cannot depend on proprietary licensing
 - Phase 1 (Qdrant + Postgres) is the next-release milestone; Neo4j isolation deferred
 - AGE POC approved, time-boxed to 1 sprint; if it fails, cost analysis required before Enterprise
+
+CEO decisions (2026-04-16):
+- AGE POC complete — NO-GO ([RUSA-191](/RUSA/issues/RUSA-191))
+- **Phase 3 path: Option B+ approved.** Structural enforcement distinguishes it from rejected Option E.
+- Enterprise cost analysis NOT triggered. Re-escalate only on mid-implementation blocker.
+- Defer-to-AGE-1.8 rejected. 6-12 months unisolated is unacceptable.
+
+### Phase 3 Guardrails (non-negotiable)
+
+Per CEO 2026-04-16 — Option B+ correctness depends on enforcement holding:
+
+1. **Typed `WorkspaceGraphClient` is the ONLY graph entry point.** Direct `neo4rs` usage in handlers = CI failure. Enforce via clippy lint or grep-based CI check.
+2. **Cross-workspace leak tests run in CI**, not just locally. Create workspace A and B, query from A, assert zero B nodes returned. Required on every PR touching the graph layer.
+3. **Audit/leak-detection job is a required deploy artifact.** Not optional. Includes runbook entry for alert response.
+4. **`query_graph` user Cypher injection trust boundary documented.** Label predicate prepended server-side, users cannot bypass. Test suite for malformed user Cypher required.
+5. **Container-per-workspace escape hatch documented as opt-in** in ops guide for regulated/high-isolation workloads.
 
 ## Context
 
@@ -132,6 +148,41 @@ AGE is the architecturally strongest option: it unifies graph isolation with Pos
 
 During the POC period, Neo4j remains unscoped — no interim half-measures.
 
+### AGE POC Result (2026-04-16): NO-GO
+
+[RUSA-191](/RUSA/issues/RUSA-191) completed. Apache AGE 1.6.0 fails the decision gate on three counts:
+
+1. **Variable-length edge traversal** (`[*1..5]`) is 200x+ slower than Neo4j with no cycle deduplication — kills our most-used API feature (transitive callers).
+2. **`MERGE ON CREATE SET`** is unsupported (PR #2347 unreleased) — breaks our idempotent batch ingestion pattern.
+3. **Batch UNWIND+MERGE** writes 10K edges in 22 minutes vs Neo4j's sub-second — makes ingestion impractical at our scale.
+
+Plus: no Cypher-level constraints, no parameterized queries, indexes don't integrate with the Cypher planner. Re-evaluation possible in 6-12 months when AGE 1.8+ ships these fixes.
+
+Full report: [RUSA-191#document-poc-report](/RUSA/issues/RUSA-191#document-poc-report).
+
+### Post-POC Path: Composite Labels with Enforced Middleware (Option B+)
+
+Per CEO direction (no Enterprise spend without cost analysis), and Option D (containers) capping at 2-3 workspaces, the only scalable Community-compatible path is **composite labels with strict middleware enforcement** — a hardened version of Option B.
+
+**Why this is qualitatively different from the rejected Option E:**
+
+The board rejected "just adding workspace_id everywhere" because it relies on developers remembering to filter on every query. We address that risk with compile-time and runtime enforcement:
+
+1. **No raw Cypher in handlers.** All Neo4j access goes through a single `WorkspaceGraphClient` type that requires a `WorkspaceContext` at construction.
+2. **Workspace label injected automatically.** Every node gets a `:Workspace_<id>` label at creation. The client appends the label predicate to every MATCH/MERGE.
+3. **Cypher templates only.** Handlers use named templates (`get_callers`, `get_trait_impls`, etc.) — no string concatenation. Templates carry the workspace filter as a required parameter.
+4. **Audit logging.** Every Cypher execution logs the workspace context. Cross-workspace leak detection runs as a periodic job comparing query workspace vs returned node workspaces.
+5. **Read-only API user remains read-only.** The `query_graph` endpoint that accepts user Cypher gets workspace label injection at the API layer before execution.
+
+**What this is not:** It is not "just an id filter." It is enforced at the type level (cannot construct a graph client without a workspace), at the query layer (templates only, no raw strings in handlers), and at the audit layer (logged + monitored).
+
+**Trade-offs accepted:**
+- Logical isolation, not physical. A bug in the middleware could leak data — mitigated by audit logging and integration tests.
+- The `query_graph` endpoint's flexibility is constrained — users cannot run arbitrary Cypher across workspaces.
+- Adding a new query template requires explicit workspace parameter handling — guards against drift.
+
+**Container-per-workspace (Option D) remains available as an opt-in for high-isolation deployments** (e.g., regulated tenants) once we have demand for it. Single-tenant deployments keep the shared Neo4j by default.
+
 ## Postgres: Complete Read Path
 
 The write path uses `search_path` routing. The read path (API handlers) still queries `public` schema. Completing this is straightforward:
@@ -163,6 +214,19 @@ This is the lowest-risk, highest-value work and should be done first.
 
 - **If AGE viable:** Plan and execute graph layer migration (4-6 weeks)
 - **If AGE not viable:** Escalate Neo4j Enterprise licensing to CEO/board
+
+### Phase 3 (revised, 2026-04-16): Composite Labels with Enforced Middleware (3-4 weeks)
+
+AGE POC failed. Per CEO direction, Enterprise is last-resort. The chosen path:
+
+1. **Build `WorkspaceGraphClient`** in `services/api/src/neo4j.rs` — typed wrapper requiring `WorkspaceContext` at construction
+2. **Workspace label injection** in `services/ingestion/src/graph/nodes.rs` — every node gets `:Workspace_<id>`
+3. **Cypher template registry** — convert all handlers to use named templates with workspace parameter
+4. **Audit logging + leak detection job** — periodic Cypher scan comparing returned node workspace labels against query context
+5. **Update `query_graph` endpoint** — inject workspace label predicate at API layer before user Cypher executes
+6. **Integration tests** — extend RUSA-190 to cover Neo4j workspace isolation
+
+Container-per-workspace (Option D) is documented as an opt-in for regulated/high-isolation tenants but is not the default.
 
 ## Consequences
 

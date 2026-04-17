@@ -692,6 +692,103 @@ The baseline is stored as a Prometheus metric `rustbrain_workspace_leak_baseline
 curl -X POST http://localhost:8088/api/audit/baseline/recalculate
 ```
 
+### 14. Docker Resource Leak Detection
+
+**Symptoms:**
+- Prometheus alert `RustbrainOrphanVolumes` fires (severity: warning)
+- Prometheus alert `RustbrainOrphanContainers` fires (severity: warning)
+- Prometheus alert `RustbrainLeakDetectionStale` fires (leak detector not running)
+- `docker volume ls` shows volumes not in the workspaces table
+
+**Diagnosis:**
+
+```bash
+# Run the leak detector in dry-run mode
+./scripts/leak-detector.sh
+
+# Check leak metrics
+curl -s http://localhost:8090/metrics | grep rustbrain_leak
+
+# List all workspace volumes
+docker volume ls --filter label=rustbrain.workspace=true
+
+# List tracked volumes in Postgres
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT volume_name, status FROM workspaces WHERE volume_name IS NOT NULL;"
+
+# List all execution containers
+docker ps -a --filter "name=rustbrain-exec-"
+
+# List tracked containers in Postgres
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT container_id, status FROM executions WHERE container_id IS NOT NULL;"
+
+# Query workspace audit log for cleanup failures
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT * FROM workspace_audit_log WHERE operation IN ('volume_remove_failed','container_remove_failed','cleanup_failed') ORDER BY created_at DESC LIMIT 20;"
+```
+
+**Containment steps:**
+
+1. **Identify orphans** — compare Docker resources against Postgres:
+   ```bash
+   ./scripts/leak-detector.sh --dry-run
+   ```
+
+2. **Investigate specific volume** — check what workspace it belonged to:
+   ```bash
+   docker volume inspect rustbrain-ws-XXXXXXXXXXXX
+   docker exec rustbrain-postgres psql -U rustbrain -c \
+     "SELECT id, status, created_at FROM workspaces WHERE volume_name = 'rustbrain-ws-XXXXXXXXXXXX';"
+   ```
+
+3. **Remove orphans** — only after confirming they're truly orphaned:
+   ```bash
+   ./scripts/leak-detector.sh --cleanup
+   ```
+
+4. **Or set automatic cleanup** via environment:
+   ```bash
+   # In .env
+   LEAK_DETECTION_DRY_RUN=false
+   ```
+
+5. **Verify cleanup:**
+   ```bash
+   ./scripts/leak-detector.sh --dry-run
+   ```
+
+**Manual single-resource removal:**
+
+```bash
+# Remove a specific orphaned volume
+docker volume rm rustbrain-ws-XXXXXXXXXXXX
+
+# Remove a specific orphaned container
+docker rm -f <container_id>
+
+# Stop and remove all rustbrain-exec containers
+docker ps -a --filter "name=rustbrain-exec-" -q | xargs -r docker rm -f
+```
+
+**Scheduling the leak detector:**
+
+The leak detector runs inside the audit service (Rust) which queries Docker and Postgres automatically at `AUDIT_INTERVAL_SECS` intervals. The shell script `scripts/leak-detector.sh` is available as a standalone operational tool.
+
+To run via cron on the host (complementary to the audit service):
+```bash
+# Every 10 minutes, write metrics for node_exporter textfile collector
+*/10 * * * * /path/to/rust-brain/scripts/leak-detector.sh --metrics-only
+```
+
+**Audit log retention:**
+
+Workspace audit log entries are automatically pruned after `AUDIT_LOG_RETENTION_DAYS` (default: 90). To manually prune:
+```bash
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "DELETE FROM workspace_audit_log WHERE created_at < now() - interval '90 days';"
+```
+
 ## Resetting Data
 
 ### Reset All Data

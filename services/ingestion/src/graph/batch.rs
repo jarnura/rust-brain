@@ -58,6 +58,7 @@ pub struct BatchStats {
 pub struct BatchInsert {
     graph: Arc<Graph>,
     config: BatchConfig,
+    workspace_label: Option<String>,
     pending_nodes: Vec<NodeData>,
     pending_relationships: Vec<RelationshipData>,
     stats: BatchStats,
@@ -66,11 +67,12 @@ pub struct BatchInsert {
 
 impl BatchInsert {
     /// Create a new batch insert manager
-    pub fn new(graph: Arc<Graph>, config: BatchConfig) -> Self {
+    pub fn new(graph: Arc<Graph>, config: BatchConfig, workspace_label: Option<String>) -> Self {
         let batch_size = config.batch_size;
         Self {
             graph,
             config,
+            workspace_label,
             pending_nodes: Vec::with_capacity(batch_size),
             pending_relationships: Vec::with_capacity(batch_size),
             stats: BatchStats::default(),
@@ -234,12 +236,20 @@ impl BatchInsert {
         }
 
         for (label, type_nodes) in nodes_by_type {
-            let query_str = format!(
-                "UNWIND $nodes AS node_data \
-                 MERGE (n:{} {{id: node_data.id}}) \
-                 SET n += node_data.props",
-                label
-            );
+            let query_str = match &self.workspace_label {
+                Some(ws) => format!(
+                    "UNWIND $nodes AS node_data \
+                     MERGE (n:{}:{} {{id: node_data.id}}) \
+                     SET n += node_data.props",
+                    label, ws
+                ),
+                None => format!(
+                    "UNWIND $nodes AS node_data \
+                     MERGE (n:{} {{id: node_data.id}}) \
+                     SET n += node_data.props",
+                    label
+                ),
+            };
 
             let node_params: Vec<HashMap<String, BoltType>> = type_nodes
                 .iter()
@@ -281,12 +291,8 @@ impl BatchInsert {
             return Ok(());
         }
 
-        // Relationship types where target nodes may not exist and should be
-        // created as placeholders. For these, use MERGE on the target instead
-        // of MATCH (which silently drops rows when the node doesn't exist).
         let merge_target_types = ["HAS_FIELD", "HAS_VARIANT", "USES_TYPE", "FOR", "EXTENDS"];
 
-        // Group by (rel_type, from_label, to_label) so the Cypher MATCH can include labels
         let mut grouped: HashMap<(String, String, String), Vec<&RelationshipData>> = HashMap::new();
         for rel in relationships {
             grouped
@@ -301,26 +307,45 @@ impl BatchInsert {
 
         for ((rel_type, from_label, to_label), group_rels) in grouped {
             let query_str = if merge_target_types.contains(&rel_type.as_str()) {
-                // MERGE target: create placeholder node if it doesn't exist
-                format!(
-                    "UNWIND $rels AS rel_data \
-                     MATCH (from:{} {{id: rel_data.from_id}}) \
-                     MERGE (to:{} {{id: rel_data.to_id}}) \
-                     ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
-                     MERGE (from)-[r:{}]->(to) \
-                     SET r += rel_data.props",
-                    from_label, to_label, rel_type
-                )
+                match &self.workspace_label {
+                    Some(ws) => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{}:{} {{id: rel_data.from_id}}) \
+                         MERGE (to:{}:{} {{id: rel_data.to_id}}) \
+                         ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, ws, to_label, ws, rel_type
+                    ),
+                    None => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{} {{id: rel_data.from_id}}) \
+                         MERGE (to:{} {{id: rel_data.to_id}}) \
+                         ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, to_label, rel_type
+                    ),
+                }
             } else {
-                // MATCH both: only create relationship if both nodes exist
-                format!(
-                    "UNWIND $rels AS rel_data \
-                     MATCH (from:{} {{id: rel_data.from_id}}) \
-                     MATCH (to:{} {{id: rel_data.to_id}}) \
-                     MERGE (from)-[r:{}]->(to) \
-                     SET r += rel_data.props",
-                    from_label, to_label, rel_type
-                )
+                match &self.workspace_label {
+                    Some(ws) => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{}:{} {{id: rel_data.from_id}}) \
+                         MATCH (to:{}:{} {{id: rel_data.to_id}}) \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, ws, to_label, ws, rel_type
+                    ),
+                    None => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{} {{id: rel_data.from_id}}) \
+                         MATCH (to:{} {{id: rel_data.to_id}}) \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, to_label, rel_type
+                    ),
+                }
             };
 
             let rel_params: Vec<HashMap<String, BoltType>> = group_rels
@@ -412,12 +437,17 @@ fn rel_property_to_bolt(value: &super::relationships::PropertyValue) -> Option<B
 pub struct BatchProcessor {
     graph: Arc<Graph>,
     config: BatchConfig,
+    workspace_label: Option<String>,
 }
 
 impl BatchProcessor {
     /// Create a new batch processor
-    pub fn new(graph: Arc<Graph>, config: BatchConfig) -> Self {
-        Self { graph, config }
+    pub fn new(graph: Arc<Graph>, config: BatchConfig, workspace_label: Option<String>) -> Self {
+        Self {
+            graph,
+            config,
+            workspace_label,
+        }
     }
 
     /// Process a large number of nodes (10,000+)
@@ -534,12 +564,20 @@ impl BatchProcessor {
         }
 
         for (label, type_nodes) in nodes_by_type {
-            let query_str = format!(
-                "UNWIND $nodes AS node_data \
-                 MERGE (n:{} {{id: node_data.id}}) \
-                 SET n += node_data.props",
-                label
-            );
+            let query_str = match &self.workspace_label {
+                Some(ws) => format!(
+                    "UNWIND $nodes AS node_data \
+                     MERGE (n:{}:{} {{id: node_data.id}}) \
+                     SET n += node_data.props",
+                    label, ws
+                ),
+                None => format!(
+                    "UNWIND $nodes AS node_data \
+                     MERGE (n:{} {{id: node_data.id}}) \
+                     SET n += node_data.props",
+                    label
+                ),
+            };
 
             let node_params: Vec<HashMap<String, BoltType>> = type_nodes
                 .iter()
@@ -596,26 +634,45 @@ impl BatchProcessor {
 
         for ((rel_type, from_label, to_label), group_rels) in grouped {
             let query_str = if merge_target_types.contains(&rel_type.as_str()) {
-                // MERGE target: create placeholder node if it doesn't exist
-                format!(
-                    "UNWIND $rels AS rel_data \
-                     MATCH (from:{} {{id: rel_data.from_id}}) \
-                     MERGE (to:{} {{id: rel_data.to_id}}) \
-                     ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
-                     MERGE (from)-[r:{}]->(to) \
-                     SET r += rel_data.props",
-                    from_label, to_label, rel_type
-                )
+                match &self.workspace_label {
+                    Some(ws) => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{}:{} {{id: rel_data.from_id}}) \
+                         MERGE (to:{}:{} {{id: rel_data.to_id}}) \
+                         ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, ws, to_label, ws, rel_type
+                    ),
+                    None => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{} {{id: rel_data.from_id}}) \
+                         MERGE (to:{} {{id: rel_data.to_id}}) \
+                         ON CREATE SET to.fqn = rel_data.to_id, to.name = rel_data.to_id, to.external = true \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, to_label, rel_type
+                    ),
+                }
             } else {
-                // MATCH both: only create relationship if both nodes exist
-                format!(
-                    "UNWIND $rels AS rel_data \
-                     MATCH (from:{} {{id: rel_data.from_id}}) \
-                     MATCH (to:{} {{id: rel_data.to_id}}) \
-                     MERGE (from)-[r:{}]->(to) \
-                     SET r += rel_data.props",
-                    from_label, to_label, rel_type
-                )
+                match &self.workspace_label {
+                    Some(ws) => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{}:{} {{id: rel_data.from_id}}) \
+                         MATCH (to:{}:{} {{id: rel_data.to_id}}) \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, ws, to_label, ws, rel_type
+                    ),
+                    None => format!(
+                        "UNWIND $rels AS rel_data \
+                         MATCH (from:{} {{id: rel_data.from_id}}) \
+                         MATCH (to:{} {{id: rel_data.to_id}}) \
+                         MERGE (from)-[r:{}]->(to) \
+                         SET r += rel_data.props",
+                        from_label, to_label, rel_type
+                    ),
+                }
             };
 
             let rel_params: Vec<HashMap<String, BoltType>> = group_rels
@@ -647,6 +704,8 @@ impl BatchProcessor {
 
 #[cfg(test)]
 mod tests {
+    use super::super::nodes::NodeData;
+    use super::super::NodeType;
     use super::*;
 
     #[test]
@@ -663,5 +722,64 @@ mod tests {
         assert_eq!(stats.total_nodes_processed, 0);
         assert_eq!(stats.total_relationships_processed, 0);
         assert_eq!(stats.errors, 0);
+    }
+
+    /// Build the batch node query string for testing without needing Neo4j
+    fn build_batch_node_query(label: &str, workspace_label: Option<&str>) -> String {
+        match workspace_label {
+            Some(ws) => format!(
+                "UNWIND $nodes AS node_data \
+                 MERGE (n:{}:{} {{id: node_data.id}}) \
+                 SET n += node_data.props",
+                label, ws
+            ),
+            None => format!(
+                "UNWIND $nodes AS node_data \
+                 MERGE (n:{} {{id: node_data.id}}) \
+                 SET n += node_data.props",
+                label
+            ),
+        }
+    }
+
+    #[test]
+    fn test_batch_node_query_without_workspace() {
+        let query = build_batch_node_query("Function", None);
+        assert_eq!(
+            query,
+            "UNWIND $nodes AS node_data MERGE (n:Function {id: node_data.id}) SET n += node_data.props"
+        );
+
+        let query = build_batch_node_query("Struct", None);
+        assert_eq!(
+            query,
+            "UNWIND $nodes AS node_data MERGE (n:Struct {id: node_data.id}) SET n += node_data.props"
+        );
+    }
+
+    #[test]
+    fn test_batch_node_query_with_workspace() {
+        let query = build_batch_node_query("Function", Some("Workspace_a1b2c3d4e5f6"));
+        assert_eq!(
+            query,
+            "UNWIND $nodes AS node_data MERGE (n:Function:Workspace_a1b2c3d4e5f6 {id: node_data.id}) SET n += node_data.props"
+        );
+
+        let query = build_batch_node_query("Struct", Some("Workspace_abcdef123456"));
+        assert_eq!(
+            query,
+            "UNWIND $nodes AS node_data MERGE (n:Struct:Workspace_abcdef123456 {id: node_data.id}) SET n += node_data.props"
+        );
+    }
+
+    #[test]
+    fn test_batch_config_from_env() {
+        // Test default values match expected constants
+        let config = BatchConfig::default();
+        assert_eq!(config.batch_size, 1000);
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.retry_delay_ms, 100);
+        assert!(config.use_transactions);
+        assert!(config.auto_flush);
     }
 }

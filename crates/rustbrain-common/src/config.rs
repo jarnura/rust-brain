@@ -86,6 +86,10 @@ pub struct EmbeddingModelConfig {
     pub code_collection: String,
     /// Collection name for doc embeddings
     pub doc_collection: String,
+    /// Collection name for crate documentation embeddings
+    pub crate_docs_collection: String,
+    /// Collection name for external documentation embeddings
+    pub external_docs_collection: String,
 }
 
 impl Default for EmbeddingModelConfig {
@@ -96,6 +100,8 @@ impl Default for EmbeddingModelConfig {
             dimensions: 768,
             code_collection: "code_embeddings".to_string(),
             doc_collection: "doc_embeddings".to_string(),
+            crate_docs_collection: "crate_docs".to_string(),
+            external_docs_collection: "external_docs".to_string(),
         };
         debug!(model = %config.model, dimensions = config.dimensions, "EmbeddingModelConfig default created");
         config
@@ -125,5 +131,7 @@ mod tests {
         let config = EmbeddingModelConfig::default();
         assert_eq!(config.model, "nomic-embed-text");
         assert_eq!(config.dimensions, 768);
+        assert_eq!(config.crate_docs_collection, "crate_docs");
+        assert_eq!(config.external_docs_collection, "external_docs");
     }
 }

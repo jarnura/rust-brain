@@ -1070,9 +1070,54 @@ curl http://localhost:8088/health/consistency
 
 ## Workspace Management
 
+Workspaces provide isolated, sandboxed environments for AI agents to read and modify code. Each workspace is backed by its own Docker volume and Postgres schema, enabling multi-tenant isolation.
+
+### Workspace Lifecycle
+
+```
+pending → cloning → indexing → ready ⇄ error
+                                    ↓
+                                 archived
+```
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Workspace record created; clone not yet started |
+| `cloning` | Repository is being cloned from GitHub |
+| `indexing` | Codebase is being indexed by the ingestion pipeline |
+| `ready` | Fully indexed and available for queries and execution |
+| `error` | An unrecoverable error occurred (clone, volume, or ingestion failure) |
+| `archived` | Workspace has been deleted; all resources cleaned up |
+
+### Workspace Data Model
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique workspace identifier |
+| `name` | string | Human-readable name (defaults to repo slug) |
+| `source_type` | string | Source type: `github` or `local` |
+| `source_url` | string | GitHub HTTPS URL of the repository |
+| `clone_path` | string? | Filesystem path to the cloned repo (set after clone) |
+| `volume_name` | string? | Docker volume name (e.g. `rustbrain-ws-abc12345`) |
+| `schema_name` | string? | Postgres schema name (e.g. `ws_abc123456789`) |
+| `status` | string | Current lifecycle status (see table above) |
+| `default_branch` | string? | Default branch name detected after clone |
+| `github_auth_method` | string? | Auth method used: `pat`, `app`, or null (public) |
+| `index_started_at` | datetime? | When indexing began |
+| `index_completed_at` | datetime? | When indexing finished |
+| `index_stage` | string? | Current ingestion stage name |
+| `index_progress` | object? | Progress metadata from ingestion pipeline |
+| `index_error` | string? | Error message if indexing failed |
+| `created_at` | datetime | Timestamp of creation |
+| `updated_at` | datetime | Timestamp of last update |
+
+---
+
 ### POST /workspaces
 
-Create a new workspace from a GitHub repository. Returns `202 Accepted` immediately; cloning happens asynchronously.
+Create a new workspace from a GitHub repository. Returns `202 Accepted` immediately; cloning and indexing happen asynchronously in the background.
+
+The server validates that `github_url` starts with `https://github.com/` and contains at least an `owner/repo` path. If `name` is omitted, the repo slug (last path segment) is used.
 
 ### Request
 
@@ -1087,10 +1132,21 @@ Create a new workspace from a GitHub repository. Returns `202 Accepted` immediat
 
 ### Parameters
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `github_url` | string | Yes | GitHub HTTPS URL (`https://github.com/<owner>/<repo>`) |
-| `name` | string | No | Human-readable name (defaults to repo slug) |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `github_url` | string | Yes | - | GitHub HTTPS URL (`https://github.com/<owner>/<repo>`, `.git` suffix optional) |
+| `name` | string | No | repo slug | Human-readable name for the workspace |
+
+### cURL Example
+
+```bash
+curl -X POST http://localhost:8088/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{
+    "github_url": "https://github.com/juspay/hyperswitch",
+    "name": "hyperswitch-main"
+  }'
+```
 
 ### Response Schema (202 Accepted)
 
@@ -1098,38 +1154,55 @@ Create a new workspace from a GitHub repository. Returns `202 Accepted` immediat
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "cloning",
-  "message": "Workspace creation started. Poll GET /workspaces/:id for status."
+  "message": "Workspace created. Clone started in the background."
 }
 ```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Invalid `github_url` (must be `https://github.com/<owner>/<repo>`) or empty `name` |
+| `500` | Database error creating workspace record |
 
 ---
 
 ### GET /workspaces
 
-List all non-archived workspaces.
+List all non-archived workspaces, ordered by creation time (newest first).
 
-### Query Parameters
+### cURL Example
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `limit` | integer | Max results (default 50) |
+```bash
+curl http://localhost:8088/workspaces | jq .
+```
 
 ### Response Schema
 
+Returns an array of [`Workspace`](#workspace-data-model) objects.
+
 ```json
-{
-  "workspaces": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "hyperswitch-main",
-      "github_url": "https://github.com/juspay/hyperswitch",
-      "status": "ready",
-      "volume_name": "ws-550e8400",
-      "created_at": "2026-04-10T10:00:00Z"
-    }
-  ],
-  "total": 1
-}
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "hyperswitch-main",
+    "source_type": "github",
+    "source_url": "https://github.com/juspay/hyperswitch",
+    "clone_path": "/tmp/rustbrain-clones/550e8400-e29b-41d4-a716-446655440000",
+    "volume_name": "rustbrain-ws-550e8400e29b41d4a716446655440000",
+    "schema_name": "ws_550e8400e29b",
+    "status": "ready",
+    "default_branch": "main",
+    "github_auth_method": "pat",
+    "index_started_at": "2026-04-10T10:01:00Z",
+    "index_completed_at": "2026-04-10T10:05:00Z",
+    "index_stage": null,
+    "index_progress": null,
+    "index_error": null,
+    "created_at": "2026-04-10T10:00:00Z",
+    "updated_at": "2026-04-10T10:05:00Z"
+  }
+]
 ```
 
 ---
@@ -1138,56 +1211,111 @@ List all non-archived workspaces.
 
 Get a single workspace by ID.
 
+### cURL Example
+
+```bash
+curl http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000 | jq .
+```
+
 ### Response Schema
 
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "hyperswitch-main",
-  "github_url": "https://github.com/juspay/hyperswitch",
-  "status": "ready",
-  "volume_name": "ws-550e8400",
-  "created_at": "2026-04-10T10:00:00Z"
-}
-```
+Returns a single [`Workspace`](#workspace-data-model) object.
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `404` | Workspace not found |
 
 ---
 
 ### DELETE /workspaces/:id
 
-Archive a workspace and clean up associated Docker volumes. Returns `204 No Content` on success.
+Archive a workspace and clean up all associated resources. Returns `204 No Content` on success.
+
+Cleanup is performed asynchronously in the background and includes:
+
+1. Stop any running execution containers
+2. Abort running executions in the database
+3. Drop the per-workspace Postgres schema
+4. Remove the Docker volume
+5. Clean up the host clone directory
+6. Archive the workspace record
+
+If the workspace is already archived, returns `204` immediately.
+
+### cURL Example
+
+```bash
+curl -X DELETE http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `404` | Workspace not found |
 
 ---
 
 ### GET /workspaces/:id/files
 
-List the file tree for a workspace. Returns a recursive directory structure compatible with react-treeview.
+Return the file tree for a workspace as a recursive directory structure compatible with react-treeview. The root node represents the workspace clone directory.
+
+Hidden entries (names starting with `.`) are excluded. Directories sort before files at each level.
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/files | jq .
+```
 
 ### Response Schema
 
 ```json
-[
-  {
-    "name": "src",
-    "path": "src",
-    "is_dir": true,
-    "children": [
-      {
-        "name": "main.rs",
-        "path": "src/main.rs",
-        "is_dir": false,
-        "children": []
-      }
-    ]
-  }
-]
+{
+  "name": "hyperswitch",
+  "path": "",
+  "is_dir": true,
+  "children": [
+    {
+      "name": "src",
+      "path": "src",
+      "is_dir": true,
+      "children": [
+        {
+          "name": "main.rs",
+          "path": "src/main.rs",
+          "is_dir": false
+        }
+      ]
+    },
+    {
+      "name": "Cargo.toml",
+      "path": "Cargo.toml",
+      "is_dir": false
+    }
+  ]
+}
 ```
+
+> **Note:** The `children` field is omitted for file nodes (when `is_dir` is `false`).
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Workspace not yet cloned (status is not `ready`) |
+| `404` | Workspace not found |
+| `500` | Clone path does not exist on disk |
 
 ---
 
 ### POST /workspaces/:id/execute
 
-Start a multi-agent execution in a workspace. Returns `202 Accepted` immediately.
+Start a multi-agent execution in a workspace. Returns `202 Accepted` immediately; the orchestrator runs in the background.
+
+The workspace must be in `ready` status and have a Docker volume attached.
 
 ### Request
 
@@ -1205,43 +1333,121 @@ Start a multi-agent execution in a workspace. Returns `202 Accepted` immediately
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `prompt` | string | Yes | - | Natural-language task description |
+| `prompt` | string | Yes | - | Natural-language task description (must not be empty) |
 | `branch_name` | string | No | auto-generated | Git branch for commits |
-| `timeout_secs` | integer | No | 7200 | Execution timeout in seconds |
+| `timeout_secs` | integer | No | 7200 | Execution timeout in seconds (2 hours) |
+
+### cURL Example
+
+```bash
+curl -X POST http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Add unit tests for the payment processing module",
+    "branch_name": "feature/payment-tests"
+  }'
+```
 
 ### Response Schema (202 Accepted)
 
 ```json
 {
   "id": "660e8400-e29b-41d4-a716-446655440000",
-  "status": "pending",
-  "message": "Execution started. Stream GET /executions/:id/events for live updates."
+  "status": "running",
+  "message": "Execution started. Stream events at GET /executions/{id}/events"
 }
 ```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Empty prompt, or workspace has no volume (not yet cloned) |
+| `404` | Workspace not found |
+| `500` | Database error creating execution |
 
 ---
 
 ### GET /workspaces/:id/executions
 
-List all executions for a workspace.
+List all executions for a workspace, ordered by start time (newest first).
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/executions | jq .
+```
 
 ### Response Schema
 
+Returns an array of [`Execution`](#execution-data-model) objects.
+
 ```json
-{
-  "executions": [
-    {
-      "id": "660e8400-e29b-41d4-a716-446655440000",
-      "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
-      "status": "completed",
-      "prompt": "Add unit tests...",
-      "branch_name": "feature/payment-tests",
-      "created_at": "2026-04-10T10:00:00Z",
-      "completed_at": "2026-04-10T11:30:00Z"
-    }
-  ]
-}
+[
+  {
+    "id": "660e8400-e29b-41d4-a716-446655440000",
+    "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": "Add unit tests for the payment processing module",
+    "branch_name": "feature/payment-tests",
+    "session_id": "ses_abc123",
+    "container_id": "abc123def456",
+    "volume_name": "rustbrain-ws-550e8400e29b41d4a716446655440000",
+    "opencode_endpoint": "http://rustbrain-exec-660e8400:4096",
+    "workspace_path": "/workspace",
+    "status": "completed",
+    "agent_phase": "developing",
+    "started_at": "2026-04-10T10:00:00Z",
+    "completed_at": "2026-04-10T11:30:00Z",
+    "diff_summary": {"files_changed": 3, "insertions": 45, "deletions": 12},
+    "error": null,
+    "timeout_config_secs": 7200,
+    "container_expires_at": null
+  }
+]
 ```
+
+---
+
+### Execution Data Model
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique execution identifier |
+| `workspace_id` | UUID | Parent workspace |
+| `prompt` | string | The natural-language task description |
+| `branch_name` | string? | Git branch for commits |
+| `session_id` | string? | OpenCode session ID |
+| `container_id` | string? | Docker container ID running OpenCode |
+| `volume_name` | string? | Docker volume containing workspace source |
+| `opencode_endpoint` | string? | OpenCode container URL |
+| `workspace_path` | string? | Working directory inside the container |
+| `status` | string | Execution status (see table below) |
+| `agent_phase` | string? | Current agent phase (see table below) |
+| `started_at` | datetime | When execution started |
+| `completed_at` | datetime? | When execution finished |
+| `diff_summary` | object? | Summary of code changes made |
+| `error` | string? | Error message if failed |
+| `timeout_config_secs` | integer | Configured timeout in seconds (default 7200) |
+| `container_expires_at` | datetime? | When keep-alive expires for debugging |
+
+### Execution Status Values
+
+| Status | Description |
+|--------|-------------|
+| `running` | Agents actively working |
+| `completed` | Finished successfully |
+| `failed` | Terminated with error |
+| `aborted` | Cancelled (by user reset or workspace archive) |
+| `timeout` | Exceeded timeout limit |
+
+### Agent Phase Values
+
+| Phase | Description |
+|-------|-------------|
+| `orchestrating` | Orchestrator is dispatching sub-agents |
+| `researching` | Research agent is exploring the codebase |
+| `planning` | Planner agent is designing the approach |
+| `developing` | Developer agent is writing code |
 
 ---
 
@@ -1249,81 +1455,168 @@ List all executions for a workspace.
 
 Get execution status and details.
 
-### Response Schema
+### cURL Example
 
-```json
-{
-  "id": "660e8400-e29b-41d4-a716-446655440000",
-  "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "running",
-  "prompt": "Add unit tests...",
-  "branch_name": "feature/payment-tests",
-  "container_id": "abc123def456",
-  "session_id": "opencode-session-xyz",
-  "runtime_info": {
-    "current_phase": "implementation",
-    "agent": "developer"
-  },
-  "created_at": "2026-04-10T10:00:00Z"
-}
+```bash
+curl http://localhost:8088/executions/660e8400-e29b-41d4-a716-446655440000 | jq .
 ```
 
-### Status Values
+### Response Schema
 
-| Status | Description |
-|--------|-------------|
-| `pending` | Execution queued, waiting for container |
-| `running` | Agents actively working |
-| `completed` | Finished successfully |
-| `failed` | Terminated with error |
-| `timeout` | Exceeded timeout limit |
+Returns a single [`Execution`](#execution-data-model) object.
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `404` | Execution not found |
 
 ---
 
 ### GET /executions/:id/events
 
-SSE (Server-Sent Events) stream of agent events during execution. Useful for real-time UI updates.
+SSE (Server-Sent Events) stream of agent events during execution. Polls Postgres every 500ms for new events. Terminates with a `done` event when the execution reaches a terminal state (`completed`, `failed`, `aborted`, `timeout`).
 
-### Event Types
+### cURL Example
 
-| Event | Description |
-|-------|-------------|
-| `agent_dispatch` | Agent spawned or transitioned |
-| `tool_invocation` | Agent called a tool |
-| `code_diff` | Code change detected |
-| `phase_change` | Execution phase transitioned |
+```bash
+curl -N http://localhost:8088/executions/660e8400-e29b-41d4-a716-446655440000/events
+```
+
+### SSE Event Format
+
+Each event has:
+- `id`: Sequential event ID (used for incremental polling)
+- `event`: `agent_event` for data events, `done` for stream termination, `error` for errors
+- `data`: JSON payload
+
+### Agent Event Types
+
+| Event Type | Description |
+|------------|-------------|
+| `reasoning` | Agent reasoning/thinking output |
+| `tool_call` | Agent invoked a tool (read, write, search, etc.) |
+| `file_edit` | Code change detected |
+| `phase_change` | Agent phase transition (e.g. researching → planning) |
+| `agent_dispatch` | Sub-agent spawned or transitioned |
+| `error` | Error occurred during execution |
 | `container_kept_alive` | Container kept alive for debugging |
+
+### Example SSE Stream
+
+```
+event: agent_event
+id: 1
+data: {"id":1,"execution_id":"660e8400-...","event_type":"phase_change","content":{"phase":"researching"},"timestamp":"2026-04-10T10:00:01Z"}
+
+event: agent_event
+id: 2
+data: {"id":2,"execution_id":"660e8400-...","event_type":"reasoning","content":{"text":"Let me look at the payment module..."},"timestamp":"2026-04-10T10:00:05Z"}
+
+event: agent_event
+id: 3
+data: {"id":3,"execution_id":"660e8400-...","event_type":"tool_call","content":{"tool":"search_semantic","args":{"query":"payment processing"}},"timestamp":"2026-04-10T10:00:08Z"}
+
+event: done
+data: {"status":"completed"}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `404` | Execution not found |
 
 ---
 
 ### GET /workspaces/:id/stream
 
-SSE stream combining execution events with workspace file changes.
+SSE stream combining workspace-level events with execution agent events. Requires an `execution_id` query parameter.
+
+Sends a keepalive comment every 15 seconds and closes the stream automatically when the execution reaches a terminal state.
+
+### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `execution_id` | UUID | Yes | The execution whose events to stream |
+
+### cURL Example
+
+```bash
+curl -N "http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/stream?execution_id=660e8400-e29b-41d4-a716-446655440000"
+```
+
+### SSE Event Format
+
+Each `agent_event` carries:
+
+```json
+{
+  "id": 42,
+  "execution_id": "660e8400-e29b-41d4-a716-446655440000",
+  "phase": "researching",
+  "event_type": "reasoning",
+  "content": {"text": "Analyzing the codebase..."},
+  "ts": "2026-04-10T10:00:05Z"
+}
+```
+
+The `phase` field is extracted from the event `content.phase` when present. A `done` event is emitted when the execution completes:
+
+```
+event: done
+data: {"execution_id":"660e8400-...","status":"completed"}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Missing `execution_id` query parameter |
+| `404` | Workspace or execution not found, or execution does not belong to this workspace |
 
 ---
 
 ### GET /workspaces/:id/diff
 
-Get the git diff for uncommitted changes in a workspace.
+Get the unified git diff for uncommitted changes in a workspace. Runs `git diff HEAD` in the clone directory.
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/diff | jq .
+```
 
 ### Response Schema
 
 ```json
 {
-  "diff": "diff --git a/src/main.rs b/src/main.rs\n...",
-  "stats": {
-    "files_changed": 3,
-    "insertions": 45,
-    "deletions": 12
-  }
+  "patch": "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,4 @@\n fn main() {\n+    println!(\"hello\");\n }",
+  "clean": false
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `patch` | string | Unified diff output from `git diff HEAD` (empty string if no changes) |
+| `clean` | boolean | `true` when there are no staged or unstaged changes |
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Workspace not yet cloned |
+| `404` | Workspace not found |
+| `500` | `git diff` failed (not a git repo, etc.) |
 
 ---
 
 ### POST /workspaces/:id/commit
 
-Commit current changes in the workspace.
+Stage all changes and commit in the workspace. Runs `git add -A` followed by `git commit -m <message>`. The commit author is set to `rustbrain <rustbrain@localhost>`.
+
+Returns the short commit SHA (7 characters) on success.
 
 ### Request
 
@@ -1331,17 +1624,75 @@ Commit current changes in the workspace.
 
 ```json
 {
-  "message": "Add unit tests for payment module",
-  "author_name": "Developer",
-  "author_email": "dev@example.com"
+  "message": "Add unit tests for payment module"
 }
 ```
+
+### Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | Yes | Commit message (must not be empty) |
+
+### cURL Example
+
+```bash
+curl -X POST http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/commit \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Add unit tests for payment module"}'
+```
+
+### Response Schema
+
+```json
+{
+  "sha": "abc1234",
+  "message": "Add unit tests for payment module"
+}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Empty message, workspace not yet cloned, or nothing to commit |
+| `404` | Workspace not found |
+| `500` | `git add` or `git commit` failed |
 
 ---
 
 ### POST /workspaces/:id/reset
 
-Reset workspace to clean state (discard uncommitted changes).
+Reset workspace to a clean state, discarding all uncommitted changes. Runs `git reset --hard HEAD` followed by `git clean -fd` to remove untracked files. Also aborts any running execution for the workspace.
+
+### cURL Example
+
+```bash
+curl -X POST http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/reset \
+  -H "Content-Type: application/json"
+```
+
+### Response Schema
+
+```json
+{
+  "message": "Workspace reset to HEAD. All uncommitted changes discarded.",
+  "head_sha": "abc1234"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | string | Human-readable confirmation |
+| `head_sha` | string | The HEAD commit SHA after reset (short, 7 chars) |
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `400` | Workspace not yet cloned |
+| `404` | Workspace not found |
+| `500` | `git reset`, `git clean`, or SHA read failed |
 
 ---
 

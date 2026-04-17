@@ -199,6 +199,29 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `POST /tools/chat/sessions/:id/fork` | Fork a session |
 | `POST /tools/chat/sessions/:id/abort` | Abort streaming session |
 
+### Workspace (8 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /workspaces` | Create workspace from GitHub repo |
+| `GET /workspaces` | List all workspaces |
+| `GET /workspaces/:id` | Get workspace details |
+| `DELETE /workspaces/:id` | Archive workspace and cleanup |
+| `GET /workspaces/:id/files` | List workspace file tree |
+| `GET /workspaces/:id/stream` | SSE stream of workspace events |
+| `GET /workspaces/:id/diff` | Get uncommitted changes |
+| `POST /workspaces/:id/commit` | Commit changes |
+| `POST /workspaces/:id/reset` | Discard changes |
+
+### Execution (4 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /workspaces/:id/execute` | Start multi-agent execution |
+| `GET /workspaces/:id/executions` | List executions for workspace |
+| `GET /executions/:id` | Get execution status |
+| `GET /executions/:id/events` | SSE stream of agent events |
+
 ### System (5 endpoints)
 
 | Endpoint | Purpose |
@@ -220,12 +243,25 @@ PROJECT_STATE.md         ← Current project state
 
 ## Playground
 
-The playground UI at **http://localhost:8088/playground** provides 4 pages for interactive exploration:
+The playground UI at **http://localhost:8088/playground** provides interactive exploration:
 
 - **Dashboard** (`index.html`): Real-time service health, ingestion stats, quick actions
 - **Query Playground** (`playground.html`): 7 query types (semantic, function, callers, trait impls, type usages, module tree, Cypher) with JSON/table view toggle
 - **Audit Trail** (`audit.html`): Known issues and system audit information
 - **Gap Analysis** (`gaps.html`): Feature completeness tracking
+
+### Editor Playground
+
+The Workspace API enables an **Editor Playground** workflow: create isolated workspaces from GitHub repos, run AI agents against them, and review/commit the results. Each workspace is sandboxed with its own Docker volume and Postgres schema.
+
+```bash
+# Quick start: create workspace → execute → review
+curl -X POST http://localhost:8088/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{"github_url": "https://github.com/juspay/hyperswitch"}'
+```
+
+See [Getting Started](./docs/getting-started.md#editor-playground) for the full walkthrough and [API Spec](./docs/api-spec.md#workspace-management) for endpoint details.
 
 See [docs/playground.md](./docs/playground.md) for detailed documentation.
 

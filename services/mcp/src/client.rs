@@ -110,6 +110,59 @@ impl ApiClient {
         response.json().await.map_err(McpError::Http)
     }
 
+    /// Make a GET request to the API with an optional workspace ID header.
+    #[instrument(skip(self), fields(path = %path))]
+    pub async fn get_with_workspace<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        debug!("GET {} (workspace: {:?})", url, workspace_id);
+
+        let mut request = self.client.get(&url);
+        if let Some(ws_id) = workspace_id {
+            request = request.header("X-Workspace-Id", ws_id);
+        }
+
+        let response = request.send().await.map_err(McpError::Http)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::Api(format!("{}: {}", status, body)));
+        }
+
+        response.json().await.map_err(McpError::Http)
+    }
+
+    /// Make a POST request to the API with an optional workspace ID header.
+    #[instrument(skip(self, body), fields(path = %path))]
+    pub async fn post_with_workspace<T: DeserializeOwned, B: serde::Serialize + std::fmt::Debug>(
+        &self,
+        path: &str,
+        body: &B,
+        workspace_id: Option<&str>,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        debug!("POST {} {:?} (workspace: {:?})", url, body, workspace_id);
+
+        let mut request = self.client.post(&url).json(body);
+        if let Some(ws_id) = workspace_id {
+            request = request.header("X-Workspace-Id", ws_id);
+        }
+
+        let response = request.send().await.map_err(McpError::Http)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::Api(format!("{}: {}", status, body)));
+        }
+
+        response.json().await.map_err(McpError::Http)
+    }
+
     /// Check if the API is healthy
     #[instrument(skip(self))]
     pub async fn health_check(&self) -> Result<bool> {

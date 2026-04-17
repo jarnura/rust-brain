@@ -151,6 +151,8 @@ async fn main() -> Result<()> {
         dry_run: args.dry_run,
         continue_on_error: !args.fail_fast,
         max_concurrency: args.max_concurrency,
+        workspace_id: None,
+        workspace_label: None,
     };
 
     config.validate().context("Invalid configuration")?;

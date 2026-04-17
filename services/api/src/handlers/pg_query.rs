@@ -9,7 +9,9 @@ use sqlx::{Column, Row, TypeInfo};
 use tracing::debug;
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::state::AppState;
+use crate::workspace::schema::schema_name_for;
 
 /// Whitelisted tables that may be queried.
 const ALLOWED_TABLES: &[&str] = &[
@@ -138,6 +140,7 @@ fn validate_query(query: &str) -> Result<(), AppError> {
 ///    The transaction is always rolled back — even for SELECTs — so nothing persists.
 pub async fn pg_query(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(request): Json<PgQueryRequest>,
 ) -> Result<Json<PgQueryResponse>, AppError> {
     state.metrics.record_request("pg_query", "POST");
@@ -153,14 +156,21 @@ pub async fn pg_query(
         trimmed.to_string()
     };
 
-    // Open an explicit transaction and mark it read-only at the DB level.
-    // This is defense-in-depth: even if keyword validation is bypassed,
-    // Postgres will refuse any write operation.
+    // Begin read-only transaction. Workspace search_path is set with SET LOCAL
+    // so it reverts on rollback — avoids pool contamination.
     let mut tx = state
         .pg_pool
         .begin()
         .await
         .map_err(|e| AppError::Database(format!("Failed to begin transaction: {}", e)))?;
+
+    if let Some(ref ctx) = ws {
+        let schema = schema_name_for(ctx.workspace_id());
+        let set_sql = format!("SET LOCAL search_path TO {}, public", schema);
+        sqlx::query(&set_sql).execute(&mut *tx).await.map_err(|e| {
+            AppError::Database(format!("Failed to set search_path for workspace: {}", e))
+        })?;
+    }
 
     sqlx::query("SET LOCAL transaction_read_only = 'on'")
         .execute(&mut *tx)

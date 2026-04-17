@@ -16,6 +16,9 @@ pub struct AggregateSearchRequest {
     /// Maximum results to return
     #[serde(default = "default_limit")]
     pub limit: u32,
+    /// Optional workspace ID to scope the search
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -57,8 +60,9 @@ pub async fn execute(client: &ApiClient, request: AggregateSearchRequest) -> Res
         limit: request.limit,
     };
 
-    let response: AggregateSearchResponse =
-        client.post("/tools/aggregate_search", &api_request).await?;
+    let response: AggregateSearchResponse = client
+        .post_with_workspace("/tools/aggregate_search", &api_request, request.workspace_id.as_deref())
+        .await?;
 
     if response.results.is_empty() {
         return Ok(format!(
@@ -138,6 +142,10 @@ pub fn definition() -> serde_json::Value {
                     "type": "number",
                     "description": "Maximum number of results to return (default 10)",
                     "default": 10
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Optional: workspace ID to scope the search to a specific workspace. Use when searching within an isolated workspace."
                 }
             },
             "required": ["query"]
@@ -181,5 +189,15 @@ mod tests {
         let json = r#"{"query": "database connection"}"#;
         let request: AggregateSearchRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.limit, 10);
+        assert_eq!(request.workspace_id, None);
+    }
+
+    #[test]
+    fn test_aggregate_search_request_with_workspace_id() {
+        let json = r#"{"query": "error handling", "limit": 5, "workspace_id": "ws_xyz"}"#;
+        let request: AggregateSearchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.query, "error handling");
+        assert_eq!(request.limit, 5);
+        assert_eq!(request.workspace_id, Some("ws_xyz".to_string()));
     }
 }

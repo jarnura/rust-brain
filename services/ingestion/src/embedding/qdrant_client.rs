@@ -35,6 +35,10 @@ pub struct QdrantConfig {
     pub code_collection: String,
     /// Doc embeddings collection name
     pub doc_collection: String,
+    /// Crate docs embeddings collection name
+    pub crate_docs_collection: String,
+    /// External docs embeddings collection name
+    pub external_docs_collection: String,
     /// Vector dimensions
     pub vector_size: usize,
     /// Request timeout
@@ -47,6 +51,26 @@ impl Default for QdrantConfig {
             base_url: "http://qdrant:6333".to_string(),
             code_collection: CODE_COLLECTION.to_string(),
             doc_collection: DOC_COLLECTION.to_string(),
+            crate_docs_collection: CRATE_DOCS_COLLECTION.to_string(),
+            external_docs_collection: EXTERNAL_DOCS_COLLECTION.to_string(),
+            vector_size: 2560,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl QdrantConfig {
+    /// Create a QdrantConfig for a specific workspace.
+    ///
+    /// Derives per-workspace collection names from the schema name using the
+    /// ADR-005 convention: `ws_<schema>_<collection_type>`.
+    pub fn for_workspace(schema_name: &str) -> Self {
+        Self {
+            base_url: "http://qdrant:6333".to_string(),
+            code_collection: format!("ws_{}_code_embeddings", schema_name),
+            doc_collection: format!("ws_{}_doc_embeddings", schema_name),
+            crate_docs_collection: format!("ws_{}_crate_docs", schema_name),
+            external_docs_collection: format!("ws_{}_external_docs", schema_name),
             vector_size: 2560,
             timeout: Duration::from_secs(30),
         }
@@ -369,8 +393,8 @@ impl QdrantClient {
     pub async fn ensure_all_collections(&self) -> Result<()> {
         self.ensure_collection(&self.config.code_collection).await?;
         self.ensure_collection(&self.config.doc_collection).await?;
-        self.ensure_collection(CRATE_DOCS_COLLECTION).await?;
-        self.ensure_collection(EXTERNAL_DOCS_COLLECTION).await?;
+        self.ensure_collection(&self.config.crate_docs_collection).await?;
+        self.ensure_collection(&self.config.external_docs_collection).await?;
         Ok(())
     }
 
@@ -575,6 +599,16 @@ impl QdrantClient {
         &self.config.doc_collection
     }
 
+    /// Get the crate docs collection name
+    pub fn crate_docs_collection(&self) -> &str {
+        &self.config.crate_docs_collection
+    }
+
+    /// Get the external docs collection name
+    pub fn external_docs_collection(&self) -> &str {
+        &self.config.external_docs_collection
+    }
+
     /// Get vector size
     pub fn vector_size(&self) -> usize {
         self.config.vector_size
@@ -591,6 +625,8 @@ mod tests {
         assert_eq!(config.base_url, "http://qdrant:6333");
         assert_eq!(config.code_collection, CODE_COLLECTION);
         assert_eq!(config.doc_collection, DOC_COLLECTION);
+        assert_eq!(config.crate_docs_collection, CRATE_DOCS_COLLECTION);
+        assert_eq!(config.external_docs_collection, EXTERNAL_DOCS_COLLECTION);
         assert_eq!(config.vector_size, 2560);
     }
 

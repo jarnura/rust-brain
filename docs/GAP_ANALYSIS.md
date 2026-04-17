@@ -1,9 +1,9 @@
 # rust-brain: Deep Gap Analysis
 
-**Date:** 2026-03-14 (Revised)
-**Revision:** 2 — Updated after test additions
+**Date:** 2026-04-17 (Revised)
+**Revision:** 3 — Updated for Phase 3 deliverables and 6-service architecture
 **Scope:** Full architectural and implementation review
-**Status:** Phase 2 (Partial) — 11,372 LOC across 2 services
+**Status:** Phase 3 (Complete) — 6 services, 47+ API routes, 16 MCP tools
 
 ---
 
@@ -42,10 +42,10 @@ Where traditional databases give **applications** fast algorithmic access to dat
                     │         LLM / Agent          │
                     │  (the "application" layer)   │
                     └──────────┬──────────────────┘
-                               │ REST API calls
+                               │ REST API / MCP
                     ┌──────────▼──────────────────┐
                     │      Tool API (Axum)         │
-                    │   22 endpoints, port 8080    │
+                    │  47+ endpoints, port 8088    │
                     └──┬──────────┬──────────┬────┘
                        │          │          │
               ┌────────▼───┐ ┌───▼────┐ ┌───▼────────┐
@@ -58,8 +58,8 @@ Where traditional databases give **applications** fast algorithmic access to dat
                     │ embedding generation
               ┌─────▼──────┐
               │   Ollama   │
-              │ qwen3-emb  │
-              │ codellama  │
+              │qwen3-emb:4b│
+              │  (2560-dim) │
               └────────────┘
 ```
 
@@ -206,12 +206,13 @@ The graph-related endpoints likely proxy through HTTP or are stubbed. This means
 
 ---
 
-#### Gap 5: Semantic Search Doesn't Aggregate Across Databases
+#### Gap 5: ~~Semantic Search Doesn't Aggregate Across Databases~~ (RESOLVED)
 
-**Severity:** HIGH
-**Files:** `services/api/src/main.rs`
+**Severity:** ~~HIGH~~ → RESOLVED
+**Files:** `services/api/src/handlers/search.rs`
+**Resolution:** `POST /tools/aggregate_search` endpoint implemented. Cross-database search orchestrates Qdrant (semantic) → Postgres (details) → Neo4j (relationships) and returns aggregated results. Also exposed as `aggregate_search` MCP tool.
 
-The architecture doc shows the ideal flow:
+~~The architecture doc shows the ideal flow:~~
 ```
 Agent → API → Qdrant (semantic search) → Postgres (details) → Neo4j (relationships) → Agent
 ```
@@ -280,16 +281,22 @@ The heuristic fallback uses regex patterns, which will miss complex expressions.
 
 ---
 
-#### Gap 8: No Error Recovery in Pipeline Stages
+#### Gap 8: No Error Recovery in Pipeline Stages (PARTIALLY ADDRESSED)
 
-**Severity:** MEDIUM
-**Files:** `services/ingestion/src/pipeline/runner.rs`
+**Severity:** MEDIUM (downgraded — ingestion resilience improvements added)
+**Files:** `services/ingestion/src/pipeline/stages.rs`
 
-The pipeline runner has `fail_fast` mode but limited recovery:
-- If the Parse stage fails on one file, the entire stage result is "partial"
-- There's no retry logic for transient failures (e.g., Ollama timeout during embedding)
+**What's been done:**
+- Embed stage now loads items from database when pipeline state unavailable (fallback for standalone execution)
+- Memory-bounded streaming pipeline with bounded channels
+- Comprehensive monitoring system for ingestion pipeline
+- Per-file error tracking with continuation
+
+**What's still missing:**
+- No retry logic for transient failures (e.g., Ollama timeout during embedding)
 - If the Graph stage fails mid-batch, already-inserted nodes create orphans
 - No rollback mechanism across the triple storage (Postgres transaction + Neo4j + Qdrant are not atomic)
+- No compensating transactions for partial failures
 
 **Fix:**
 - Add per-file error tracking with continuation
@@ -312,7 +319,7 @@ The text representation for embedding is well-structured but has issues:
 
 3. **No embedding for relationships** — "How do X and Y interact?" requires relationship context in embeddings, which isn't included.
 
-4. **Single embedding model** — `nomic-embed-text` (768-dim) is good for general text but not specifically trained on code. Code-specific models like `voyage-code-2` or fine-tuned models would perform better.
+  4. **Single embedding model** — `qwen3-embedding:4b` (2560-dim) is a significant upgrade over the previous `nomic-embed-text`, but code-specific models like `voyage-code-2` or fine-tuned models could still perform better.
 
 **Fix:**
 - Include a truncated body preview in the text representation
@@ -322,17 +329,23 @@ The text representation for embedding is well-structured but has issues:
 
 ---
 
-#### Gap 10: Postgres and Neo4j Data Consistency
+#### Gap 10: Postgres and Neo4j Data Consistency (PARTIALLY ADDRESSED)
 
-**Severity:** MEDIUM
-**Files:** `scripts/init-db.sql`, `services/ingestion/src/graph/`
+**Severity:** MEDIUM (downgraded from MEDIUM — consistency checker now exists)
+**Files:** `services/api/src/handlers/consistency.rs`, `services/mcp/src/tools/consistency_check.rs`
 
-Data lives in three stores with no cross-store consistency guarantees:
+**What's been done:**
+- `GET /api/consistency` endpoint with summary and full detail modes
+- `consistency_check` MCP tool for verifying data integrity across Postgres, Neo4j, and Qdrant
+- Per-store item counts with discrepancy detection and recommendations
+- ADR-004 documenting cross-store consistency design decisions
 
+**What's still missing:**
 1. **No foreign key between stores** — An FQN in Postgres may not exist in Neo4j (or vice versa) if one stage fails
 2. **No deletion cascade** — If a file is removed from the codebase, its items remain in all three stores
 3. **Duplicate data** — FQN, name, visibility, signature are stored in both Postgres AND Neo4j node properties
 4. **No version tracking** — No way to query "what changed between ingestion run X and Y"
+5. **No automatic remediation** — Consistency checker detects but doesn't fix discrepancies
 
 **Fix:**
 - Add a consistency check stage at the end of the pipeline
@@ -559,12 +572,12 @@ While Prometheus/Grafana are set up, the metrics are basic:
 | 2 | Test coverage gaps (API, typecheck, DualParser, embedding clients) | HIGH | Medium | Quality |
 | 3 | ~~No workspace / shared types~~ | ~~HIGH~~ RESOLVED | ~~Medium~~ | ~~Maintainability~~ |
 | 4 | ~~API missing Neo4j client~~ | ~~HIGH~~ RESOLVED | ~~Low~~ | ~~Functionality~~ |
-| 5 | No cross-DB aggregation | HIGH | Medium | Core value |
+| 5 | ~~No cross-DB aggregation~~ | ~~HIGH~~ RESOLVED | ~~Medium~~ | ~~Core value~~ |
 | 6 | No incremental ingestion | HIGH | High | Scalability |
 | 7 | Incomplete call site detection | HIGH | High | Accuracy |
-| 8 | No error recovery in pipeline | MEDIUM | Medium | Reliability |
+| 8 | No error recovery in pipeline | MEDIUM (partially addressed) | Medium | Reliability |
 | 9 | Embedding quality concerns | MEDIUM | Medium | Search quality |
-| 10 | Cross-store consistency | MEDIUM | Medium | Data integrity |
+| 10 | Cross-store consistency | MEDIUM (partially addressed) | Medium | Data integrity |
 | 11 | No auth / rate limiting | MEDIUM | Low | Security |
 | 12 | Missing language constructs | MEDIUM | High | Coverage |
 | 13 | `cargo expand` fragility | MEDIUM | Medium | Robustness |
@@ -580,33 +593,33 @@ While Prometheus/Grafana are set up, the metrics are basic:
 
 ## Recommended Priority Order
 
-### Phase 1: Make It Work (Week 1)
-1. **Fix compilation issues** (Gap 1) — pin dependencies or update call sites
-2. **Add Neo4j client to API** (Gap 4) — enable graph endpoints
-3. **Implement cross-DB aggregation** (Gap 5) — the core value proposition
+### Phase 1: Make It Work ✅ COMPLETE
+1. ~~**Fix compilation issues** (Gap 1) — pin dependencies or update call sites~~
+2. ~~**Add Neo4j client to API** (Gap 4) — enable graph endpoints~~
+3. ~~**Implement cross-DB aggregation** (Gap 5) — the core value proposition~~
 
-### Phase 2: Make It Right (Week 2-3)
-4. **Fill test coverage gaps** (Gap 2) — typecheck/resolver, DualParser fallback, API handlers, embedding clients
-5. **Create workspace structure** (Gap 3) — shared types crate
-6. **Add confidence scoring** (Gap 17) — low effort, high value
-7. **Improve error recovery** (Gap 8)
-8. **Fix Cypher injection risk** (Gap 11)
+### Phase 2: Make It Right (MOSTLY COMPLETE)
+4. **Fill test coverage gaps** (Gap 2) — typecheck/resolver, DualParser fallback, API handlers, embedding clients — IN PROGRESS
+5. ~~**Create workspace structure** (Gap 3) — shared types crate~~
+6. **Add confidence scoring** (Gap 17) — low effort, high value — PLANNED
+7. **Improve error recovery** (Gap 8) — partially addressed, retry logic still needed
+8. ~~**Fix Cypher injection risk** (Gap 11)~~ — hardened Cypher injection prevention added
 
-### Phase 3: Make It Fast (Week 3-4)
-9. **Incremental ingestion** (Gap 6)
-10. **Improve embedding quality** (Gap 9)
-11. **Context window management** (Gap 15)
-12. **Make cargo expand optional** (Gap 13)
+### Phase 3: Make It Fast (IN PROGRESS)
+9. **Incremental ingestion** (Gap 6) — PLANNED for v0.4.0
+10. **Improve embedding quality** (Gap 9) — upgraded to qwen3-embedding:4b, body preview still needed
+11. **Context window management** (Gap 15) — PLANNED
+12. ~~**Make cargo expand optional** (Gap 13)~~ — expand stage has fallback, timeout now 3 min
 
-### Phase 4: Make It Complete (Month 2+)
+### Phase 4: Make It Complete (PLANNED)
 13. **Query planner** (Gap 14) — the "database engine optimizer" for code
 14. **Cross-crate analysis** (Gap 16)
-15. **MCP integration** (Gap 18)
-16. **Call site detection improvements** (Gap 7)
+15. ~~**MCP integration** (Gap 18)~~ — COMPLETE (16 MCP tools, SSE + stdio)
+16. **Call site detection improvements** (Gap 7) — PLANNED for v0.3.0
 17. **Missing language constructs** (Gap 12)
 18. **Data lifecycle / GC** (Gap 19)
 19. **Observability improvements** (Gap 20)
-20. **Cross-store consistency** (Gap 10)
+20. **Cross-store consistency** (Gap 10) — consistency checker exists, remediation needed
 
 ---
 
@@ -614,15 +627,20 @@ While Prometheus/Grafana are set up, the metrics are basic:
 
 rust-brain is architecturally well-designed — the triple-storage pattern (Graph + Vector + Relational) is the right approach for giving LLMs "database-like" access to code intelligence. The infrastructure (Docker Compose, monitoring, observability) is production-grade.
 
-### Resolved Since Initial Analysis (4 gaps)
+### Resolved Since Initial Analysis (5 gaps)
 1. **Gap 1** — Compilation fixed; project builds with current dependency versions
 2. **Gap 3** — Workspace Cargo.toml created with `rustbrain-common` shared crate
 3. **Gap 4** — Neo4j client (`neo4rs 0.7`) added to API service; graph endpoints fully operational
-4. **Gap 18** — MCP server implemented (`services/mcp/`) with stdio + SSE transports, 9 tools
+4. **Gap 18** — MCP server implemented (`services/mcp/`) with stdio + SSE transports, 16 tools
+5. **Gap 5** — Cross-DB aggregation implemented via `aggregate_search` endpoint and MCP tool
+
+### Partially Addressed (2 gaps)
+1. **Gap 8** — Ingestion resilience improved (database fallback, memory-bounded streaming, monitoring); retry logic and cross-store rollback still missing
+2. **Gap 10** — Consistency checker implemented (`GET /api/consistency`, MCP tool); automatic remediation still missing
 
 ### Remaining Critical Gaps
-1. **Test coverage** (Gap 2) — Core parsing and graph modules have 27+ unit tests, but typecheck resolver, DualParser fallback, API handlers, and embedding clients remain untested.
-2. **Cross-DB aggregation** (Gap 5) — `POST /tools/aggregate_search` endpoint now exists but full cross-database orchestration (Qdrant → Postgres → Neo4j → aggregated response) needs validation.
-3. ~~**TypecheckStage bug**~~ (RESOLVED — see `docs/issues/ISSUE-001`) — Fixed in commit `316cb7d`. `call_sites` now has 99,654 rows, `trait_implementations` has 29,738 rows. Snapshot v2 includes full call graph data (227K CALLS edges).
+1. **Test coverage** (Gap 2) — Core parsing and graph modules have 27+ unit tests, but typecheck resolver, DualParser fallback, API handlers, and embedding clients remain untested. Integration tests exist but are mostly `#[ignore]` requiring Docker stack.
+2. **Incremental ingestion** (Gap 6) — Full re-ingestion required every time. 30+ minutes for large codebases.
+3. **Call site detection** (Gap 7) — Trait method dispatch still unresolved (ISSUE-003), planned for v0.3.0
 
 The query planner (Gap 14) is the most exciting future piece — it would complete the analogy by adding the "query optimizer" that makes a database engine truly intelligent about access paths.
