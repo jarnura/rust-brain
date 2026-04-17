@@ -88,7 +88,10 @@ pub async fn prune_audit_log(pool: &PgPool, retention_days: u32) -> anyhow::Resu
             deleted, retention_days
         );
     } else {
-        debug!("No audit log entries to prune (retention: {}d)", retention_days);
+        debug!(
+            "No audit log entries to prune (retention: {}d)",
+            retention_days
+        );
     }
 
     Ok(deleted)

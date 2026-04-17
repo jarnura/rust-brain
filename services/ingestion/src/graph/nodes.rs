@@ -94,6 +94,14 @@ impl From<Vec<String>> for PropertyValue {
     }
 }
 
+pub(crate) fn build_node_merge_query(node: &NodeData, workspace_label: Option<&str>) -> String {
+    let label = node.node_type.label();
+    match workspace_label {
+        Some(ws) => format!("MERGE (n:{}:{} {{id: $id}}) SET n += $props", label, ws),
+        None => format!("MERGE (n:{} {{id: $id}}) SET n += $props", label),
+    }
+}
+
 /// Builder for creating nodes in Neo4j
 pub struct NodeBuilder {
     graph: Arc<Graph>,
@@ -111,11 +119,7 @@ impl NodeBuilder {
 
     /// Build a MERGE query for creating a node (idempotent)
     pub(crate) fn build_merge_query(&self, node: &NodeData) -> String {
-        let label = node.node_type.label();
-        match &self.workspace_label {
-            Some(ws) => format!("MERGE (n:{}:{} {{id: $id}}) SET n += $props", label, ws),
-            None => format!("MERGE (n:{} {{id: $id}}) SET n += $props", label),
-        }
+        build_node_merge_query(node, self.workspace_label.as_deref())
     }
 
     /// Create or update a node using MERGE (idempotent)
@@ -717,12 +721,6 @@ mod tests {
 
     #[test]
     fn test_merge_query_without_workspace_label() {
-        // Create a minimal NodeBuilder with no graph and no workspace_label
-        let builder = NodeBuilder {
-            graph: Arc::new(std::mem::MaybeUninit::uninit().assume_init()), // Dummy, won't be used
-            workspace_label: None,
-        };
-
         let node = NodeBuilder::create_function(
             "test::func",
             "test::func",
@@ -740,17 +738,12 @@ mod tests {
             None,
         );
 
-        let query = builder.build_merge_query(&node);
+        let query = build_node_merge_query(&node, None);
         assert_eq!(query, "MERGE (n:Function {id: $id}) SET n += $props");
     }
 
     #[test]
     fn test_merge_query_with_workspace_label() {
-        let builder = NodeBuilder {
-            graph: Arc::new(std::mem::MaybeUninit::uninit().assume_init()),
-            workspace_label: Some("Workspace_a1b2c3d4e5f6".to_string()),
-        };
-
         let node = NodeBuilder::create_function(
             "test::func",
             "test::func",
@@ -768,7 +761,7 @@ mod tests {
             None,
         );
 
-        let query = builder.build_merge_query(&node);
+        let query = build_node_merge_query(&node, Some("Workspace_a1b2c3d4e5f6"));
         assert_eq!(
             query,
             "MERGE (n:Function:Workspace_a1b2c3d4e5f6 {id: $id}) SET n += $props"
@@ -777,7 +770,6 @@ mod tests {
 
     #[test]
     fn test_merge_query_workspace_label_all_node_types() {
-        // Test that all node types produce the correct query with workspace label
         let test_cases = vec![
             (
                 NodeBuilder::create_crate("crate", "test_crate", None, None),
@@ -843,12 +835,7 @@ mod tests {
         ];
 
         for (node, expected_label) in test_cases {
-            let builder = NodeBuilder {
-                graph: Arc::new(std::mem::MaybeUninit::uninit().assume_init()),
-                workspace_label: Some("Workspace_testlabel01".to_string()),
-            };
-
-            let query = builder.build_merge_query(&node);
+            let query = build_node_merge_query(&node, Some("Workspace_testlabel01"));
             let expected = format!(
                 "MERGE (n:{}:Workspace_testlabel01 {{id: $id}}) SET n += $props",
                 expected_label

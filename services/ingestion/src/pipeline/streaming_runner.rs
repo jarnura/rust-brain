@@ -19,6 +19,7 @@ use crate::pipeline::{
     SourceFileInfo, StageCounts,
 };
 use anyhow::{anyhow, Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -508,19 +509,186 @@ async fn graph_stage(
     mut rx: mpsc::Receiver<ParsedBatch>,
     tx: mpsc::Sender<GraphResult>,
 ) -> Result<StageResult> {
+    use crate::graph::{
+        BatchConfig, BatchInsert, GraphBuilder, GraphConfig, NodeData, PropertyValue,
+    };
+    use crate::pipeline::validate_workspace_label;
+
     let start = Instant::now();
     let mut node_count = 0;
+    let mut failed_count = 0;
 
-    let has_neo4j = config.neo4j_url.is_some();
-    if !has_neo4j {
-        info!("Graph stage: Neo4j not configured, passing items through for embedding");
-    }
+    let neo4j_url = config.neo4j_url.clone();
+    let workspace_label = config.workspace_label.clone();
+
+    let graph_handle: Option<(Arc<neo4rs::Graph>, BatchInsert, String)> =
+        match (&neo4j_url, &workspace_label) {
+            (Some(url), Some(label)) => {
+                if !validate_workspace_label(label) {
+                    return Ok(StageResult::failed(
+                        "graph",
+                        format!("Invalid workspace label format: {}", label),
+                    ));
+                }
+
+                let neo4j_user =
+                    std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+                let neo4j_password =
+                    std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string());
+
+                info!(
+                    "Graph stage: connecting to Neo4j at {} with workspace label {}",
+                    url, label
+                );
+
+                match neo4rs::Graph::new(url, &neo4j_user, &neo4j_password).await {
+                    Ok(graph) => {
+                        let graph = Arc::new(graph);
+                        let batch_insert = BatchInsert::new(
+                            Arc::clone(&graph),
+                            BatchConfig::default(),
+                            Some(label.clone()),
+                        );
+
+                        let graph_config = GraphConfig {
+                            uri: url.clone(),
+                            username: neo4j_user,
+                            password: neo4j_password,
+                            database: std::env::var("NEO4J_DATABASE")
+                                .unwrap_or_else(|_| "neo4j".to_string()),
+                            max_connections: 10,
+                            batch_size: 1000,
+                            workspace_label: Some(label.clone()),
+                        };
+
+                        let builder = GraphBuilder::with_config(graph_config).await;
+                        match builder {
+                            Ok(b) => {
+                                if let Err(e) = b.create_workspace_constraints(label).await {
+                                    warn!("Failed to create workspace constraints: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to create GraphBuilder for workspace constraints: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        info!(
+                            "Graph stage: Neo4j connected, will write nodes with label {}",
+                            label
+                        );
+                        Some((graph, batch_insert, label.clone()))
+                    }
+                    Err(e) => {
+                        warn!("Graph stage: failed to connect to Neo4j: {}", e);
+                        None
+                    }
+                }
+            }
+            (Some(_), None) => {
+                info!(
+                    "Graph stage: Neo4j configured but no workspace label, passing items through"
+                );
+                None
+            }
+            _ => {
+                info!("Graph stage: Neo4j not configured, passing items through for embedding");
+                None
+            }
+        };
+
+    let mut batch_insert = graph_handle.map(|(_, bi, _)| bi);
 
     while let Some(batch) = rx.recv().await {
         let est_bytes = batch.items.len() as u64 * 2048;
         let _guard = accountant.reserve("graph", est_bytes).await;
 
         node_count += batch.items.len();
+
+        if let Some(ref mut bi) = batch_insert {
+            for item in &batch.items {
+                let node_type = match item_type_to_node_type(&item.item_type) {
+                    Some(nt) => nt,
+                    None => {
+                        debug!(
+                            "Skipping item with unmapped type: {} ({})",
+                            item.fqn, item.item_type
+                        );
+                        continue;
+                    }
+                };
+
+                let mut properties = HashMap::new();
+                if !item.visibility.is_empty() {
+                    properties.insert(
+                        "visibility".to_string(),
+                        PropertyValue::String(item.visibility.clone()),
+                    );
+                }
+                if !item.signature.is_empty() {
+                    properties.insert(
+                        "signature".to_string(),
+                        PropertyValue::String(item.signature.clone()),
+                    );
+                }
+                if !item.generic_params.is_empty() {
+                    let gp: Vec<String> = item
+                        .generic_params
+                        .iter()
+                        .map(|g| format!("{:?}", g))
+                        .collect();
+                    properties.insert("generic_params".to_string(), PropertyValue::Array(gp));
+                }
+                if !item.where_clauses.is_empty() {
+                    let wc: Vec<String> = item
+                        .where_clauses
+                        .iter()
+                        .map(|w| format!("{:?}", w))
+                        .collect();
+                    properties.insert("where_clauses".to_string(), PropertyValue::Array(wc));
+                }
+                if !item.attributes.is_empty() {
+                    properties.insert(
+                        "attributes".to_string(),
+                        PropertyValue::Array(item.attributes.clone()),
+                    );
+                }
+                if !item.doc_comment.is_empty() {
+                    properties.insert(
+                        "doc_comment".to_string(),
+                        PropertyValue::String(item.doc_comment.clone()),
+                    );
+                }
+                if item.start_line > 0 {
+                    properties.insert(
+                        "start_line".to_string(),
+                        PropertyValue::Int(item.start_line as i64),
+                    );
+                }
+                if item.end_line > 0 {
+                    properties.insert(
+                        "end_line".to_string(),
+                        PropertyValue::Int(item.end_line as i64),
+                    );
+                }
+
+                let node = NodeData {
+                    id: item.fqn.clone(),
+                    fqn: item.fqn.clone(),
+                    name: item.name.clone(),
+                    node_type,
+                    properties,
+                };
+
+                if let Err(e) = bi.add_node(node).await {
+                    warn!("Failed to add node to batch: {}", e);
+                    failed_count += 1;
+                }
+            }
+        }
 
         let msg = GraphResult {
             items: batch.items,
@@ -533,13 +701,51 @@ async fn graph_stage(
         }
     }
 
+    if let Some(ref mut bi) = batch_insert {
+        if let Err(e) = bi.flush_all().await {
+            warn!("Failed to flush remaining graph nodes: {}", e);
+            failed_count += 1;
+        }
+    }
+
     drop(tx);
     let duration = start.elapsed();
-    info!(
-        "Graph stage: {} items forwarded in {:?}",
-        node_count, duration
-    );
-    Ok(StageResult::success("graph", node_count, 0, duration))
+
+    if failed_count > 0 && node_count == 0 {
+        Ok(StageResult::failed("graph", "All graph writes failed"))
+    } else if failed_count > 0 {
+        Ok(StageResult::partial(
+            "graph",
+            node_count,
+            failed_count,
+            duration,
+            format!("{} nodes written, {} failed", node_count, failed_count),
+        ))
+    } else {
+        info!(
+            "Graph stage: {} nodes written in {:?}",
+            node_count, duration
+        );
+        Ok(StageResult::success("graph", node_count, 0, duration))
+    }
+}
+
+/// Map ParsedItemInfo.item_type string to NodeType
+fn item_type_to_node_type(item_type: &str) -> Option<crate::graph::NodeType> {
+    use crate::graph::NodeType;
+    match item_type {
+        "function" => Some(NodeType::Function),
+        "struct" => Some(NodeType::Struct),
+        "enum" => Some(NodeType::Enum),
+        "trait" => Some(NodeType::Trait),
+        "impl" => Some(NodeType::Impl),
+        "type_alias" => Some(NodeType::TypeAlias),
+        "const" => Some(NodeType::Const),
+        "static" => Some(NodeType::Static),
+        "macro" => Some(NodeType::Macro),
+        "module" => Some(NodeType::Module),
+        _ => None,
+    }
 }
 
 /// Embed items arriving from the graph stage.

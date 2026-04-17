@@ -32,6 +32,8 @@
 //! | `--database-url` | `-d` | — | `DATABASE_URL` (required) |
 //! | `--neo4j-url` | — | — | `NEO4J_URL` |
 //! | `--embedding-url` | — | — | `EMBEDDING_URL` |
+//! | `--workspace-id` | — | — | `INGESTION_WORKSPACE_ID` |
+//! | `--workspace-label` | — | — | `INGESTION_WORKSPACE_LABEL` |
 //! | `--stages` | `-s` | all | — |
 //! | `--dry-run` | — | false | — |
 //! | `--fail-fast` | — | false | — |
@@ -52,6 +54,7 @@ use pipeline::{read_crate_name_from_toml, PipelineConfig, PipelineRunner, StageS
 use std::path::PathBuf;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+use uuid::Uuid;
 
 // =============================================================================
 // CLI Arguments
@@ -79,6 +82,14 @@ struct Args {
     /// Embedding service URL (optional)
     #[arg(long, env = "EMBEDDING_URL")]
     embedding_url: Option<String>,
+
+    /// Workspace ID (optional)
+    #[arg(long, env = "INGESTION_WORKSPACE_ID")]
+    workspace_id: Option<String>,
+
+    /// Workspace label (optional)
+    #[arg(long, env = "INGESTION_WORKSPACE_LABEL")]
+    workspace_label: Option<String>,
 
     /// Comma-separated list of stages to run (default: all)
     /// Available stages: expand, parse, typecheck, extract, graph, embed
@@ -151,8 +162,8 @@ async fn main() -> Result<()> {
         dry_run: args.dry_run,
         continue_on_error: !args.fail_fast,
         max_concurrency: args.max_concurrency,
-        workspace_id: None,
-        workspace_label: None,
+        workspace_id: args.workspace_id.and_then(|s| Uuid::parse_str(&s).ok()),
+        workspace_label: args.workspace_label,
     };
 
     config.validate().context("Invalid configuration")?;

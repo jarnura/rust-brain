@@ -16,7 +16,7 @@
 //!    `SET n.key1 = variable.key1, n.key2 = variable.key2, ...`
 
 use anyhow::{Context, Result};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -32,6 +32,95 @@ const NODE_PROPS: &[&str] = &[
     "end_line",
     "file_path",
 ];
+
+/// Execute an AGE cypher query that requires an agtype parameter.
+///
+/// AGE's `cypher()` function requires the third argument to be a bare `$1` parameter
+/// reference (not a cast like `$1::agtype`). However, sqlx's `.bind()` sends text
+/// parameters with the `text` OID, which PostgreSQL can't match to `agtype`.
+///
+/// This helper uses the PREPARE/EXECUTE pattern within a single transaction so
+/// PostgreSQL knows the parameter type is `agtype` before the `cypher()` call is parsed,
+/// and both PREPARE and EXECUTE run on the same database connection.
+async fn execute_age_query(
+    pool: &PgPool,
+    sql: &str,
+    agtype_param: &str,
+    stmt_name: &str,
+) -> Result<sqlx::postgres::PgQueryResult> {
+    let mut tx = pool.begin().await.context("Failed to begin transaction")?;
+
+    // DEALLOCATE in a PL/pgSQL block that swallows "does not exist" errors
+    let deallocate_sql = format!(
+        "DO $$ BEGIN DEALLOCATE {name}; EXCEPTION WHEN OTHERS THEN END; $$",
+        name = stmt_name
+    );
+    let _ = sqlx::query(&deallocate_sql).execute(&mut *tx).await;
+
+    let prepare_sql = format!("PREPARE {}(agtype) AS {}", stmt_name, sql);
+    sqlx::query(&prepare_sql)
+        .execute(&mut *tx)
+        .await
+        .context("Failed to PREPARE AGE statement")?;
+
+    let exec_sql = format!(
+        "EXECUTE {}('{}')",
+        stmt_name,
+        agtype_param.replace('\'', "''")
+    );
+    let result = sqlx::query(&exec_sql)
+        .execute(&mut *tx)
+        .await
+        .context("Failed to EXECUTE AGE statement")?;
+
+    let _ = sqlx::query(&format!("DEALLOCATE {}", stmt_name))
+        .execute(&mut *tx)
+        .await;
+
+    tx.commit().await.context("Failed to commit transaction")?;
+    Ok(result)
+}
+
+/// Execute an AGE cypher query that returns rows with an agtype parameter.
+///
+/// Same as `execute_age_query` but returns rows instead of just the execute result.
+async fn fetch_age_query(
+    pool: &PgPool,
+    sql: &str,
+    agtype_param: &str,
+    stmt_name: &str,
+) -> Result<Vec<sqlx::postgres::PgRow>> {
+    let mut tx = pool.begin().await.context("Failed to begin transaction")?;
+
+    let deallocate_sql = format!(
+        "DO $$ BEGIN DEALLOCATE {name}; EXCEPTION WHEN OTHERS THEN END; $$",
+        name = stmt_name
+    );
+    let _ = sqlx::query(&deallocate_sql).execute(&mut *tx).await;
+
+    let prepare_sql = format!("PREPARE {}(agtype) AS {}", stmt_name, sql);
+    sqlx::query(&prepare_sql)
+        .execute(&mut *tx)
+        .await
+        .context("Failed to PREPARE AGE statement")?;
+
+    let exec_sql = format!(
+        "EXECUTE {}('{}')",
+        stmt_name,
+        agtype_param.replace('\'', "''")
+    );
+    let rows = sqlx::query(&exec_sql)
+        .fetch_all(&mut *tx)
+        .await
+        .context("Failed to EXECUTE AGE statement")?;
+
+    let _ = sqlx::query(&format!("DEALLOCATE {}", stmt_name))
+        .execute(&mut *tx)
+        .await;
+
+    tx.commit().await.context("Failed to commit transaction")?;
+    Ok(rows)
+}
 
 // ---------------------------------------------------------------------------
 // Query #1 — Batch node insert (UNWIND)
@@ -79,9 +168,7 @@ pub async fn batch_insert_nodes(
         label
     );
 
-    sqlx::query(&sql)
-        .bind(&agtype_param)
-        .execute(pool)
+    execute_age_query(pool, &sql, &agtype_param, "batch_insert_nodes")
         .await
         .context(format!("Failed to batch insert {} nodes", label))?;
 
@@ -184,9 +271,7 @@ pub async fn batch_insert_relationships(
         to_label
     );
 
-    sqlx::query(&sql)
-        .bind(&agtype_param)
-        .execute(pool)
+    execute_age_query(pool, &sql, &agtype_param, "batch_ins_rels")
         .await
         .context(format!("Failed to batch insert {} relationships", rel_type))?;
 
@@ -281,9 +366,7 @@ pub async fn batch_insert_rels_merge_target(
         to_label
     );
 
-    sqlx::query(&sql)
-        .bind(&agtype_param)
-        .execute(pool)
+    execute_age_query(pool, &sql, &agtype_param, "batch_ins_rels_mt")
         .await
         .context(format!(
             "Failed to batch insert {} relationships (merge target)",
@@ -348,9 +431,7 @@ pub async fn merge_node(
     let agtype_param = build_agtype_param(&params);
     debug!("merge_node: {} [{}]", id, label);
 
-    sqlx::query(&sql)
-        .bind(&agtype_param)
-        .execute(pool)
+    execute_age_query(pool, &sql, &agtype_param, "merge_node")
         .await
         .context(format!("Failed to merge node {} [{}]", id, label))?;
 
@@ -417,9 +498,7 @@ pub async fn merge_relationship(
         from_id, rel_type, to_id
     );
 
-    sqlx::query(&sql)
-        .bind(&agtype_param)
-        .execute(pool)
+    execute_age_query(pool, &sql, &agtype_param, "merge_rel")
         .await
         .context(format!(
             "Failed to merge relationship {} -[{}]-> {}",
@@ -531,14 +610,13 @@ pub async fn find_node_by_fqn(
 
     let agtype_param = build_agtype_param(&params);
 
-    let row: Option<(String,)> = sqlx::query_as(&sql)
-        .bind(&agtype_param)
-        .fetch_optional(pool)
+    let rows = fetch_age_query(pool, &sql, &agtype_param, "find_by_fqn")
         .await
         .context(format!("Failed to find node by FQN: {}", fqn))?;
 
-    match row {
-        Some((agtype_str,)) => {
+    match rows.into_iter().next() {
+        Some(row) => {
+            let agtype_str: String = row.get(0);
             let node = parse_age_vertex(&agtype_str);
             Ok(node)
         }

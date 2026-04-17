@@ -134,7 +134,10 @@ async fn run_single_scan(state: &AppState) {
                     )
                     .await
                     {
-                        error!("Failed to write audit record for orphan volume {}: {}", vol, e);
+                        error!(
+                            "Failed to write audit record for orphan volume {}: {}",
+                            vol, e
+                        );
                     }
                 }
                 for cid in &result.orphan_container_ids {
@@ -146,31 +149,33 @@ async fn run_single_scan(state: &AppState) {
                     )
                     .await
                     {
-                        error!("Failed to write audit record for orphan container {}: {}", cid, e);
+                        error!(
+                            "Failed to write audit record for orphan container {}: {}",
+                            cid, e
+                        );
                     }
                 }
 
                 if !state.config.dry_run {
                     for vol in &result.cleaned_volume_names {
-                        if let Err(e) = audit_writer::record_leak_cleaned(
-                            &state.pg_pool,
-                            "volume",
-                            vol,
-                        )
-                        .await
+                        if let Err(e) =
+                            audit_writer::record_leak_cleaned(&state.pg_pool, "volume", vol).await
                         {
-                            error!("Failed to write audit record for cleaned volume {}: {}", vol, e);
+                            error!(
+                                "Failed to write audit record for cleaned volume {}: {}",
+                                vol, e
+                            );
                         }
                     }
                     for cid in &result.cleaned_container_ids {
-                        if let Err(e) = audit_writer::record_leak_cleaned(
-                            &state.pg_pool,
-                            "container",
-                            cid,
-                        )
-                        .await
+                        if let Err(e) =
+                            audit_writer::record_leak_cleaned(&state.pg_pool, "container", cid)
+                                .await
                         {
-                            error!("Failed to write audit record for cleaned container {}: {}", cid, e);
+                            error!(
+                                "Failed to write audit record for cleaned container {}: {}",
+                                cid, e
+                            );
                         }
                     }
                 }
@@ -183,7 +188,7 @@ async fn run_single_scan(state: &AppState) {
         }
     }
 
-    match neo4j_scanner::scan_neo4j_leaks(&state.neo4j_graph).await {
+    match neo4j_scanner::scan_neo4j_leaks(&state.neo4j_graph, None).await {
         Ok(result) => {
             metrics::MULTI_LABEL_NODES.set(result.multi_label_nodes as f64);
             metrics::ORPHAN_NODES.set(result.orphan_nodes as f64);
@@ -201,8 +206,7 @@ async fn run_single_scan(state: &AppState) {
                     result.orphan_nodes, result.baseline_orphan_nodes
                 );
             }
-            if result.multi_label_nodes == 0
-                && result.orphan_nodes <= result.baseline_orphan_nodes
+            if result.multi_label_nodes == 0 && result.orphan_nodes <= result.baseline_orphan_nodes
             {
                 info!("No Neo4j cross-workspace leaks detected");
             }
@@ -212,8 +216,8 @@ async fn run_single_scan(state: &AppState) {
         }
     }
 
-    if let Err(e) = audit_writer::prune_audit_log(&state.pg_pool, state.config.log_retention_days)
-        .await
+    if let Err(e) =
+        audit_writer::prune_audit_log(&state.pg_pool, state.config.log_retention_days).await
     {
         error!("Audit log pruning failed: {}", e);
     }

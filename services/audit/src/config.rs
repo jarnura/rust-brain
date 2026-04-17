@@ -30,12 +30,10 @@ impl Config {
     ///
     /// Panics if required variables are missing.
     pub fn from_env() -> Self {
-        let database_url = env::var("DATABASE_URL")
-            .expect("DATABASE_URL environment variable is required");
-        let neo4j_url =
-            env::var("NEO4J_URL").expect("NEO4J_URL environment variable is required");
-        let neo4j_user =
-            env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+        let database_url =
+            env::var("DATABASE_URL").expect("DATABASE_URL environment variable is required");
+        let neo4j_url = env::var("NEO4J_URL").expect("NEO4J_URL environment variable is required");
+        let neo4j_user = env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
         let neo4j_password =
             env::var("NEO4J_PASSWORD").expect("NEO4J_PASSWORD environment variable is required");
         let audit_port = env::var("AUDIT_PORT")

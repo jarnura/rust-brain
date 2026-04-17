@@ -82,6 +82,15 @@ pub async fn create_age_pool(config: &AgeConfig) -> Result<PgPool> {
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET search_path = ag_catalog, \"$user\", public")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("LOAD 'age'").execute(&mut *conn).await?;
+                Ok(())
+            })
+        })
         .connect(&config.database_url)
         .await
         .context("Failed to connect to AGE PostgreSQL")?;
@@ -91,20 +100,16 @@ pub async fn create_age_pool(config: &AgeConfig) -> Result<PgPool> {
         .await
         .context("Failed to create AGE extension")?;
 
-    sqlx::query("SET search_path = ag_catalog, \"$user\", public")
-        .execute(&pool)
-        .await
-        .context("Failed to set search_path for AGE")?;
     let graph_name = &config.graph_name;
-    let check_graph = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*)::bigint FROM ag_catalog.ag_graph WHERE name = $1",
+    let graph_exists: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM ag_catalog.ag_graph WHERE name = $1)",
     )
     .bind(graph_name)
     .fetch_one(&pool)
     .await
     .context("Failed to check if AGE graph exists")?;
 
-    if check_graph == 0 {
+    if !graph_exists {
         let create_query = format!("SELECT create_graph('{}')", graph_name);
         sqlx::query(&create_query)
             .execute(&pool)
@@ -166,7 +171,7 @@ mod tests {
     async fn test_create_age_pool() {
         let config = AgeConfig::default();
         let pool = create_age_pool(&config).await.unwrap();
-        let result: i64 = sqlx::query_scalar("SELECT 1")
+        let result: i32 = sqlx::query_scalar("SELECT 1")
             .fetch_one(&pool)
             .await
             .unwrap();

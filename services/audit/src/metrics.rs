@@ -68,15 +68,11 @@ pub fn init() {
     REGISTRY
         .register(Box::new(MULTI_LABEL_NODES.clone()))
         .unwrap();
-    REGISTRY
-        .register(Box::new(ORPHAN_NODES.clone()))
-        .unwrap();
+    REGISTRY.register(Box::new(ORPHAN_NODES.clone())).unwrap();
     REGISTRY
         .register(Box::new(BASELINE_ORPHAN_NODES.clone()))
         .unwrap();
-    REGISTRY
-        .register(Box::new(ORPHAN_VOLUMES.clone()))
-        .unwrap();
+    REGISTRY.register(Box::new(ORPHAN_VOLUMES.clone())).unwrap();
     REGISTRY
         .register(Box::new(ORPHAN_CONTAINERS.clone()))
         .unwrap();

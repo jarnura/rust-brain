@@ -126,7 +126,7 @@ pub fn validate_workspace_label(label: &str) -> bool {
     }
     hex_part
         .chars()
-        .all(|c| c.is_ascii_hexdigit() && c.is_ascii_lowercase())
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 impl PipelineConfig {

@@ -23,7 +23,10 @@ pub struct Neo4jScanResult {
     pub baseline_orphan_nodes: i64,
 }
 
-pub async fn scan_neo4j_leaks(graph: &Graph) -> anyhow::Result<Neo4jScanResult> {
+pub async fn scan_neo4j_leaks(
+    graph: &Graph,
+    previous_baseline: Option<i64>,
+) -> anyhow::Result<Neo4jScanResult> {
     let mut result = Neo4jScanResult::default();
 
     result.multi_label_nodes = count_multi_label_nodes(graph).await?;
@@ -32,7 +35,7 @@ pub async fn scan_neo4j_leaks(graph: &Graph) -> anyhow::Result<Neo4jScanResult> 
     result.orphan_nodes = count_orphan_nodes(graph).await?;
     debug!("Orphan nodes: {}", result.orphan_nodes);
 
-    result.baseline_orphan_nodes = result.orphan_nodes;
+    result.baseline_orphan_nodes = previous_baseline.unwrap_or(result.orphan_nodes);
     debug!("Baseline orphan nodes: {}", result.baseline_orphan_nodes);
 
     if result.multi_label_nodes > 0 {

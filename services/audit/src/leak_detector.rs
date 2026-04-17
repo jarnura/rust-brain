@@ -40,7 +40,10 @@ pub async fn detect_docker_leaks(
     debug!("Found {} rustbrain volumes", all_volumes.len());
 
     let tracked_volumes = get_tracked_volumes(pool).await?;
-    debug!("Found {} tracked volumes in Postgres", tracked_volumes.len());
+    debug!(
+        "Found {} tracked volumes in Postgres",
+        tracked_volumes.len()
+    );
 
     for vol in &all_volumes {
         if !tracked_volumes.contains(vol) {
@@ -72,7 +75,10 @@ pub async fn detect_docker_leaks(
     }
 
     let all_containers = list_rustbrain_containers().await?;
-    debug!("Found {} rustbrain execution containers", all_containers.len());
+    debug!(
+        "Found {} rustbrain execution containers",
+        all_containers.len()
+    );
 
     let tracked_container_ids = get_tracked_containers(pool).await?;
     debug!(
@@ -132,7 +138,11 @@ async fn list_rustbrain_volumes() -> anyhow::Result<Vec<String>> {
     }
 
     let stdout = String::from_utf8(output.stdout).context("docker volume ls: stdout not UTF-8")?;
-    Ok(stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    Ok(stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// Lists all Docker containers matching `name=rustbrain-exec-`.

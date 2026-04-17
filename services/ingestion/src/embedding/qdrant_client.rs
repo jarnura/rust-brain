@@ -393,8 +393,10 @@ impl QdrantClient {
     pub async fn ensure_all_collections(&self) -> Result<()> {
         self.ensure_collection(&self.config.code_collection).await?;
         self.ensure_collection(&self.config.doc_collection).await?;
-        self.ensure_collection(&self.config.crate_docs_collection).await?;
-        self.ensure_collection(&self.config.external_docs_collection).await?;
+        self.ensure_collection(&self.config.crate_docs_collection)
+            .await?;
+        self.ensure_collection(&self.config.external_docs_collection)
+            .await?;
         Ok(())
     }
 
