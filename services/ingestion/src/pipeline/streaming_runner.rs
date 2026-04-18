@@ -11,15 +11,15 @@
 //!   graph    → embed  : 256
 
 use crate::pipeline::memory_accountant::{
-    channel_capacity, DiscoveredCrate, ExpandedCrate, GraphResult, MemoryAccountant,
-    ParsedBatch,
+    channel_capacity, DiscoveredCrate, ExpandedCrate, GraphResult, MemoryAccountant, ParsedBatch,
 };
 use crate::pipeline::stages::{StageError, StageResult, StageStatus};
 use crate::pipeline::{
     ParsedItemInfo, PipelineConfig, PipelineContext, PipelineResult, PipelineStatus,
-    StageCounts, SourceFileInfo,
+    SourceFileInfo, StageCounts,
 };
 use anyhow::{anyhow, Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -60,10 +60,8 @@ impl StreamingPipelineRunner {
             mpsc::channel::<DiscoveredCrate>(channel_capacity::DISCOVER_TO_EXPAND);
         let (expand_tx, expand_rx) =
             mpsc::channel::<ExpandedCrate>(channel_capacity::EXPAND_TO_PARSE);
-        let (parse_tx, parse_rx) =
-            mpsc::channel::<ParsedBatch>(channel_capacity::PARSE_TO_GRAPH);
-        let (graph_tx, graph_rx) =
-            mpsc::channel::<GraphResult>(channel_capacity::GRAPH_TO_EMBED);
+        let (parse_tx, parse_rx) = mpsc::channel::<ParsedBatch>(channel_capacity::PARSE_TO_GRAPH);
+        let (graph_tx, graph_rx) = mpsc::channel::<GraphResult>(channel_capacity::GRAPH_TO_EMBED);
 
         let acct = self.accountant.clone();
         let config = self.config.clone();
@@ -92,23 +90,33 @@ impl StreamingPipelineRunner {
         // ---- GRAPH TASK ----
         let graph_config = config.clone();
         let graph_acct = acct.clone();
-        let graph_handle = tokio::spawn(async move {
-            graph_stage(graph_config, graph_acct, parse_rx, graph_tx).await
-        });
+        let graph_handle =
+            tokio::spawn(
+                async move { graph_stage(graph_config, graph_acct, parse_rx, graph_tx).await },
+            );
 
         // ---- EMBED TASK ----
         let embed_config = config.clone();
         let embed_acct = acct.clone();
-        let embed_handle = tokio::spawn(async move {
-            embed_stage(embed_config, embed_acct, graph_rx).await
-        });
+        let embed_handle =
+            tokio::spawn(async move { embed_stage(embed_config, embed_acct, graph_rx).await });
 
         // Await all stages and collect results
-        let discover_result = discover_handle.await.map_err(|e| anyhow!("discover task panicked: {}", e))?;
-        let expand_result = expand_handle.await.map_err(|e| anyhow!("expand task panicked: {}", e))?;
-        let parse_result = parse_handle.await.map_err(|e| anyhow!("parse task panicked: {}", e))?;
-        let graph_result = graph_handle.await.map_err(|e| anyhow!("graph task panicked: {}", e))?;
-        let embed_result = embed_handle.await.map_err(|e| anyhow!("embed task panicked: {}", e))?;
+        let discover_result = discover_handle
+            .await
+            .map_err(|e| anyhow!("discover task panicked: {}", e))?;
+        let expand_result = expand_handle
+            .await
+            .map_err(|e| anyhow!("expand task panicked: {}", e))?;
+        let parse_result = parse_handle
+            .await
+            .map_err(|e| anyhow!("parse task panicked: {}", e))?;
+        let graph_result = graph_handle
+            .await
+            .map_err(|e| anyhow!("graph task panicked: {}", e))?;
+        let embed_result = embed_handle
+            .await
+            .map_err(|e| anyhow!("embed task panicked: {}", e))?;
 
         let mut stages = Vec::new();
         let mut has_failures = false;
@@ -117,7 +125,13 @@ impl StreamingPipelineRunner {
         let mut errors = Vec::new();
 
         let stage_names = ["discover", "expand", "parse", "graph", "embed"];
-        let results = [discover_result, expand_result, parse_result, graph_result, embed_result];
+        let results = [
+            discover_result,
+            expand_result,
+            parse_result,
+            graph_result,
+            embed_result,
+        ];
 
         for (stage_name, result) in stage_names.into_iter().zip(results) {
             match result {
@@ -148,9 +162,7 @@ impl StreamingPipelineRunner {
             }
         }
 
-        let status = if has_failures {
-            PipelineStatus::Partial
-        } else if has_partial {
+        let status = if has_failures || has_partial {
             PipelineStatus::Partial
         } else {
             PipelineStatus::Completed
@@ -187,8 +199,7 @@ fn compute_module_path_local(crate_path: &Path, file_path: &Path, crate_name: &s
         let module = relative
             .to_string_lossy()
             .trim_end_matches(".rs")
-            .replace('/', "::")
-            .replace('\\', "::");
+            .replace(['/', '\\'], "::");
         if module == "lib" || module == "main" {
             crate_name.to_string()
         } else {
@@ -248,12 +259,7 @@ async fn discover_stage(
         let source_files: Vec<PathBuf> = WalkDir::new(&src_path)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "rs")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
             .filter(|e| {
                 // Pre-flight: skip files > 10 MB
                 e.metadata()
@@ -379,7 +385,10 @@ async fn expand_stage(
     );
 
     if failed_count > 0 && expanded_count == 0 {
-        Ok(StageResult::failed("expand", "All expansion attempts failed"))
+        Ok(StageResult::failed(
+            "expand",
+            "All expansion attempts failed",
+        ))
     } else if failed_count > 0 {
         Ok(StageResult::partial(
             "expand",
@@ -500,19 +509,186 @@ async fn graph_stage(
     mut rx: mpsc::Receiver<ParsedBatch>,
     tx: mpsc::Sender<GraphResult>,
 ) -> Result<StageResult> {
+    use crate::graph::{
+        BatchConfig, BatchInsert, GraphBuilder, GraphConfig, NodeData, PropertyValue,
+    };
+    use crate::pipeline::validate_workspace_label;
+
     let start = Instant::now();
     let mut node_count = 0;
+    let mut failed_count = 0;
 
-    let has_neo4j = config.neo4j_url.is_some();
-    if !has_neo4j {
-        info!("Graph stage: Neo4j not configured, passing items through for embedding");
-    }
+    let neo4j_url = config.neo4j_url.clone();
+    let workspace_label = config.workspace_label.clone();
+
+    let graph_handle: Option<(Arc<neo4rs::Graph>, BatchInsert, String)> =
+        match (&neo4j_url, &workspace_label) {
+            (Some(url), Some(label)) => {
+                if !validate_workspace_label(label) {
+                    return Ok(StageResult::failed(
+                        "graph",
+                        format!("Invalid workspace label format: {}", label),
+                    ));
+                }
+
+                let neo4j_user =
+                    std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+                let neo4j_password =
+                    std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string());
+
+                info!(
+                    "Graph stage: connecting to Neo4j at {} with workspace label {}",
+                    url, label
+                );
+
+                match neo4rs::Graph::new(url, &neo4j_user, &neo4j_password).await {
+                    Ok(graph) => {
+                        let graph = Arc::new(graph);
+                        let batch_insert = BatchInsert::new(
+                            Arc::clone(&graph),
+                            BatchConfig::default(),
+                            Some(label.clone()),
+                        );
+
+                        let graph_config = GraphConfig {
+                            uri: url.clone(),
+                            username: neo4j_user,
+                            password: neo4j_password,
+                            database: std::env::var("NEO4J_DATABASE")
+                                .unwrap_or_else(|_| "neo4j".to_string()),
+                            max_connections: 10,
+                            batch_size: 1000,
+                            workspace_label: Some(label.clone()),
+                        };
+
+                        let builder = GraphBuilder::with_config(graph_config).await;
+                        match builder {
+                            Ok(b) => {
+                                if let Err(e) = b.create_workspace_constraints(label).await {
+                                    warn!("Failed to create workspace constraints: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to create GraphBuilder for workspace constraints: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        info!(
+                            "Graph stage: Neo4j connected, will write nodes with label {}",
+                            label
+                        );
+                        Some((graph, batch_insert, label.clone()))
+                    }
+                    Err(e) => {
+                        warn!("Graph stage: failed to connect to Neo4j: {}", e);
+                        None
+                    }
+                }
+            }
+            (Some(_), None) => {
+                info!(
+                    "Graph stage: Neo4j configured but no workspace label, passing items through"
+                );
+                None
+            }
+            _ => {
+                info!("Graph stage: Neo4j not configured, passing items through for embedding");
+                None
+            }
+        };
+
+    let mut batch_insert = graph_handle.map(|(_, bi, _)| bi);
 
     while let Some(batch) = rx.recv().await {
         let est_bytes = batch.items.len() as u64 * 2048;
         let _guard = accountant.reserve("graph", est_bytes).await;
 
         node_count += batch.items.len();
+
+        if let Some(ref mut bi) = batch_insert {
+            for item in &batch.items {
+                let node_type = match item_type_to_node_type(&item.item_type) {
+                    Some(nt) => nt,
+                    None => {
+                        debug!(
+                            "Skipping item with unmapped type: {} ({})",
+                            item.fqn, item.item_type
+                        );
+                        continue;
+                    }
+                };
+
+                let mut properties = HashMap::new();
+                if !item.visibility.is_empty() {
+                    properties.insert(
+                        "visibility".to_string(),
+                        PropertyValue::String(item.visibility.clone()),
+                    );
+                }
+                if !item.signature.is_empty() {
+                    properties.insert(
+                        "signature".to_string(),
+                        PropertyValue::String(item.signature.clone()),
+                    );
+                }
+                if !item.generic_params.is_empty() {
+                    let gp: Vec<String> = item
+                        .generic_params
+                        .iter()
+                        .map(|g| format!("{:?}", g))
+                        .collect();
+                    properties.insert("generic_params".to_string(), PropertyValue::Array(gp));
+                }
+                if !item.where_clauses.is_empty() {
+                    let wc: Vec<String> = item
+                        .where_clauses
+                        .iter()
+                        .map(|w| format!("{:?}", w))
+                        .collect();
+                    properties.insert("where_clauses".to_string(), PropertyValue::Array(wc));
+                }
+                if !item.attributes.is_empty() {
+                    properties.insert(
+                        "attributes".to_string(),
+                        PropertyValue::Array(item.attributes.clone()),
+                    );
+                }
+                if !item.doc_comment.is_empty() {
+                    properties.insert(
+                        "doc_comment".to_string(),
+                        PropertyValue::String(item.doc_comment.clone()),
+                    );
+                }
+                if item.start_line > 0 {
+                    properties.insert(
+                        "start_line".to_string(),
+                        PropertyValue::Int(item.start_line as i64),
+                    );
+                }
+                if item.end_line > 0 {
+                    properties.insert(
+                        "end_line".to_string(),
+                        PropertyValue::Int(item.end_line as i64),
+                    );
+                }
+
+                let node = NodeData {
+                    id: item.fqn.clone(),
+                    fqn: item.fqn.clone(),
+                    name: item.name.clone(),
+                    node_type,
+                    properties,
+                };
+
+                if let Err(e) = bi.add_node(node).await {
+                    warn!("Failed to add node to batch: {}", e);
+                    failed_count += 1;
+                }
+            }
+        }
 
         let msg = GraphResult {
             items: batch.items,
@@ -525,10 +701,51 @@ async fn graph_stage(
         }
     }
 
+    if let Some(ref mut bi) = batch_insert {
+        if let Err(e) = bi.flush_all().await {
+            warn!("Failed to flush remaining graph nodes: {}", e);
+            failed_count += 1;
+        }
+    }
+
     drop(tx);
     let duration = start.elapsed();
-    info!("Graph stage: {} items forwarded in {:?}", node_count, duration);
-    Ok(StageResult::success("graph", node_count, 0, duration))
+
+    if failed_count > 0 && node_count == 0 {
+        Ok(StageResult::failed("graph", "All graph writes failed"))
+    } else if failed_count > 0 {
+        Ok(StageResult::partial(
+            "graph",
+            node_count,
+            failed_count,
+            duration,
+            format!("{} nodes written, {} failed", node_count, failed_count),
+        ))
+    } else {
+        info!(
+            "Graph stage: {} nodes written in {:?}",
+            node_count, duration
+        );
+        Ok(StageResult::success("graph", node_count, 0, duration))
+    }
+}
+
+/// Map ParsedItemInfo.item_type string to NodeType
+fn item_type_to_node_type(item_type: &str) -> Option<crate::graph::NodeType> {
+    use crate::graph::NodeType;
+    match item_type {
+        "function" => Some(NodeType::Function),
+        "struct" => Some(NodeType::Struct),
+        "enum" => Some(NodeType::Enum),
+        "trait" => Some(NodeType::Trait),
+        "impl" => Some(NodeType::Impl),
+        "type_alias" => Some(NodeType::TypeAlias),
+        "const" => Some(NodeType::Const),
+        "static" => Some(NodeType::Static),
+        "macro" => Some(NodeType::Macro),
+        "module" => Some(NodeType::Module),
+        _ => None,
+    }
 }
 
 /// Embed items arriving from the graph stage.
@@ -556,21 +773,22 @@ async fn embed_stage(
         .clone()
         .or_else(|| std::env::var("OLLAMA_HOST").ok())
         .unwrap_or_else(|| "http://ollama:11434".to_string());
-    let qdrant_url = std::env::var("QDRANT_HOST")
-        .unwrap_or_else(|_| "http://qdrant:6333".to_string());
+    let qdrant_url =
+        std::env::var("QDRANT_HOST").unwrap_or_else(|_| "http://qdrant:6333".to_string());
 
     // Create and initialise embedding service
-    let embedding_service = match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
-        Ok(s) => s,
-        Err(e) => {
-            // Drain remaining items so upstream stages don't block
-            while rx.recv().await.is_some() {}
-            return Ok(StageResult::failed(
-                "embed",
-                format!("Failed to create embedding service: {}", e),
-            ));
-        }
-    };
+    let embedding_service =
+        match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
+            Ok(s) => s,
+            Err(e) => {
+                // Drain remaining items so upstream stages don't block
+                while rx.recv().await.is_some() {}
+                return Ok(StageResult::failed(
+                    "embed",
+                    format!("Failed to create embedding service: {}", e),
+                ));
+            }
+        };
 
     if let Err(e) = embedding_service.initialize().await {
         while rx.recv().await.is_some() {}
@@ -618,7 +836,11 @@ async fn embed_stage(
             match embedding_service.embed_items(chunk).await {
                 Ok(results) => {
                     embedded_count += results.len();
-                    debug!("Embedded {} items in batch {}", results.len(), batch_num + 1);
+                    debug!(
+                        "Embedded {} items in batch {}",
+                        results.len(),
+                        batch_num + 1
+                    );
                 }
                 Err(e) => {
                     warn!(
@@ -636,7 +858,10 @@ async fn embed_stage(
     let duration = start.elapsed();
 
     if failed_count > 0 && embedded_count == 0 {
-        Ok(StageResult::failed("embed", "All embedding attempts failed"))
+        Ok(StageResult::failed(
+            "embed",
+            "All embedding attempts failed",
+        ))
     } else if failed_count > 0 {
         Ok(StageResult::partial(
             "embed",

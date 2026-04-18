@@ -8,25 +8,30 @@
 //! 5. **Graph** - Build Neo4j relationship graph
 //! 6. **Embed** - Create vector embeddings
 
-pub mod stages;
-pub mod runner;
-pub mod memory_accountant;
-pub mod streaming_runner;
 pub mod circuit_breaker;
+pub mod memory_accountant;
 pub mod resilience;
+pub mod runner;
+pub mod stages;
+pub mod streaming_runner;
 
-pub use stages::{PipelineStage, StageResult, StageError, StageStatus, parse_item_type, parse_visibility};
-pub use runner::PipelineRunner;
-pub use memory_accountant::{MemoryAccountant, MemoryGuard, channel_capacity};
-pub use streaming_runner::StreamingPipelineRunner;
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState};
-pub use resilience::{
-    MemoryPressure, MemoryWatchdog, SpillStore, DegradationTier,
-    CheckpointManager, Checkpoint, ResilienceCoordinator,
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
 };
+pub use memory_accountant::{channel_capacity, MemoryAccountant, MemoryGuard};
+pub use resilience::{
+    Checkpoint, CheckpointManager, DegradationTier, MemoryPressure, MemoryWatchdog,
+    ResilienceCoordinator, SpillStore,
+};
+pub use runner::PipelineRunner;
+pub use stages::{
+    parse_item_type, parse_visibility, DataLifecycleManager, PipelineStage, StageError,
+    StageResult, StageStatus, StaleCleanupReport,
+};
+pub use streaming_runner::StreamingPipelineRunner;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -53,41 +58,105 @@ impl std::fmt::Display for PipelineId {
 pub struct PipelineConfig {
     /// Path to the crate or workspace to process
     pub crate_path: PathBuf,
-    
+
+    /// Name of the crate being processed (extracted from Cargo.toml)
+    pub crate_name: Option<String>,
+
     /// Database connection URL
     pub database_url: String,
-    
+
     /// Neo4j connection URL (optional)
     pub neo4j_url: Option<String>,
-    
+
     /// Embedding service URL (optional)
     pub embedding_url: Option<String>,
-    
+
     /// Which stages to run (None = all stages)
     pub stages: Option<Vec<String>>,
-    
+
+    /// Start from this stage (skips all previous stages)
+    pub from_stage: Option<String>,
+
     /// Dry run mode - don't write to databases
     pub dry_run: bool,
-    
+
     /// Continue on non-fatal errors
     pub continue_on_error: bool,
-    
+
     /// Maximum concurrent operations
     pub max_concurrency: usize,
+
+    pub workspace_id: Option<Uuid>,
+
+    /// Neo4j label in format `Workspace_<12hex>` matching Postgres `ws_<12hex>` schema
+    pub workspace_label: Option<String>,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             crate_path: PathBuf::from("."),
-            database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL environment variable must be set"),
+            crate_name: None,
+            database_url: std::env::var("DATABASE_URL")
+                .expect("DATABASE_URL environment variable must be set"),
             neo4j_url: None,
             embedding_url: None,
             stages: None,
+            from_stage: None,
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
+            workspace_id: None,
+            workspace_label: None,
         }
+    }
+}
+
+/// Validate workspace label format: must be "Workspace_" + 12 lowercase hex chars
+pub fn validate_workspace_label(label: &str) -> bool {
+    const PREFIX: &str = "Workspace_";
+    const HEX_LEN: usize = 12;
+
+    if !label.starts_with(PREFIX) {
+        return false;
+    }
+    let hex_part = &label[PREFIX.len()..];
+    if hex_part.len() != HEX_LEN {
+        return false;
+    }
+    hex_part
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+impl PipelineConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(ref from_stage) = self.from_stage {
+            if !STAGE_NAMES.contains(&from_stage.as_str()) {
+                anyhow::bail!(
+                    "Invalid from_stage '{}'. Valid values: {}",
+                    from_stage,
+                    STAGE_NAMES.join(", ")
+                );
+            }
+        }
+
+        if let Some(ref label) = self.workspace_label {
+            if !validate_workspace_label(label) {
+                anyhow::bail!(
+                    "Invalid workspace_label '{}'. Expected format: 'Workspace_' followed by exactly 12 lowercase hex characters",
+                    label
+                );
+            }
+        }
+
+        if self.workspace_id.is_some() && self.workspace_label.is_none() {
+            tracing::warn!(
+                "workspace_id is set but workspace_label is None. Set workspace_label to match the workspace_id for graph stage consistency"
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -96,10 +165,10 @@ impl Default for PipelineConfig {
 pub struct PipelineContext {
     /// Unique identifier for this pipeline run
     pub id: PipelineId,
-    
+
     /// Configuration
     pub config: PipelineConfig,
-    
+
     /// Shared state between stages
     pub state: Arc<RwLock<PipelineState>>,
 }
@@ -113,7 +182,7 @@ impl PipelineContext {
             state: Arc::new(RwLock::new(PipelineState::default())),
         }
     }
-    
+
     /// Create with a specific ID (for resuming runs)
     pub fn with_id(id: Uuid, config: PipelineConfig) -> Self {
         Self {
@@ -154,6 +223,9 @@ pub struct PipelineState {
 
     /// Cross-store references for consistency tracking
     pub store_references: HashMap<String, rustbrain_common::StoreReference>,
+
+    /// Current FQNs extracted during this run (for stale detection)
+    pub current_fqns: HashSet<String>,
 }
 
 /// Information about a source file
@@ -241,14 +313,21 @@ impl std::fmt::Display for PipelineStatus {
 }
 
 /// Stage names in execution order
-pub const STAGE_NAMES: &[&str] = &[
-    "expand",
-    "parse", 
-    "typecheck",
-    "extract",
-    "graph",
-    "embed",
-];
+pub const STAGE_NAMES: &[&str] = &["expand", "parse", "typecheck", "extract", "graph", "embed"];
+
+pub fn read_crate_name_from_toml(crate_path: &std::path::Path) -> Option<String> {
+    let cargo_toml = crate_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name") {
+            if let Some(name) = trimmed.split('=').nth(1) {
+                return Some(name.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
 
 /// Check if a stage should run based on config
 pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
@@ -261,27 +340,31 @@ pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     /// Helper to create a PipelineConfig for testing (no DATABASE_URL required)
     fn test_config() -> PipelineConfig {
         PipelineConfig {
             crate_path: PathBuf::from("."),
+            crate_name: None,
             database_url: "postgresql://test:test@localhost:5432/test".to_string(),
             neo4j_url: None,
             embedding_url: None,
             stages: None,
+            from_stage: None,
             dry_run: false,
             continue_on_error: true,
             max_concurrency: 4,
+            workspace_id: None,
+            workspace_label: None,
         }
     }
-    
+
     #[test]
     fn test_pipeline_id_default() {
         let id = PipelineId::default();
         assert!(!id.0.is_nil());
     }
-    
+
     #[test]
     fn test_should_run_stage() {
         let mut config = test_config();
@@ -407,5 +490,63 @@ mod tests {
         };
         // Empty list means no stages should run
         assert!(!should_run_stage(&config, "expand"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_valid() {
+        assert!(validate_workspace_label("Workspace_a1b2c3d4e5f6"));
+        assert!(validate_workspace_label("Workspace_abcdef123456"));
+        assert!(validate_workspace_label("Workspace_000000000000"));
+        assert!(validate_workspace_label("Workspace_ffffffffffff"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_invalid_format() {
+        // Lowercase 'w' in Workspace
+        assert!(!validate_workspace_label("workspace_a1b2c3d4e5f6"));
+        // Uppercase hex characters
+        assert!(!validate_workspace_label("Workspace_A1B2C3D4E5F6"));
+        // Too short (less than 12 hex chars)
+        assert!(!validate_workspace_label("Workspace_short"));
+        // Too long (more than 12 hex chars)
+        assert!(!validate_workspace_label("Workspace_a1b2c3d4e5f6extra"));
+        // No underscore separator
+        assert!(!validate_workspace_label("Workspacea1b2c3d4e5f6"));
+        // Wrong prefix entirely
+        assert!(!validate_workspace_label("Project_a1b2c3d4e5f6"));
+    }
+
+    #[test]
+    fn test_validate_config_with_valid_workspace() {
+        let mut config = test_config();
+        config.workspace_id = Some(Uuid::new_v4());
+        config.workspace_label = Some("Workspace_a1b2c3d4e5f6".to_string());
+
+        // Should validate successfully
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_workspace_label() {
+        let mut config = test_config();
+        config.workspace_id = Some(Uuid::new_v4());
+        config.workspace_label = Some("invalid_label".to_string());
+
+        // Should fail validation
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid workspace_label"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_none_ok() {
+        // Config with neither workspace_id nor workspace_label should validate fine
+        let config = test_config();
+        assert!(config.workspace_id.is_none());
+        assert!(config.workspace_label.is_none());
+
+        // Should validate successfully (graph stage will just skip)
+        assert!(config.validate().is_ok());
     }
 }

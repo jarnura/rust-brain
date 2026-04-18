@@ -10,6 +10,7 @@ datasources:
     type: prometheus
     access: proxy
     url: http://prometheus:9090
+    uid: prometheus
     isDefault: true
     editable: false
     jsonData:
@@ -23,6 +24,7 @@ datasources:
     url: postgres:5432
     database: rustbrain
     user: ${POSTGRES_USER}
+    uid: postgres
     editable: false
     secureJsonData:
       password: ${POSTGRES_PASSWORD}

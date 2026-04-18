@@ -4,7 +4,7 @@
 //! Crate, Module, Function, Struct, Enum, Trait, Impl, Type, TypeAlias, Const, Static, Macro
 
 use anyhow::{Context, Result};
-use neo4rs::{Graph, query, BoltType};
+use neo4rs::{query, BoltType, Graph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,9 +49,8 @@ impl PropertyValue {
             PropertyValue::Float(f) => Some(BoltType::from(*f)),
             PropertyValue::Bool(b) => Some(BoltType::from(*b)),
             PropertyValue::Array(arr) => {
-                let bolt_list: Vec<BoltType> = arr.iter()
-                    .map(|s| BoltType::from(s.as_str()))
-                    .collect();
+                let bolt_list: Vec<BoltType> =
+                    arr.iter().map(|s| BoltType::from(s.as_str())).collect();
                 Some(BoltType::from(bolt_list))
             }
             PropertyValue::Null => None,
@@ -95,48 +94,57 @@ impl From<Vec<String>> for PropertyValue {
     }
 }
 
+pub(crate) fn build_node_merge_query(node: &NodeData, workspace_label: Option<&str>) -> String {
+    let label = node.node_type.label();
+    match workspace_label {
+        Some(ws) => format!("MERGE (n:{}:{} {{id: $id}}) SET n += $props", label, ws),
+        None => format!("MERGE (n:{} {{id: $id}}) SET n += $props", label),
+    }
+}
+
 /// Builder for creating nodes in Neo4j
 pub struct NodeBuilder {
     graph: Arc<Graph>,
+    workspace_label: Option<String>,
 }
 
 impl NodeBuilder {
     /// Create a new node builder
-    pub fn new(graph: Arc<Graph>) -> Self {
-        Self { graph }
+    pub fn new(graph: Arc<Graph>, workspace_label: Option<String>) -> Self {
+        Self {
+            graph,
+            workspace_label,
+        }
     }
 
     /// Build a MERGE query for creating a node (idempotent)
-    fn build_merge_query(&self, node: &NodeData) -> String {
-        let label = node.node_type.label();
-        format!(
-            "MERGE (n:{} {{id: $id}}) SET n += $props",
-            label
-        )
+    pub(crate) fn build_merge_query(&self, node: &NodeData) -> String {
+        build_node_merge_query(node, self.workspace_label.as_deref())
     }
 
     /// Create or update a node using MERGE (idempotent)
     pub async fn merge_node(&self, node: &NodeData) -> Result<()> {
         let query_str = self.build_merge_query(node);
-        
+
         let mut props = HashMap::new();
         props.insert("id".to_string(), BoltType::from(node.id.as_str()));
         props.insert("fqn".to_string(), BoltType::from(node.fqn.as_str()));
         props.insert("name".to_string(), BoltType::from(node.name.as_str()));
-        
+
         for (key, value) in &node.properties {
             if let Some(bolt_value) = value.to_bolt_type() {
                 props.insert(key.clone(), bolt_value);
             }
         }
 
-        self.graph.run(
-            query(&query_str)
-                .param("id", node.id.as_str())
-                .param("props", props)
-        )
-        .await
-        .context("Failed to merge node")?;
+        self.graph
+            .run(
+                query(&query_str)
+                    .param("id", node.id.as_str())
+                    .param("props", props),
+            )
+            .await
+            .context("Failed to merge node")?;
 
         debug!("Merged node: {} ({})", node.fqn, node.node_type);
         Ok(())
@@ -152,7 +160,7 @@ impl NodeBuilder {
         let name = name.into();
         let id = id.into();
         let fqn = name.clone();
-        
+
         let mut properties = HashMap::new();
         if let Some(v) = version {
             properties.insert("version".to_string(), PropertyValue::from(v));
@@ -194,6 +202,7 @@ impl NodeBuilder {
     }
 
     /// Create a Function node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_function(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -211,7 +220,7 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         if let Some(sig) = signature {
             properties.insert("signature".to_string(), PropertyValue::from(sig));
         }
@@ -223,10 +232,16 @@ impl NodeBuilder {
         properties.insert("end_line".to_string(), PropertyValue::from(end_line));
         properties.insert("file_path".to_string(), PropertyValue::from(file_path));
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         if !where_clauses.is_empty() {
-            properties.insert("where_clauses".to_string(), PropertyValue::from(where_clauses));
+            properties.insert(
+                "where_clauses".to_string(),
+                PropertyValue::from(where_clauses),
+            );
         }
         if let Some(doc) = doc_comment {
             properties.insert("doc_comment".to_string(), PropertyValue::from(doc));
@@ -242,6 +257,7 @@ impl NodeBuilder {
     }
 
     /// Create a Struct node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_struct(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -257,12 +273,21 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
-        properties.insert("is_pub_crate".to_string(), PropertyValue::from(is_pub_crate));
-        properties.insert("has_generics".to_string(), PropertyValue::from(has_generics));
+        properties.insert(
+            "is_pub_crate".to_string(),
+            PropertyValue::from(is_pub_crate),
+        );
+        properties.insert(
+            "has_generics".to_string(),
+            PropertyValue::from(has_generics),
+        );
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         properties.insert("start_line".to_string(), PropertyValue::from(start_line));
         properties.insert("end_line".to_string(), PropertyValue::from(end_line));
@@ -284,6 +309,7 @@ impl NodeBuilder {
     }
 
     /// Create an Enum node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_enum(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -299,11 +325,17 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
-        properties.insert("has_generics".to_string(), PropertyValue::from(has_generics));
+        properties.insert(
+            "has_generics".to_string(),
+            PropertyValue::from(has_generics),
+        );
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         if !variants.is_empty() {
             properties.insert("variants".to_string(), PropertyValue::from(variants));
@@ -328,6 +360,7 @@ impl NodeBuilder {
     }
 
     /// Create a Trait node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_trait(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -345,18 +378,30 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
         properties.insert("is_unsafe".to_string(), PropertyValue::from(is_unsafe));
-        properties.insert("has_generics".to_string(), PropertyValue::from(has_generics));
+        properties.insert(
+            "has_generics".to_string(),
+            PropertyValue::from(has_generics),
+        );
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         if !required_methods.is_empty() {
-            properties.insert("required_methods".to_string(), PropertyValue::from(required_methods));
+            properties.insert(
+                "required_methods".to_string(),
+                PropertyValue::from(required_methods),
+            );
         }
         if !provided_methods.is_empty() {
-            properties.insert("provided_methods".to_string(), PropertyValue::from(provided_methods));
+            properties.insert(
+                "provided_methods".to_string(),
+                PropertyValue::from(provided_methods),
+            );
         }
         properties.insert("start_line".to_string(), PropertyValue::from(start_line));
         properties.insert("end_line".to_string(), PropertyValue::from(end_line));
@@ -378,6 +423,7 @@ impl NodeBuilder {
     }
 
     /// Create an Impl node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_impl(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -393,7 +439,7 @@ impl NodeBuilder {
         file_path: &str,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("impl_type".to_string(), PropertyValue::from(impl_type));
         if let Some(t) = trait_name {
             properties.insert("trait_name".to_string(), PropertyValue::from(t));
@@ -401,9 +447,15 @@ impl NodeBuilder {
         if let Some(t) = for_type {
             properties.insert("for_type".to_string(), PropertyValue::from(t));
         }
-        properties.insert("has_generics".to_string(), PropertyValue::from(has_generics));
+        properties.insert(
+            "has_generics".to_string(),
+            PropertyValue::from(has_generics),
+        );
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         if !methods.is_empty() {
             properties.insert("methods".to_string(), PropertyValue::from(methods));
@@ -431,9 +483,12 @@ impl NodeBuilder {
         concrete_type: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("type_kind".to_string(), PropertyValue::from(type_kind));
-        properties.insert("is_generic_param".to_string(), PropertyValue::from(is_generic_param));
+        properties.insert(
+            "is_generic_param".to_string(),
+            PropertyValue::from(is_generic_param),
+        );
         if let Some(ct) = concrete_type {
             properties.insert("concrete_type".to_string(), PropertyValue::from(ct));
         }
@@ -448,6 +503,7 @@ impl NodeBuilder {
     }
 
     /// Create a TypeAlias node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_type_alias(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -462,12 +518,18 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
         properties.insert("target_type".to_string(), PropertyValue::from(target_type));
-        properties.insert("has_generics".to_string(), PropertyValue::from(has_generics));
+        properties.insert(
+            "has_generics".to_string(),
+            PropertyValue::from(has_generics),
+        );
         if !generic_params.is_empty() {
-            properties.insert("generic_params".to_string(), PropertyValue::from(generic_params));
+            properties.insert(
+                "generic_params".to_string(),
+                PropertyValue::from(generic_params),
+            );
         }
         properties.insert("start_line".to_string(), PropertyValue::from(start_line));
         properties.insert("end_line".to_string(), PropertyValue::from(end_line));
@@ -486,6 +548,7 @@ impl NodeBuilder {
     }
 
     /// Create a Const node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_const(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -499,7 +562,7 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
         properties.insert("const_type".to_string(), PropertyValue::from(const_type));
         if let Some(v) = value {
@@ -522,6 +585,7 @@ impl NodeBuilder {
     }
 
     /// Create a Static node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_static(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -536,7 +600,7 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
         properties.insert("static_type".to_string(), PropertyValue::from(static_type));
         properties.insert("is_mutable".to_string(), PropertyValue::from(is_mutable));
@@ -560,6 +624,7 @@ impl NodeBuilder {
     }
 
     /// Create a Macro node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_macro(
         id: impl Into<String>,
         fqn: impl Into<String>,
@@ -575,9 +640,12 @@ impl NodeBuilder {
         doc_comment: Option<&str>,
     ) -> NodeData {
         let mut properties = HashMap::new();
-        
+
         properties.insert("visibility".to_string(), PropertyValue::from(visibility));
-        properties.insert("is_proc_macro".to_string(), PropertyValue::from(is_proc_macro));
+        properties.insert(
+            "is_proc_macro".to_string(),
+            PropertyValue::from(is_proc_macro),
+        );
         properties.insert("is_exported".to_string(), PropertyValue::from(is_exported));
         if let Some(sig) = signature {
             properties.insert("signature".to_string(), PropertyValue::from(sig));
@@ -600,72 +668,6 @@ impl NodeBuilder {
             properties,
         }
     }
-}
-
-/// Batch insert nodes using UNWIND for efficiency
-// TODO: used by future bulk-ingestion stage
-#[allow(dead_code)]
-pub async fn batch_insert_nodes(
-    graph: &Graph,
-    nodes: &[NodeData],
-    batch_size: usize,
-) -> Result<()> {
-    if nodes.is_empty() {
-        return Ok(());
-    }
-
-    // Group nodes by type for efficient batching
-    let mut nodes_by_type: HashMap<NodeType, Vec<&NodeData>> = HashMap::new();
-    for node in nodes {
-        nodes_by_type
-            .entry(node.node_type)
-            .or_default()
-            .push(node);
-    }
-
-    for (node_type, type_nodes) in nodes_by_type {
-        let label = node_type.label();
-        
-        // Process in batches
-        for chunk in type_nodes.chunks(batch_size) {
-            let query_str = format!(
-                "UNWIND $nodes AS node_data \
-                 MERGE (n:{} {{id: node_data.id}}) \
-                 SET n += node_data.props",
-                label
-            );
-
-            let node_params: Vec<HashMap<String, BoltType>> = chunk
-                .iter()
-                .map(|node| {
-                    let mut props = HashMap::new();
-                    props.insert("id".to_string(), BoltType::from(node.id.as_str()));
-                    props.insert("fqn".to_string(), BoltType::from(node.fqn.as_str()));
-                    props.insert("name".to_string(), BoltType::from(node.name.as_str()));
-                    
-                    for (key, value) in &node.properties {
-                        if let Some(bolt_value) = value.to_bolt_type() {
-                            props.insert(key.clone(), bolt_value);
-                        }
-                    }
-                    
-                    let mut node_param = HashMap::new();
-                    node_param.insert("id".to_string(), BoltType::from(node.id.as_str()));
-                    node_param.insert("props".to_string(), BoltType::from(props));
-                    node_param
-                })
-                .collect();
-
-            graph.run(
-                query(&query_str)
-                    .param("nodes", node_params)
-            )
-            .await
-            .context(format!("Failed to batch insert {} nodes", label))?;
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -715,5 +717,134 @@ mod tests {
 
         assert_eq!(node.node_type, NodeType::Struct);
         assert!(node.properties.contains_key("has_generics"));
+    }
+
+    #[test]
+    fn test_merge_query_without_workspace_label() {
+        let node = NodeBuilder::create_function(
+            "test::func",
+            "test::func",
+            "func",
+            None,
+            "public",
+            false,
+            false,
+            false,
+            1,
+            10,
+            "src/lib.rs",
+            vec![],
+            vec![],
+            None,
+        );
+
+        let query = build_node_merge_query(&node, None);
+        assert_eq!(query, "MERGE (n:Function {id: $id}) SET n += $props");
+    }
+
+    #[test]
+    fn test_merge_query_with_workspace_label() {
+        let node = NodeBuilder::create_function(
+            "test::func",
+            "test::func",
+            "func",
+            None,
+            "public",
+            false,
+            false,
+            false,
+            1,
+            10,
+            "src/lib.rs",
+            vec![],
+            vec![],
+            None,
+        );
+
+        let query = build_node_merge_query(&node, Some("Workspace_a1b2c3d4e5f6"));
+        assert_eq!(
+            query,
+            "MERGE (n:Function:Workspace_a1b2c3d4e5f6 {id: $id}) SET n += $props"
+        );
+    }
+
+    #[test]
+    fn test_merge_query_workspace_label_all_node_types() {
+        let test_cases = vec![
+            (
+                NodeBuilder::create_crate("crate", "test_crate", None, None),
+                "Crate",
+            ),
+            (
+                NodeBuilder::create_module("mod", "mod", "test_mod", Some("src/mod.rs"), true),
+                "Module",
+            ),
+            (
+                NodeBuilder::create_struct(
+                    "s",
+                    "s",
+                    "S",
+                    "public",
+                    false,
+                    false,
+                    vec![],
+                    0,
+                    1,
+                    "",
+                    vec![],
+                    None,
+                ),
+                "Struct",
+            ),
+            (
+                NodeBuilder::create_enum(
+                    "e",
+                    "e",
+                    "E",
+                    "public",
+                    false,
+                    vec![],
+                    vec![],
+                    0,
+                    1,
+                    "",
+                    vec![],
+                    None,
+                ),
+                "Enum",
+            ),
+            (
+                NodeBuilder::create_trait(
+                    "t",
+                    "t",
+                    "T",
+                    "public",
+                    false,
+                    false,
+                    vec![],
+                    vec![],
+                    vec![],
+                    0,
+                    1,
+                    "",
+                    vec![],
+                    None,
+                ),
+                "Trait",
+            ),
+        ];
+
+        for (node, expected_label) in test_cases {
+            let query = build_node_merge_query(&node, Some("Workspace_testlabel01"));
+            let expected = format!(
+                "MERGE (n:{}:Workspace_testlabel01 {{id: $id}}) SET n += $props",
+                expected_label
+            );
+            assert_eq!(
+                query, expected,
+                "Expected label {} to be present",
+                expected_label
+            );
+        }
     }
 }

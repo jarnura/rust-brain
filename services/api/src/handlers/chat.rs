@@ -12,7 +12,7 @@ use axum::{
 use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::errors::AppError;
 use crate::opencode;
@@ -51,7 +51,8 @@ pub async fn chat_handler(
                 "Chat is unavailable — the OpenCode service is not running. \
                  Search, call graph, types, traits, and all other code intelligence \
                  features work without it. To enable chat, start the OpenCode container: \
-                 docker compose up -d opencode".to_string(),
+                 docker compose up -d opencode"
+                    .to_string(),
             ));
         }
     }
@@ -245,18 +246,17 @@ pub async fn chat_stream_handler(
                                                     .event("tool_call")
                                                     .data(payload.to_string()));
                                             }
-                                            Some("step-finish") => {
-                                                // Only emit complete if we have accumulated text
-                                                if !accumulated_text.is_empty() {
-                                                    let payload = serde_json::json!({
-                                                        "message": accumulated_text,
-                                                        "source": "opencode",
-                                                    });
-                                                    yield Ok(Event::default()
-                                                        .event("complete")
-                                                        .data(payload.to_string()));
-                                                    accumulated_text.clear();
-                                                }
+                                            Some("step-finish")
+                                                if !accumulated_text.is_empty() =>
+                                            {
+                                                let payload = serde_json::json!({
+                                                    "message": accumulated_text,
+                                                    "source": "opencode",
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("complete")
+                                                    .data(payload.to_string()));
+                                                accumulated_text.clear();
                                             }
                                             _ => {}
                                         }
@@ -334,12 +334,21 @@ pub async fn chat_send_handler(
         .send_message_async(&req.session_id, &req.message)
         .await
         .map_err(|e| {
-            error!("send_message_async failed for session {}: {}", req.session_id, e);
+            error!(
+                "send_message_async failed for session {}: {}",
+                req.session_id, e
+            );
             AppError::OpenCode(format!("Failed to send message: {}", e))
         })?;
 
-    debug!("Async message queued: {} for session {}", message_id, req.session_id);
-    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"message_id": message_id}))))
+    debug!(
+        "Async message queued: {} for session {}",
+        message_id, req.session_id
+    );
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"message_id": message_id})),
+    ))
 }
 
 // =============================================================================
@@ -356,7 +365,8 @@ pub async fn chat_sessions_create(
     State(state): State<AppState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<opencode::Session>, AppError> {
-    let session = state.opencode_client
+    let session = state
+        .opencode_client
         .create_session(req.title.as_deref())
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to create session: {}", e)))?;
@@ -366,7 +376,8 @@ pub async fn chat_sessions_create(
 pub async fn chat_sessions_list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<opencode::Session>>, AppError> {
-    let sessions = state.opencode_client
+    let sessions = state
+        .opencode_client
         .list_sessions()
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to list sessions: {}", e)))?;
@@ -383,11 +394,13 @@ pub async fn chat_sessions_get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionDetail>, AppError> {
-    let session = state.opencode_client
+    let session = state
+        .opencode_client
         .get_session(&id)
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to get session: {}", e)))?;
-    let messages = state.opencode_client
+    let messages = state
+        .opencode_client
         .get_messages(&id)
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to get messages: {}", e)))?;
@@ -398,7 +411,8 @@ pub async fn chat_sessions_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.opencode_client
+    state
+        .opencode_client
         .delete_session(&id)
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to delete session: {}", e)))?;
@@ -416,7 +430,8 @@ pub async fn chat_sessions_fork(
     Path(id): Path<String>,
     Json(req): Json<ForkSessionRequest>,
 ) -> Result<Json<opencode::Session>, AppError> {
-    let session = state.opencode_client
+    let session = state
+        .opencode_client
         .fork_session(&id, req.message_id.as_deref())
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to fork session: {}", e)))?;
@@ -427,7 +442,8 @@ pub async fn chat_sessions_abort(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.opencode_client
+    state
+        .opencode_client
         .abort_session(&id)
         .await
         .map_err(|e| AppError::OpenCode(format!("Failed to abort session: {}", e)))?;

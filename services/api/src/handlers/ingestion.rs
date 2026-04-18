@@ -9,7 +9,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
 use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 /// Progress of a single pipeline stage (e.g., expand, parse, embed).
 #[derive(Debug, Serialize)]
@@ -48,19 +50,22 @@ pub struct IngestionProgress {
 /// Returns the latest ingestion run status with stage-level progress.
 pub async fn ingestion_progress(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
 ) -> Result<Json<IngestionProgress>, AppError> {
     state.metrics.record_request("ingestion_progress", "GET");
 
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
+
     let row = sqlx::query_as::<_, IngestionRow>(
         r#"
-        SELECT id, started_at, completed_at, status,
+        SELECT started_at, completed_at, status,
                crates_processed, items_extracted, errors, metadata
         FROM ingestion_runs
         ORDER BY started_at DESC
         LIMIT 1
         "#,
     )
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -81,8 +86,6 @@ pub async fn ingestion_progress(
 
 #[derive(sqlx::FromRow)]
 struct IngestionRow {
-    #[allow(dead_code)]
-    id: sqlx::types::Uuid,
     started_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
     status: String,
@@ -103,7 +106,8 @@ fn parse_stages(metadata: &Option<Value>) -> Vec<StageProgress> {
         .iter()
         .filter_map(|stage| {
             // The JSON uses "stage" as the key for the stage name
-            let name = stage.get("stage")
+            let name = stage
+                .get("stage")
                 .or_else(|| stage.get("name"))
                 .and_then(|s| s.as_str())?
                 .to_string();
@@ -198,13 +202,11 @@ mod tests {
             completed_at: None,
             crates_processed: 3,
             items_extracted: 36000,
-            stages: vec![
-                StageProgress {
-                    name: "expand".to_string(),
-                    status: "success".to_string(),
-                    items_processed: 5,
-                },
-            ],
+            stages: vec![StageProgress {
+                name: "expand".to_string(),
+                status: "success".to_string(),
+                items_processed: 5,
+            }],
             errors: vec![],
         };
         let json = serde_json::to_value(&progress).unwrap();

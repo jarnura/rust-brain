@@ -3,10 +3,11 @@
 | Field | Value |
 |-------|-------|
 | **ID** | ISSUE-001 |
-| **Status** | Open |
+| **Status** | **Closed** (fixed in commit `316cb7d`, 2026-03-29) |
 | **Severity** | High |
 | **Priority** | P1 |
 | **Created** | 2026-03-29 |
+| **Resolved** | 2026-03-29 |
 | **Component** | Ingestion Pipeline |
 | **Affects** | Lazy Monomorphization, Call Graph, Trait Resolution |
 

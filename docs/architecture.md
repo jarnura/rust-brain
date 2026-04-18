@@ -365,3 +365,224 @@ Vector config: 2560 dimensions (qwen3-embedding:4b), Cosine distance
 | Ingestion | 32 GB | Pipeline (runs on demand via profile) |
 
 **Total minimum:** ~48 GB RAM for full stack (less without ingestion and observability)
+
+## Editor Playground
+
+### Problem Statement
+
+The Chat Playground lets developers *ask questions* about code. The Editor Playground lets them *change* code. Developers describe a feature in natural language and watch an AI agent implement it — backed by rust-brain's code intelligence (call graphs, trait resolution, semantic search).
+
+**For whom:** Rust developers evaluating rust-brain's development capabilities, and the rust-brain team for dogfooding.
+
+### Core Workflow
+
+1. **Add Repo** — User provides a GitHub URL
+2. **Clone and Index** — System clones into a workspace volume, runs the 6-stage ingestion pipeline
+3. **Workspace Ready** — UI shows repo structure (react-treeview), indexing status, and a prompt input
+4. **Feature Request** — User writes a natural language development request
+5. **Orchestrator Dispatch** — System spawns an OpenCode session starting with the orchestrator agent, which routes through research → planning → development phases
+6. **Live Observation** — User watches streaming progress: agent reasoning, tool calls, file edits
+7. **Review Changes** — User sees a diff view of all changes made
+8. **Accept / Iterate** — User can accept changes (commit), request modifications, or discard (reset)
+
+### Service Boundaries
+
+```
+React Frontend (Editor Playground)
+  - RepoManager: add/remove/status of repos
+  - WorkspaceView: file tree (react-treeview), indexed status
+  - PromptInput: feature request composition
+  - ExecutionStream: live agent progress (SSE)
+  - DiffViewer: side-by-side change review
+  - SessionHistory: past executions and results
+        |
+        | HTTP + SSE
+        v
+Workspace API (extension of existing Axum service)
+  POST   /workspaces              - create workspace + async clone
+  GET    /workspaces              - list non-archived workspaces
+  GET    /workspaces/:id          - workspace status
+  DELETE /workspaces/:id          - archive + cleanup
+  GET    /workspaces/:id/files    - file tree
+  POST   /workspaces/:id/execute  - start dev task
+  GET    /workspaces/:id/stream   - SSE progress
+  GET    /workspaces/:id/diff     - git diff HEAD
+  POST   /workspaces/:id/commit   - stage all + commit
+  POST   /workspaces/:id/reset    - git reset --hard + clean
+  GET    /workspaces/:id/executions - list executions
+  GET    /executions/:id          - execution status
+  GET    /executions/:id/events   - SSE agent events
+        |
+    +---+---+
+    v       v
+Workspace     OpenCode
+Manager       (per-workspace container,
+(clone,        sessions attach to
+ index,        work directories,
+ lifecycle,    orchestrator → research →
+ multi-tenant  planning → development)
+ storage)
+```
+
+### Data Model
+
+#### Workspace
+
+Each workspace represents a cloned and indexed Rust codebase with its own Postgres schema for data isolation.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `name` | TEXT | Human-readable name (defaults to repo slug) |
+| `source_type` | ENUM | `github` or `local` |
+| `source_url` | TEXT | GitHub HTTPS URL |
+| `clone_path` | TEXT | Container-local clone directory path |
+| `volume_name` | TEXT | Docker volume name (e.g. `rustbrain-ws-abc12345`) |
+| `schema_name` | TEXT | Postgres schema (e.g. `ws_abc12345`) |
+| `status` | ENUM | `pending` → `cloning` → `indexing` → `ready` → `error` → `archived` |
+| `default_branch` | TEXT | Git default branch after clone |
+| `github_auth_method` | TEXT | `pat`, `app`, or null |
+| `index_started_at` | TIMESTAMPTZ | When indexing began |
+| `index_completed_at` | TIMESTAMPTZ | When indexing finished |
+| `index_stage` | TEXT | Current pipeline stage |
+| `index_progress` | JSONB | Stage-specific progress |
+| `index_error` | TEXT | Error message if indexing failed |
+| `created_at` | TIMESTAMPTZ | Row creation time |
+| `updated_at` | TIMESTAMPTZ | Last update time |
+
+Postgres table: `workspaces`
+
+#### Execution
+
+An execution represents one run of the OpenCode multi-agent flow against a workspace.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `workspace_id` | UUID | FK to workspaces |
+| `prompt` | TEXT | Natural language development request |
+| `branch_name` | TEXT | Feature branch name (optional) |
+| `session_id` | TEXT | OpenCode session ID |
+| `container_id` | TEXT | Docker container ID running OpenCode |
+| `status` | ENUM | `running` → `completed` / `failed` / `aborted` / `timeout` |
+| `agent_phase` | ENUM | `orchestrating` / `researching` / `planning` / `developing` |
+| `started_at` | TIMESTAMPTZ | Execution start time |
+| `completed_at` | TIMESTAMPTZ | Execution end time |
+| `diff_summary` | JSONB | Files changed, additions, deletions |
+| `error` | TEXT | Error message if failed |
+| `timeout_config_secs` | INT | Timeout in seconds (default: 7200 = 2h) |
+
+Postgres table: `executions`
+
+#### AgentEvent
+
+Individual events emitted by agents during an execution.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | BIGINT | Auto-incrementing event ID |
+| `execution_id` | UUID | FK to executions |
+| `timestamp` | TIMESTAMPTZ | Event time |
+| `event_type` | ENUM | `reasoning` / `tool_call` / `file_edit` / `error` / `phase_change` |
+| `content` | JSONB | Event-specific payload |
+
+Postgres table: `agent_events`
+
+### Workspace Lifecycle
+
+```
+POST /workspaces
+        |
+        v
+    [pending] ──→ [cloning] ──→ [indexing] ──→ [ready]
+                                       |              |
+                                       v              v
+                                    [error]      POST /execute
+                                                    |
+                                                    v
+                                              Execution runs
+                                               (orchestrator →
+                                                research → plan →
+                                                develop)
+                                                    |
+                                    +-------+-------+-------+
+                                    |       |       |       |
+                                    v       v       v       v
+                              [completed] [failed] [timeout] [aborted]
+                                    |
+                              GET /diff → review changes
+                                    |
+                              +-----+-----+
+                              |           |
+                              v           v
+                        POST /commit  POST /reset
+                        (accept)      (discard)
+                              |
+                              v
+                    Ready for next execution
+
+    DELETE /workspaces/:id → [archived] (volume + clone dir cleaned up)
+```
+
+### Multi-Tenant Schema Isolation
+
+Each workspace gets its own Postgres schema named `ws_<short_id>`, where `<short_id>` is the first 12 hex characters of the workspace UUID (hyphens stripped). The ingestion pipeline is configured with a `search_path` pointing to the workspace schema, so extracted items are written into workspace-scoped tables rather than the default `public` schema.
+
+The `search_path` is appended to `DATABASE_URL` as:
+
+```
+?options=--search_path%3Dws_abc12345,public
+```
+
+This ensures:
+- **Data isolation**: Workspace A cannot see Workspace B's extracted items
+- **Schema reuse**: The same table structure (source_files, extracted_items, etc.) exists in each workspace schema
+- **Fallback**: The `public` schema is included in the search path for shared tables (workspaces, executions, agent_events)
+
+### Docker Volume Strategy
+
+Workspaces use Docker volumes for the cloned repository files:
+
+- **Naming**: `rustbrain-ws-<workspace_id_short>` (first 8 hex chars of UUID, see [Workspace Volumes](./workspace-volumes.md))
+- **Quota**: 10 GB per workspace (configurable in `DockerClient::create_volume`)
+- **Labels**: `rustbrain.workspace=true` for easy filtering and cleanup
+- **Lifecycle**: Created after successful clone, populated with repo files, removed on workspace deletion
+
+### Integration Points
+
+| System | Integration |
+|--------|-------------|
+| rust-brain ingestion | Trigger pipeline via Docker after clone; per-workspace schema isolation via search_path |
+| OpenCode | Per-workspace container, sessions attach to work directories, orchestrator routes to specialist agents |
+| MCP tools | Query API scoped to active workspace schema |
+| GitHub API | gh CLI for clone, auth via GitHub App or PAT |
+| Docker | Dynamic volume creation per workspace; per-workspace ephemeral OpenCode containers |
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Multi-repo support | Per-workspace isolation (separate Docker volumes) | Prevents cross-contamination, enables concurrent workspaces |
+| Read-write access | Mount workspace volume as rw for OpenCode | Required for agent to produce file changes |
+| Branch strategy | Auto-create feature branch per execution | Preserves original state, enables easy reset |
+| Indexing | Run on workspace creation only; no re-indexing after agent edits | Keeps execution fast |
+| Storage multi-tenancy | Per-workspace Postgres schema isolation | Isolates indexed data across workspaces |
+| Frontend | Separate deployable React app (Vite + React 18) | Decoupled deployment |
+| Agent flow | Orchestrator → research → planning → development | Not direct developer start |
+| Session timeout | Configurable (default 7200s = 2h) | Large codebases need time |
+| Container strategy | Per-workspace OpenCode containers with per-session working dirs | OpenCode supports per-session dirs |
+| Repo scope | Rust-only for MVP | Board decision |
+| Workspace cleanup | User-controlled (DELETE endpoint, no auto-TTL) | Board decision |
+| GitHub auth | GitHub App or PAT | Board decision |
+| File tree | react-treeview compatible JSON format | Frontend decision |
+
+### Failure Modes
+
+| Failure | Detection | Mitigation |
+|---------|-----------|------------|
+| Clone fails (private repo, invalid URL) | git exit code | Return clear error with auth instructions |
+| Ingestion fails (non-Rust repo, broken code) | Pipeline stage error | Reject non-Rust repos at MVP; partial indexing with warnings |
+| OpenCode session hangs | Configurable timeout (seconds) | Abort session, mark execution as `timeout`, preserve partial work |
+| Disk space exhaustion | Volume size monitoring | Set per-workspace quotas (10 GB default); alert at 80% |
+| Agent produces broken code | cargo check post-execution | Show compilation errors in diff view; let user iterate |
+| Concurrent executions on same workspace | — | Queue or reject; one execution at a time per workspace |

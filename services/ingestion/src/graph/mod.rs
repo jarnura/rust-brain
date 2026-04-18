@@ -8,14 +8,14 @@ mod nodes;
 mod relationships;
 
 use anyhow::{Context, Result};
-use neo4rs::{Graph, query};
+use neo4rs::{query, Graph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-pub use batch::{BatchInsert, BatchConfig, BatchProcessor, BatchStats};
+pub use batch::{BatchConfig, BatchInsert, BatchProcessor, BatchStats};
 pub use nodes::{NodeBuilder, NodeData, PropertyValue};
 pub use relationships::{RelationshipBuilder, RelationshipData, RelationshipType};
 
@@ -59,21 +59,20 @@ pub struct GraphConfig {
     pub max_connections: usize,
     /// Batch size for bulk operations
     pub batch_size: usize,
+    /// Neo4j label in format `Workspace_<12hex>` for multi-tenant isolation
+    pub workspace_label: Option<String>,
 }
 
 impl Default for GraphConfig {
     fn default() -> Self {
         Self {
-            uri: std::env::var("NEO4J_URI")
-                .unwrap_or_else(|_| DEFAULT_NEO4J_URI.to_string()),
-            username: std::env::var("NEO4J_USER")
-                .unwrap_or_else(|_| "neo4j".to_string()),
-            password: std::env::var("NEO4J_PASSWORD")
-                .unwrap_or_else(|_| "password".to_string()),
-            database: std::env::var("NEO4J_DATABASE")
-                .unwrap_or_else(|_| "neo4j".to_string()),
+            uri: std::env::var("NEO4J_URI").unwrap_or_else(|_| DEFAULT_NEO4J_URI.to_string()),
+            username: std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
+            password: std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string()),
+            database: std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string()),
             max_connections: 10,
             batch_size: DEFAULT_BATCH_SIZE,
+            workspace_label: None,
         }
     }
 }
@@ -114,20 +113,24 @@ impl GraphBuilder {
     pub async fn with_config(config: GraphConfig) -> Result<Self> {
         info!("Connecting to Neo4j at {}", redact_url(&config.uri));
 
-        let graph = Arc::new(Graph::new(&config.uri, &config.username, &config.password)
-            .await
-            .context("Failed to connect to Neo4j")?);
+        let graph = Arc::new(
+            Graph::new(&config.uri, &config.username, &config.password)
+                .await
+                .context("Failed to connect to Neo4j")?,
+        );
 
         info!("Successfully connected to Neo4j");
 
-        let node_builder = NodeBuilder::new(Arc::clone(&graph));
-        let relationship_builder = RelationshipBuilder::new(Arc::clone(&graph));
+        let node_builder = NodeBuilder::new(Arc::clone(&graph), config.workspace_label.clone());
+        let relationship_builder =
+            RelationshipBuilder::new(Arc::clone(&graph), config.workspace_label.clone());
         let batch_insert = Arc::new(RwLock::new(BatchInsert::new(
             Arc::clone(&graph),
             BatchConfig {
                 batch_size: config.batch_size,
                 ..Default::default()
             },
+            config.workspace_label.clone(),
         )));
 
         Ok(Self {
@@ -142,7 +145,8 @@ impl GraphBuilder {
 
     /// Test the connection to Neo4j
     pub async fn test_connection(&self) -> Result<bool> {
-        let mut result = self.graph
+        let mut result = self
+            .graph
             .execute(query("RETURN 1 as test"))
             .await
             .context("Failed to execute test query")?;
@@ -207,8 +211,15 @@ impl GraphBuilder {
         ];
 
         for query_str in &index_queries {
-            match self.graph.run(query(*query_str)).await {
-                Ok(_) => debug!("Created index: {}", query_str.split_whitespace().take(4).collect::<Vec<_>>().join(" ")),
+            match self.graph.run(query(query_str)).await {
+                Ok(_) => debug!(
+                    "Created index: {}",
+                    query_str
+                        .split_whitespace()
+                        .take(4)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
                 Err(e) => warn!("Failed to create index (may already exist): {}", e),
             }
         }
@@ -217,10 +228,60 @@ impl GraphBuilder {
         Ok(())
     }
 
+    /// Create workspace-scoped unique constraints for a specific workspace label
+    pub async fn create_workspace_constraints(&self, workspace_label: &str) -> Result<()> {
+        info!(
+            "Creating workspace-scoped constraints for {}",
+            workspace_label
+        );
+
+        let node_labels = [
+            "Crate",
+            "Module",
+            "Function",
+            "Struct",
+            "Enum",
+            "Trait",
+            "Impl",
+            "Type",
+            "TypeAlias",
+            "Const",
+            "Static",
+            "Macro",
+        ];
+
+        // Derive a safe constraint name suffix from workspace label
+        // e.g. "Workspace_a1b2c3d4e5f6" -> "ws_a1b2c3d4e5f6"
+        let ws_suffix = workspace_label
+            .strip_prefix("Workspace_")
+            .unwrap_or(workspace_label);
+
+        for label in &node_labels {
+            let constraint_name = format!("ws_{}_{}_fqn_unique", ws_suffix, label.to_lowercase());
+            let constraint_query = format!(
+                "CREATE CONSTRAINT {constraint_name} IF NOT EXISTS \
+                 FOR (n:{label}:{workspace_label}) REQUIRE n.fqn IS UNIQUE"
+            );
+            match self.graph.run(query(&constraint_query)).await {
+                Ok(_) => debug!("Created workspace constraint: {}", constraint_name),
+                Err(e) => warn!(
+                    "Failed to create workspace constraint (may already exist): {}",
+                    e
+                ),
+            }
+        }
+
+        info!(
+            "Workspace constraint creation complete for {}",
+            workspace_label
+        );
+        Ok(())
+    }
+
     /// Clear all graph data (use with caution!)
     pub async fn clear_all(&self) -> Result<()> {
         warn!("Clearing all graph data!");
-        
+
         self.graph
             .run(query("MATCH (n) DETACH DELETE n"))
             .await
@@ -253,52 +314,55 @@ impl GraphBuilder {
     /// Create a single node (MERGE for idempotency)
     pub async fn create_node(&self, node: &NodeData) -> Result<()> {
         self.node_builder.merge_node(node).await?;
-        
+
         let mut stats = self.stats.write().await;
         stats.nodes_merged += 1;
-        
+
         Ok(())
     }
 
     /// Create multiple nodes in batch
     pub async fn create_nodes_batch(&self, nodes: Vec<NodeData>) -> Result<()> {
         let count = nodes.len();
-        
+
         let mut batch = self.batch_insert.write().await;
         for node in nodes {
             batch.add_node(node).await?;
         }
         batch.flush_nodes().await?;
-        
+
         let mut stats = self.stats.write().await;
         stats.nodes_merged += count;
-        
+
         Ok(())
     }
 
     /// Create a single relationship
     pub async fn create_relationship(&self, rel: &RelationshipData) -> Result<()> {
         self.relationship_builder.merge_relationship(rel).await?;
-        
+
         let mut stats = self.stats.write().await;
         stats.relationships_created += 1;
-        
+
         Ok(())
     }
 
     /// Create multiple relationships in batch
-    pub async fn create_relationships_batch(&self, relationships: Vec<RelationshipData>) -> Result<()> {
+    pub async fn create_relationships_batch(
+        &self,
+        relationships: Vec<RelationshipData>,
+    ) -> Result<()> {
         let count = relationships.len();
-        
+
         let mut batch = self.batch_insert.write().await;
         for rel in relationships {
             batch.add_relationship(rel).await?;
         }
         batch.flush_relationships().await?;
-        
+
         let mut stats = self.stats.write().await;
         stats.relationships_created += count;
-        
+
         Ok(())
     }
 
@@ -306,16 +370,17 @@ impl GraphBuilder {
     pub async fn flush(&self) -> Result<()> {
         let mut batch = self.batch_insert.write().await;
         batch.flush_all().await?;
-        
+
         let mut stats = self.stats.write().await;
         stats.batches_processed += 1;
-        
+
         Ok(())
     }
 
     /// Find a node by its FQN
     pub async fn find_node_by_fqn(&self, fqn: &str) -> Result<Option<HashMap<String, String>>> {
-        let mut result = self.graph
+        let mut result = self
+            .graph
             .execute(query("MATCH (n {fqn: $fqn}) RETURN n").param("fqn", fqn))
             .await
             .context("Failed to find node by FQN")?;
@@ -324,7 +389,7 @@ impl GraphBuilder {
             let node: neo4rs::Node = row.get("n")?;
             let mut map = HashMap::new();
             for key in node.keys() {
-                if let Ok(value) = node.get::<String>(&key) {
+                if let Ok(value) = node.get::<String>(key) {
                     map.insert(key.to_string(), value);
                 }
             }
@@ -337,7 +402,8 @@ impl GraphBuilder {
     /// Find all nodes of a specific type
     pub async fn find_nodes_by_type(&self, label: &str) -> Result<Vec<HashMap<String, String>>> {
         let query_str = format!("MATCH (n:{}) RETURN n", label);
-        let mut result = self.graph
+        let mut result = self
+            .graph
             .execute(query(&query_str))
             .await
             .context("Failed to find nodes by type")?;
@@ -347,7 +413,7 @@ impl GraphBuilder {
             let node: neo4rs::Node = row.get("n")?;
             let mut map = HashMap::new();
             for key in node.keys() {
-                if let Ok(value) = node.get::<String>(&key) {
+                if let Ok(value) = node.get::<String>(key) {
                     map.insert(key.to_string(), value);
                 }
             }

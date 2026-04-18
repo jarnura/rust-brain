@@ -68,11 +68,11 @@ impl TreeSitterParser {
 
                 // For items that might contain nested items (impl blocks, modules, traits)
                 // we need to recurse
-                if matches!(kind, "impl_item" | "trait_item" | "mod_item") {
-                    if cursor.goto_first_child() {
-                        self.collect_items(cursor, source, skeletons);
-                        cursor.goto_parent();
-                    }
+                if matches!(kind, "impl_item" | "trait_item" | "mod_item")
+                    && cursor.goto_first_child()
+                {
+                    self.collect_items(cursor, source, skeletons);
+                    cursor.goto_parent();
                 }
             } else if cursor.goto_first_child() {
                 self.collect_items(cursor, source, skeletons);
@@ -284,11 +284,7 @@ impl TreeSitterParser {
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                if child.kind() == "attribute_item" {
-                    if let Ok(text) = child.utf8_text(source) {
-                        attributes.push(text.to_string());
-                    }
-                } else if child.kind() == "inner_attribute_item" {
+                if child.kind() == "attribute_item" || child.kind() == "inner_attribute_item" {
                     if let Ok(text) = child.utf8_text(source) {
                         attributes.push(text.to_string());
                     }
@@ -427,7 +423,7 @@ pub fn get_status(user: &User) -> Status {
             Some(Visibility::PubCrate)
         ));
 
-        assert!(matches!(parser.extract_visibility("fn test() {}"), None));
+        assert!(parser.extract_visibility("fn test() {}").is_none());
     }
 
     #[test]

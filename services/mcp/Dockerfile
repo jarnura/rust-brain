@@ -10,8 +10,11 @@ COPY . .
 RUN cargo build --release -p rustbrain-mcp --features sse
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash rustbrain
 COPY --from=builder /build/target/release/rustbrain-mcp /usr/local/bin/
+RUN chown rustbrain:rustbrain /usr/local/bin/rustbrain-mcp
+USER rustbrain
 HEALTHCHECK CMD curl -f http://localhost:3001/health || exit 1
 EXPOSE 3001
 CMD ["rustbrain-mcp", "--transport", "sse", "--port", "3001", "--api-base-url", "http://api:8080"]

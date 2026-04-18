@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tracing::debug;
 
-use crate::errors::AppError;
-use crate::state::AppState;
 use super::default_limit;
+use crate::errors::AppError;
+use crate::extractors::OptionalWorkspaceId;
+use crate::state::AppState;
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Request/Response Types
@@ -105,15 +107,21 @@ pub struct TraitImplInfo {
 /// This enables queries like "show me all calls to parse for String".
 pub async fn find_calls_with_type(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<FindCallsWithTypeQuery>,
 ) -> Result<Json<CallsWithTypeResponse>, AppError> {
     state.metrics.record_request("find_calls_with_type", "GET");
-    debug!("Find calls with type: {} (callee: {:?})", query.type_name, query.callee_name);
+    debug!(
+        "Find calls with type: {} (callee: {:?})",
+        query.type_name, query.callee_name
+    );
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let type_pattern = format!("%{}%", query.type_name);
     let limit = query.limit.min(100) as i32;
 
-    let rows = if let Some(callee_name) = &query.callee_name {
+    let rows: Vec<sqlx::postgres::PgRow> = if let Some(callee_name) = &query.callee_name {
         let callee_pattern = format!("%::{}", callee_name);
         sqlx::query(
             r#"
@@ -130,12 +138,12 @@ pub async fn find_calls_with_type(
               AND concrete_type_args::text LIKE $2
             ORDER BY file_path, line_number
             LIMIT $3
-            "#
+            "#,
         )
         .bind(&callee_pattern)
         .bind(&type_pattern)
         .bind(limit)
-        .fetch_all(&state.pg_pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("Failed to query call_sites: {}", e)))?
     } else {
@@ -153,11 +161,11 @@ pub async fn find_calls_with_type(
             WHERE concrete_type_args::text LIKE $1
             ORDER BY file_path, line_number
             LIMIT $2
-            "#
+            "#,
         )
         .bind(&type_pattern)
         .bind(limit)
-        .fetch_all(&state.pg_pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| AppError::Database(format!("Failed to query call_sites: {}", e)))?
     };
@@ -177,7 +185,9 @@ pub async fn find_calls_with_type(
                 line_number: row.get::<i32, _>("line_number") as u32,
                 concrete_type_args: type_args,
                 is_monomorphized: row.get("is_monomorphized"),
-                quality: row.get::<Option<String>, _>("quality").unwrap_or_else(|| "unknown".to_string()),
+                quality: row
+                    .get::<Option<String>, _>("quality")
+                    .unwrap_or_else(|| "unknown".to_string()),
             }
         })
         .collect();
@@ -193,15 +203,20 @@ pub async fn find_calls_with_type(
 /// This enables queries like "show me all traits implemented by String".
 pub async fn find_trait_impls_for_type(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<FindTraitImplsForTypeQuery>,
 ) -> Result<Json<TraitImplsForTypeResponse>, AppError> {
-    state.metrics.record_request("find_trait_impls_for_type", "GET");
+    state
+        .metrics
+        .record_request("find_trait_impls_for_type", "GET");
     debug!("Find trait impls for type: {}", query.type_name);
+
+    let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let type_pattern = format!("%{}%", query.type_name);
     let limit = query.limit.min(100) as i32;
 
-    let rows = sqlx::query(
+    let rows: Vec<sqlx::postgres::PgRow> = sqlx::query(
         r#"
         SELECT 
             trait_fqn,
@@ -215,11 +230,11 @@ pub async fn find_trait_impls_for_type(
         WHERE self_type LIKE $1
         ORDER BY trait_fqn
         LIMIT $2
-        "#
+        "#,
     )
     .bind(&type_pattern)
     .bind(limit)
-    .fetch_all(&state.pg_pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to query trait_implementations: {}", e)))?;
 
@@ -238,7 +253,9 @@ pub async fn find_trait_impls_for_type(
                 file_path: row.get("file_path"),
                 line_number: row.get::<i32, _>("line_number") as u32,
                 generic_params,
-                quality: row.get::<Option<String>, _>("quality").unwrap_or_else(|| "unknown".to_string()),
+                quality: row
+                    .get::<Option<String>, _>("quality")
+                    .unwrap_or_else(|| "unknown".to_string()),
             }
         })
         .collect();

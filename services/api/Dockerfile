@@ -22,14 +22,20 @@ COPY Cargo.toml ./
 COPY crates/rustbrain-common/Cargo.toml ./crates/rustbrain-common/
 COPY services/api/Cargo.toml ./services/api/
 COPY services/ingestion/Cargo.toml ./services/ingestion/
+COPY services/validator/Cargo.toml ./services/validator/
+COPY services/benchmarker/Cargo.toml ./services/benchmarker/
 
 # Create dummy source files for dependency caching
 RUN mkdir -p crates/rustbrain-common/src \
     && mkdir -p services/api/src \
     && mkdir -p services/ingestion/src \
+    && mkdir -p services/validator/src \
+    && mkdir -p services/benchmarker/src \
     && echo "pub fn dummy() {}" > crates/rustbrain-common/src/lib.rs \
     && echo "fn main() {}" > services/api/src/main.rs \
-    && echo "fn main() {}" > services/ingestion/src/main.rs
+    && echo "fn main() {}" > services/ingestion/src/main.rs \
+    && echo "fn main() {}" > services/validator/src/main.rs \
+    && echo "fn main() {}" > services/benchmarker/src/main.rs
 
 # Build dependencies
 RUN cargo build --release -p rustbrain-api
@@ -47,17 +53,30 @@ RUN touch crates/rustbrain-common/src/lib.rs \
 # Build the API service
 RUN cargo build --release -p rustbrain-api
 
+# Docker CLI stage — copy only the binary, no daemon
+FROM docker:27-cli AS docker-cli
+
 # Runtime stage
 FROM debian:bookworm-slim AS runtime
 
-# Install runtime dependencies
+# Install runtime dependencies (including git and gh CLI for workspace clone)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
+    git \
     libssl3 \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Copy the Docker CLI binary (needed for workspace volume operations via the host socket)
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Copy the binary
 COPY --from=builder /build/target/release/rustbrain-api /usr/local/bin/
@@ -65,9 +84,12 @@ COPY --from=builder /build/target/release/rustbrain-api /usr/local/bin/
 # Copy static files for playground
 COPY --from=builder /build/services/api/static /app/static
 
-# Create non-root user
-RUN useradd -r -s /bin/false rustbrain && \
-    chown -R rustbrain:rustbrain /app
+# Create non-root user with Docker socket access and writable clone directory.
+# GID 125 matches the host docker group that owns /var/run/docker.sock.
+RUN groupadd -g 125 docker && \
+    useradd -r -s /bin/false -G docker rustbrain && \
+    chown -R rustbrain:rustbrain /app && \
+    mkdir -p /tmp/rustbrain-clones && chown rustbrain:rustbrain /tmp/rustbrain-clones
 
 USER rustbrain
 

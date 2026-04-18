@@ -8,11 +8,8 @@ global:
   external_labels:
     monitor: 'rustbrain'
 
-# Alertmanager (optional, uncomment if needed)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets: ['alertmanager:9093']
+rule_files:
+  - 'alert_rules.yml'
 
 scrape_configs:
   # ===========================================================================
@@ -42,21 +39,9 @@ scrape_configs:
       - targets: ['postgres-exporter:9187']
     scrape_interval: 30s
 
-  - job_name: 'neo4j'
-    static_configs:
-      - targets: ['neo4j:2004']
-    metrics_path: /metrics
-    scrape_interval: 30s
-
   - job_name: 'qdrant'
     static_configs:
       - targets: ['qdrant:6333']
-    metrics_path: /metrics
-    scrape_interval: 30s
-
-  - job_name: 'ollama'
-    static_configs:
-      - targets: ['ollama:11434']
     metrics_path: /metrics
     scrape_interval: 30s
 
@@ -72,3 +57,28 @@ scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  - job_name: 'consistency-health'
+    metrics_path: /probe
+    params:
+      module: [http_consistency]
+    static_configs:
+      - targets:
+          - http://api:8080/health/consistency
+        labels:
+          service: 'api'
+          probe: 'consistency'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Audit service — workspace leak detection metrics
+  - job_name: 'rustbrain-audit'
+    static_configs:
+      - targets: ['audit:8090']
+    metrics_path: /metrics
+    scrape_interval: 30s

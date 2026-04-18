@@ -12,4 +12,6 @@ pub use health::{
 pub use metrics::MetricsRegistry;
 pub use monitor::{Monitor, MonitorConfig};
 pub use progress::ProgressTracker as TerminalProgress;
-pub use stuck_detector::{StuckDetector, StuckDetectorHandle, StuckAlert, EscalationLevel, NUM_STAGES};
+pub use stuck_detector::{
+    EscalationLevel, StuckAlert, StuckDetector, StuckDetectorHandle, NUM_STAGES,
+};

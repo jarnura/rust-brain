@@ -95,6 +95,10 @@ pub struct Config {
     /// OpenCode authentication password
     #[arg(long, env = "OPENCODE_AUTH_PASS")]
     pub opencode_auth_pass: Option<String>,
+
+    /// Workspace ID for workspace-scoped API endpoints
+    #[arg(long, env = "WORKSPACE_ID")]
+    pub workspace_id: Option<String>,
 }
 
 impl Default for Config {
@@ -110,6 +114,7 @@ impl Default for Config {
             opencode_host: "http://opencode:4096".to_string(),
             opencode_auth_user: None,
             opencode_auth_pass: None,
+            workspace_id: None,
         }
     }
 }
@@ -170,6 +175,20 @@ mod tests {
         assert_eq!(config.http_timeout, 30);
         assert_eq!(config.max_search_results, 50);
         assert_eq!(config.default_search_limit, 10);
+        assert_eq!(config.workspace_id, None);
+    }
+
+    #[test]
+    fn test_workspace_id_env_parsing() {
+        // Temporarily set environment variable
+        std::env::set_var("WORKSPACE_ID", "test-workspace-123");
+
+        // Parse from environment
+        let config = Config::parse_from(["rustbrain-mcp"]);
+        assert_eq!(config.workspace_id, Some("test-workspace-123".to_string()));
+
+        // Clean up
+        std::env::remove_var("WORKSPACE_ID");
     }
 
     #[test]

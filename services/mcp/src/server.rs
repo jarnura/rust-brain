@@ -592,8 +592,8 @@ mod tests {
         let result = server.handle_tools_list().await.unwrap();
         let tools_result: ToolsListResult = serde_json::from_value(result).unwrap();
         
-        // Should have all 7 tools
-        assert_eq!(tools_result.tools.len(), 7);
+        // Should have all 14 tools (9 original + 5 agent infrastructure)
+        assert_eq!(tools_result.tools.len(), 14);
         
         let tool_names: Vec<&str> = tools_result.tools.iter()
             .map(|t| t.name.as_str())

@@ -261,8 +261,7 @@ mod tests {
     fn test_state() -> Arc<HealthState> {
         // Build a minimal resilience coordinator without a database pool.
         let resilience = Arc::new(
-            ResilienceCoordinator::new(None, uuid::Uuid::new_v4())
-                .expect("resilience coordinator"),
+            ResilienceCoordinator::new(None, uuid::Uuid::new_v4()).expect("resilience coordinator"),
         );
         let metrics = Arc::new(MetricsRegistry::new().expect("metrics registry"));
         let progress = Arc::new(ProgressTracker::new());
@@ -363,7 +362,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.contains("text/plain"));
     }
 

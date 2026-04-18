@@ -9,6 +9,7 @@ Operational guide for starting, stopping, monitoring, and troubleshooting the ru
 | Start all services | `bash scripts/start.sh` |
 | Stop all services | `bash scripts/stop.sh` |
 | Health check | `bash scripts/healthcheck.sh` |
+| E2E smoke test | `bash scripts/smoke-test.sh` |
 | View logs | `docker-compose logs -f [service]` |
 | Reset all data | `docker-compose down -v && bash scripts/start.sh` |
 
@@ -125,6 +126,35 @@ Neo4j Bolt           ✓ OK (localhost:7687)
 Qdrant gRPC          ✓ OK (localhost:6334)
 ```
 
+### E2E Smoke Test
+
+The smoke test validates the full pipeline end-to-end — not just port availability, but actual data queries across all three stores, MCP tool invocation, and cross-DB aggregate search.
+
+```bash
+bash scripts/smoke-test.sh
+```
+
+**Checks performed (9 total):**
+
+| # | Check | What It Validates |
+|---|-------|-------------------|
+| 1 | Postgres query | `extracted_items` count > 0 via `pg_query` |
+| 2 | Neo4j query | Total graph node count > 0 via `query_graph` |
+| 3 | Qdrant health | Vector store healthy with points > 0 via `/health` |
+| 4 | Semantic search | `search_semantic` returns results for a known query |
+| 5 | MCP SSE bridge | SSE endpoint returns a valid session ID |
+| 6 | Aggregate search | Cross-DB fan-out returns real code results |
+| 7 | Trait graph query | `MATCH (n:Trait) RETURN count(n)` > 0 |
+| 8 | API health | `/health` status is healthy |
+| 9 | OpenCode health | OpenCode dependency reports healthy |
+
+**When to run:**
+- After every `docker compose up`
+- In CI on PRs touching `configs/opencode/`, `services/mcp/`, `services/api/`
+- Before any release tag
+
+**Exit codes:** 0 = all pass, non-zero = number of failures.
+
 ### Manual Health Checks
 
 #### Postgres
@@ -136,6 +166,31 @@ docker-compose exec postgres psql -U rustbrain -d rustbrain -c "SELECT 1"
 # Via pg_isready
 docker-compose exec postgres pg_isready -U rustbrain -d rustbrain
 ```
+
+##### Apache AGE Graph Extension
+
+AGE is compiled into the Postgres image but only activated when the `age-poc` compose override is used.
+
+```bash
+# Start Postgres with AGE (POC/dev)
+docker compose -f docker-compose.yml -f docker-compose.age-poc.yml up -d postgres
+
+# Verify AGE extension is loaded
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT * FROM ag_catalog.ag_graph;"
+
+# Create a test graph and run a Cypher query
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT create_graph('test_graph');"
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT * FROM cypher('test_graph', \$\$ CREATE (n:Test {name: 'hello'}) RETURN n \$\$) AS (n agtype);"
+
+# Clean up test graph
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT drop_graph('test_graph', true);"
+```
+
+Production uses only `docker compose -f docker-compose.yml up -d postgres` — no AGE init script is mounted.
 
 #### Neo4j
 
@@ -432,6 +487,382 @@ docker-compose restart prometheus grafana
 bash scripts/stop.sh && bash scripts/start.sh
 ```
 
+### 11. Apache AGE Extension Not Loading
+
+**Symptoms:**
+- `ERROR: could not open extension control file "/usr/share/postgresql/16/extension/age.control"`
+- `ERROR: shared library "age" not found` on container startup
+- `SELECT create_graph(...)` fails with `function does not exist`
+- `SELECT * FROM cypher(...)` returns `function cypher does not exist`
+
+**Diagnosis:**
+```bash
+# Check if AGE shared library loaded at startup
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SHOW shared_preload_libraries;"
+
+# Check if extension is installed
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT * FROM pg_available_extensions WHERE name = 'age';"
+
+# Check search_path (must include ag_catalog for Cypher)
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SHOW search_path;"
+
+# Check container logs for AGE errors
+docker logs rustbrain-postgres 2>&1 | grep -i age
+```
+
+**Fixes:**
+
+1. **Extension not found (build failed):**
+   ```bash
+   # Rebuild the Docker image from scratch
+   docker compose build --no-cache postgres
+   docker compose up -d postgres
+   ```
+
+2. **Shared library not loaded:**
+   ```bash
+   # Verify postgresql.conf has shared_preload_libraries
+   docker exec rustbrain-postgres cat /usr/share/postgresql/postgresql.conf.sample | grep shared_preload
+   # Should show: shared_preload_libraries = 'age'
+   # If missing, rebuild: docker compose build --no-cache postgres
+   ```
+
+3. **search_path missing ag_catalog:**
+   ```bash
+   # Manually set for current session
+   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+     -c "SET search_path = ag_catalog, \"$user\", public;"
+
+   # Fix permanently for the database
+   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+     -c "ALTER DATABASE rustbrain SET search_path = ag_catalog, \"$user\", public;"
+   ```
+
+4. **Init script didn't run (existing volume):**
+   The `/docker-entrypoint-initdb.d/` scripts only run on first container initialization.
+   If the `postgres_data` volume already existed, AGE setup was skipped.
+   ```bash
+   # Option A: Run the setup SQL manually
+   docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+     -f /docker-entrypoint-initdb.d/02-age-setup.sql
+
+   # Option B: Reset the database (DESTRUCTIVE — loses all data)
+   docker compose down -v postgres_data
+   docker compose up -d postgres
+   ```
+
+### 12. Cross-Store Consistency Failure
+
+**Symptoms:**
+- Prometheus alert `ConsistencyCheckFailed` fires (severity: critical)
+- Grafana "Cross-Store Consistency" dashboard shows red status
+- `/health/consistency` returns HTTP 503
+
+**Diagnosis:**
+```bash
+# Check aggregate health
+curl -s http://localhost:8088/health/consistency | jq '.'
+
+# Detailed per-crate report
+curl -s "http://localhost:8088/api/consistency?detail=full" | jq '.'
+
+# Check a specific crate
+curl -s "http://localhost:8088/api/consistency?crate=my_crate&detail=full" | jq '.'
+```
+
+**Common inconsistency patterns:**
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Neo4j count < Postgres count | Graph stage incomplete or failed | Re-run Graph stage |
+| Qdrant count < Postgres count | Embed stage incomplete or failed | Re-run Embed stage |
+| Neo4j count > Postgres count | Orphaned graph nodes from deleted source | Re-ingest the crate |
+| Qdrant count > Postgres count | Orphaned embeddings from deleted source | Re-ingest the crate |
+
+**Recovery — Selective Stage Re-Run:**
+
+```bash
+# Re-run Graph stage only (skips expand/parse/typecheck/extract)
+bash scripts/ingest.sh --from-stage graph /path/to/crate
+
+# Re-run Embed stage only (skips everything up to embedding)
+bash scripts/ingest.sh --from-stage embed /path/to/crate
+
+# Re-run Graph + Embed stages
+bash scripts/ingest.sh --from-stage graph /path/to/crate
+```
+
+**Recovery — Full Re-Ingestion:**
+
+```bash
+# Nuclear option: re-ingest from scratch (safe — idempotent writes)
+bash scripts/ingest.sh /path/to/crate
+```
+
+**Verification after recovery:**
+
+```bash
+# Confirm consistency is restored
+curl -s http://localhost:8088/health/consistency | jq '.status'
+# Expected: "healthy"
+
+# Check detailed counts match
+curl -s "http://localhost:8088/api/consistency?crate=my_crate" | jq '.store_counts'
+# All three counts should match
+```
+
+**Monitoring:**
+- Grafana dashboard: `http://localhost:3000/d/rustbrain-consistency`
+- Prometheus alerts: `http://localhost:9090/alerts`
+- The blackbox exporter probes `/health/consistency` every 15 seconds
+
+### 13. Cross-Workspace Leak Alert
+
+**Symptoms:**
+- Prometheus alert `CrossWorkspaceLeakDetected` fires (severity: critical)
+- Prometheus alert `OrphanNodesDetected` fires (severity: warning)
+- Grafana "Workspace Isolation" dashboard shows non-zero leak counts
+
+**Diagnosis:**
+```bash
+# Check leak metrics directly
+curl -s http://localhost:8088/metrics | grep rustbrain_workspace_leak
+
+# Run the detection query manually against Neo4j
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) WITH labels(n) AS labels WHERE size([l IN labels WHERE l STARTS WITH 'Workspace_']) <> 1 RETURN labels, count(*) AS count"
+
+# Find specific contaminated nodes (multi-workspace labels)
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) WHERE size([l IN labels(n) WHERE l STARTS WITH 'Workspace_']) > 1 RETURN id(n), labels(n), properties(n) LIMIT 50"
+
+# Find orphan nodes (zero workspace labels)
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) WHERE size([l IN labels(n) WHERE l STARTS WITH 'Workspace_']) = 0 RETURN id(n), labels(n), properties(n) LIMIT 50"
+
+# Correlate with audit logs (search for workspace_id in structured logs)
+docker logs rustbrain-api 2>&1 | grep -i "workspace_id" | tail -100
+```
+
+**Containment steps:**
+
+1. **Disable the affected workspace** to prevent further contamination:
+   ```bash
+   curl -X PATCH http://localhost:8088/api/workspaces/{workspace_id} \
+     -H 'Content-Type: application/json' -d '{"status": "suspended"}'
+   ```
+
+2. **Snapshot data before investigation:**
+   ```bash
+   docker exec rustbrain-neo4j neo4j-admin database dump neo4j --to-path=/backup/
+   docker exec rustbrain-postgres pg_dump -U rustbrain rustbrain > /tmp/pre-investigation.sql
+   ```
+
+3. **Investigate the middleware path** — review audit logs for the affected workspace_id to trace which API endpoint bypassed workspace isolation. Common paths:
+   - Direct Neo4j bolt connection bypassing API middleware
+   - Batch ingestion writing to wrong workspace label
+   - Template query missing workspace label filter
+
+4. **Remediate contaminated nodes:**
+   ```cypher
+   MATCH (n:Workspace_X:Workspace_Y) WHERE id(n) = <node_id>
+   REMOVE n:Workspace_Y
+   ```
+
+5. **Label orphan nodes** if they belong to a known workspace:
+   ```cypher
+   MATCH (n) WHERE id(n) = <node_id>
+   SET n:Workspace_<correct_id>
+   ```
+
+6. **Verify remediation:**
+   ```bash
+   curl -s http://localhost:8088/api/audit/leak-check | jq '.'
+   ```
+
+**Pre-migration baseline:**
+
+Before Phase 3 ships, all existing Neo4j nodes have zero workspace labels (they pre-date workspace isolation). The leak detection job establishes a baseline count of these "legacy orphans" so the `OrphanNodesDetected` alert only fires for *new* orphans.
+
+The baseline is stored as a Prometheus metric `rustbrain_workspace_leak_baseline_orphan_nodes`. To update it after migration:
+```bash
+curl -X POST http://localhost:8088/api/audit/baseline/recalculate
+```
+
+### 14. Docker Resource Leak Detection
+
+**Symptoms:**
+- Prometheus alert `RustbrainOrphanVolumes` fires (severity: warning)
+- Prometheus alert `RustbrainOrphanContainers` fires (severity: warning)
+- Prometheus alert `RustbrainLeakDetectionStale` fires (leak detector not running)
+- `docker volume ls` shows volumes not in the workspaces table
+
+**Diagnosis:**
+
+```bash
+# Run the leak detector in dry-run mode
+./scripts/leak-detector.sh
+
+# Check leak metrics
+curl -s http://localhost:8090/metrics | grep rustbrain_leak
+
+# List all workspace volumes
+docker volume ls --filter label=rustbrain.workspace=true
+
+# List tracked volumes in Postgres
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT volume_name, status FROM workspaces WHERE volume_name IS NOT NULL;"
+
+# List all execution containers
+docker ps -a --filter "name=rustbrain-exec-"
+
+# List tracked containers in Postgres
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT container_id, status FROM executions WHERE container_id IS NOT NULL;"
+
+# Query workspace audit log for cleanup failures
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT * FROM workspace_audit_log WHERE operation IN ('volume_remove_failed','container_remove_failed','cleanup_failed') ORDER BY created_at DESC LIMIT 20;"
+```
+
+**Containment steps:**
+
+1. **Identify orphans** — compare Docker resources against Postgres:
+   ```bash
+   ./scripts/leak-detector.sh --dry-run
+   ```
+
+2. **Investigate specific volume** — check what workspace it belonged to:
+   ```bash
+   docker volume inspect rustbrain-ws-XXXXXXXXXXXX
+   docker exec rustbrain-postgres psql -U rustbrain -c \
+     "SELECT id, status, created_at FROM workspaces WHERE volume_name = 'rustbrain-ws-XXXXXXXXXXXX';"
+   ```
+
+3. **Remove orphans** — only after confirming they're truly orphaned:
+   ```bash
+   ./scripts/leak-detector.sh --cleanup
+   ```
+
+4. **Or set automatic cleanup** via environment:
+   ```bash
+   # In .env
+   LEAK_DETECTION_DRY_RUN=false
+   ```
+
+5. **Verify cleanup:**
+   ```bash
+   ./scripts/leak-detector.sh --dry-run
+   ```
+
+**Manual single-resource removal:**
+
+```bash
+# Remove a specific orphaned volume
+docker volume rm rustbrain-ws-XXXXXXXXXXXX
+
+# Remove a specific orphaned container
+docker rm -f <container_id>
+
+# Stop and remove all rustbrain-exec containers
+docker ps -a --filter "name=rustbrain-exec-" -q | xargs -r docker rm -f
+```
+
+**Scheduling the leak detector:**
+
+The leak detector runs inside the audit service (Rust) which queries Docker and Postgres automatically at `AUDIT_INTERVAL_SECS` intervals. The shell script `scripts/leak-detector.sh` is available as a standalone operational tool.
+
+To run via cron on the host (complementary to the audit service):
+```bash
+# Every 10 minutes, write metrics for node_exporter textfile collector
+*/10 * * * * /path/to/rust-brain/scripts/leak-detector.sh --metrics-only
+```
+
+**Audit log retention:**
+
+Workspace audit log entries are automatically pruned after `AUDIT_LOG_RETENTION_DAYS` (default: 90). To manually prune:
+```bash
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "DELETE FROM workspace_audit_log WHERE created_at < now() - interval '90 days';"
+```
+
+### 15. Cross-Workspace Relationship and Label Mismatch Alert
+
+**Symptoms:**
+- Prometheus alert `CrossWorkspaceRelationshipDetected` fires (severity: critical)
+- Prometheus alert `LabelMismatchDetected` fires (severity: warning)
+- Grafana "Workspace Isolation" dashboard shows non-zero cross-workspace edge or mismatch counts
+- Audit service logs show `ALERT: N cross-workspace relationships detected` or `ALERT: N label-context mismatches detected`
+
+**Diagnosis:**
+
+```bash
+# Check cross-workspace metrics
+curl -s http://localhost:8090/metrics | grep -E 'rustbrain_workspace_leak_cross_workspace|rustbrain_workspace_leak_label_mismatch'
+
+# Find specific cross-workspace relationships
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (src)-[r]->(tgt) WITH src, tgt, type(r) AS rel_type, [l IN labels(src) WHERE l STARTS WITH 'Workspace_'][0] AS src_ws, [l IN labels(tgt) WHERE l STARTS WITH 'Workspace_'][0] AS tgt_ws WHERE src_ws IS NOT NULL AND tgt_ws IS NOT NULL AND src_ws <> tgt_ws RETURN src.fqn, src_ws, tgt.fqn, tgt_ws, rel_type LIMIT 50"
+
+# Find label-context mismatches (nodes whose workspace label differs from neighbors)
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n)-[r]-(neighbor) WITH n, [l IN labels(n) WHERE l STARTS WITH 'Workspace_'][0] AS node_ws, neighbor, [l IN labels(neighbor) WHERE l STARTS WITH 'Workspace_'][0] AS nbr_ws WHERE node_ws IS NOT NULL AND nbr_ws IS NOT NULL AND node_ws <> nbr_ws RETURN n.fqn, node_ws, nbr_ws, count(neighbor) AS mismatch_cnt ORDER BY mismatch_cnt DESC LIMIT 50"
+
+# Query audit log for recorded discrepancies
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT workspace_id, operation, detail, created_at FROM workspace_audit_log WHERE operation IN ('cross_workspace_relationship', 'label_mismatch') ORDER BY created_at DESC LIMIT 20;"
+```
+
+**Containment steps:**
+
+1. **Identify the affected workspaces** from the alert detail or audit log entries.
+
+2. **Block further cross-workspace writes** by suspending the affected workspace:
+   ```bash
+   curl -X PATCH http://localhost:8088/api/workspaces/{workspace_id} \
+     -H 'Content-Type: application/json' -d '{"status": "suspended"}'
+   ```
+
+3. **For cross-workspace relationships** — delete the offending edges:
+   ```cypher
+   MATCH (src:Workspace_X)-[r]->(tgt:Workspace_Y)
+   WHERE src.fqn = $source_fqn AND tgt.fqn = $target_fqn
+   DELETE r
+   ```
+
+4. **For label mismatches** — relabel the node to the correct workspace:
+   ```cypher
+   MATCH (n:Workspace_WRONG {fqn: $fqn})
+   REMOVE n:Workspace_WRONG
+   SET n:Workspace_CORRECT
+   ```
+
+5. **Verify remediation:**
+   ```bash
+   curl -s http://localhost:8090/metrics | grep rustbrain_workspace_leak
+   # All cross_workspace_relationships and label_mismatches should be 0
+   ```
+
+6. **Re-enable the workspace** once confirmed clean:
+   ```bash
+   curl -X PATCH http://localhost:8088/api/workspaces/{workspace_id} \
+     -H 'Content-Type: application/json' -d '{"status": "active"}'
+   ```
+
+**Common root causes:**
+- Ingestion pipeline bug: `workspace_label` not passed to `NodeBuilder` or `RelationshipBuilder`
+- Direct Neo4j bolt writes bypassing the API middleware
+- Race condition during concurrent ingestion of overlapping crates
+- Stale workspace label after workspace archival and re-creation
+
+**Prevention:**
+- The audit service scans at `AUDIT_INTERVAL_SECS` intervals (default: 600s)
+- Alerts fire within 1-5 minutes of detection
+- All discrepancies are recorded in `workspace_audit_log` for forensic analysis
+
 ## Resetting Data
 
 ### Reset All Data
@@ -481,6 +912,108 @@ docker-compose down -v grafana_data
 docker-compose up -d grafana
 ```
 
+## OpenCode Developer Agent Write Workflow
+
+The developer agent in OpenCode needs write access to create and modify files. A git-based workflow provides isolated write access:
+
+### How It Works
+
+1. On container start, git is configured with `GIT_USER_NAME` and `GIT_USER_EMAIL`
+2. The entrypoint script clones or copies the target repo to `/workspace/target-repo-work` (excluding `target/` and `node_modules/` to avoid build artifact permission issues)
+3. An initial commit is created from the copied source
+4. A feature branch is created (e.g., `opencode/changes-20260408-120000`)
+5. Developer agent works in the writable clone
+6. Changes are committed to the feature branch for review
+
+If the container restarts and the work directory already has commits (persistent volume), setup is skipped and the agent continues from where it left off.
+
+### Required Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TARGET_REPO_URL` | (none) | Optional URL to clone instead of copying from `TARGET_REPO_PATH` |
+| `TARGET_REPO_PATH` | (none) | Host path to the mounted repo (read-only source) |
+| `OPENCODE_WORK_DIR` | `/workspace/target-repo-work` | Writable directory inside container |
+| `GIT_USER_NAME` | `OpenCode Developer` | Git author name for commits |
+| `GIT_USER_EMAIL` | `opencode@rustbrain.local` | Git author email for commits |
+| `FEATURE_BRANCH_PREFIX` | `opencode` | Prefix for feature branches |
+| `GH_TOKEN` | (none) | GitHub token for private repos and pushing |
+
+### Configuration in .env
+
+```bash
+# Source repo (mounted read-only)
+TARGET_REPO_PATH=/home/user/projects/hyperswitch
+
+# Or clone from URL (overrides TARGET_REPO_PATH)
+TARGET_REPO_URL=https://github.com/juspay/hyperswitch
+
+# Git identity
+GIT_USER_NAME="Your Name"
+GIT_USER_EMAIL="your@email.com"
+
+# For private repos or pushing changes
+GH_TOKEN=ghp_xxxx
+```
+
+### Verifying Write Access
+
+```bash
+# Check the work directory was created
+docker exec rustbrain-opencode ls -la /workspace/target-repo-work
+
+# Verify git config
+docker exec rustbrain-opencode git config user.name
+docker exec rustbrain-opencode git config user.email
+
+# Check the feature branch
+docker exec rustbrain-opencode git branch
+```
+
+### Troubleshooting
+
+**Issue: Work directory is empty**
+
+The target repo must be available either via `TARGET_REPO_URL` or mounted at `TARGET_REPO_PATH`:
+
+```bash
+# Check if source repo is mounted
+docker exec rustbrain-opencode ls -la /workspace/target-repo
+
+# Check logs for clone/copy errors
+docker logs rustbrain-opencode 2>&1 | head -50
+```
+
+**Issue: Git push fails**
+
+Ensure `GH_TOKEN` is set with repo write permissions:
+
+```bash
+# Test token access
+curl -H "Authorization: token $GH_TOKEN" https://api.github.com/user
+
+# Check if token is passed to container
+docker exec rustbrain-opencode env | grep GH_TOKEN
+```
+
+**Issue: Feature branch not created**
+
+Check entrypoint script execution:
+
+```bash
+# View startup logs
+docker logs rustbrain-opencode 2>&1 | grep -A5 "feature branch"
+```
+
+### Resetting OpenCode Work Directory
+
+To wipe the work directory and start fresh:
+
+```bash
+docker compose down -v opencode_work
+docker compose up -d opencode
+```
+
 ## Port Reference Table
 
 | Service | Port | Protocol | Purpose |
@@ -495,6 +1028,7 @@ docker-compose up -d grafana
 | Prometheus | 9090 | HTTP | Metrics & UI |
 | Grafana | 3000 | HTTP | Dashboards |
 | Node Exporter | 9100 | HTTP | Host metrics |
+| Blackbox Exporter | 9115 | HTTP | HTTP probe service |
 | Tool API | 8088 | HTTP | REST API + Playground |
 | MCP SSE | 3001 | HTTP/SSE | MCP streaming transport |
 | OpenCode | 4096 | HTTP | IDE integration |
@@ -575,6 +1109,120 @@ docker network inspect rustbrain_rustbrain-net
 
 # Rebuild container (after config change)
 docker-compose up -d --force-recreate neo4j
+```
+
+## Qdrant Workspace Migration
+
+One-time migration of Qdrant data from global collections to per-workspace collections, as defined in [ADR-005](./adr/ADR-005-multi-tenancy-physical-isolation.md).
+
+### Overview
+
+Migrates data from 3 global collections (`code_embeddings`, `doc_embeddings`, `crate_docs`) into per-workspace collections following the naming convention `ws_<12hex>_<collection_type>`. The `external_docs` collection stays global (not workspace-scoped per ADR-005).
+
+### Prerequisites
+
+- Qdrant running and healthy on `QDRANT_HOST` (default: `http://localhost:6333`)
+- Postgres running with the `workspaces` table populated
+- `curl` and `jq` available on the host
+- `psql` available (or run from inside the Postgres container)
+
+### Running the Migration
+
+```bash
+# Dry run — preview what would happen without writing anything
+./scripts/migrate-qdrant-workspace.sh --dry-run
+
+# Full migration (does NOT delete source collections)
+./scripts/migrate-qdrant-workspace.sh
+
+# Migration with source collection deletion after verification
+./scripts/migrate-qdrant-workspace.sh --delete-source
+
+# Custom batch size (default: 500) for large collections
+./scripts/migrate-qdrant-workspace.sh --batch-size 1000
+```
+
+### What the Script Does
+
+1. **Build crate→workspace mapping** — queries Postgres `workspaces` table and each workspace schema's `source_files` to build a `crate_name → workspace_schema_name` routing table
+2. **Create per-workspace collections** — for each workspace that has data, creates `ws_<12hex>_code_embeddings`, `ws_<12hex>_doc_embeddings`, `ws_<12hex>_crate_docs` with 2560-dim cosine similarity
+3. **Scroll + upsert data** — reads points from global collections in batches, adds `workspace_id` to payload, upserts into the correct workspace collection
+4. **Orphan handling** — points with no workspace match go to `ws_default_<collection_type>` collections
+5. **Verification** — compares source and target point counts per collection
+6. **Optional cleanup** — with `--delete-source`, removes global collections after successful verification
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_HOST` | `http://localhost:6333` | Qdrant REST API endpoint |
+| `DATABASE_URL` | (required) | Postgres connection string for workspace mapping |
+| `QDRANT_DEFAULT_WORKSPACE_ID` | `default` | Workspace ID for orphan data with no mapping |
+| `EMBEDDING_DIMENSIONS` | `2560` | Vector dimensions for new collections |
+
+### Post-Migration Verification
+
+```bash
+# List all collections — should see ws_* collections alongside global ones
+curl -s http://localhost:6333/collections | jq '.result.collections[].name'
+
+# Check point count in a workspace collection
+curl -s http://localhost:6333/collections/ws_550e8400e29b_code_embeddings | jq '.result.points_count'
+
+# Verify workspace_id is present in migrated points
+curl -s -X POST http://localhost:6333/collections/ws_550e8400e29b_code_embeddings/points/scroll \
+  -H 'Content-Type: application/json' \
+  -d '{"limit": 1, "with_payload": true}' | jq '.result.points[0].payload.workspace_id'
+```
+
+### Rollback
+
+The migration is additive — it creates new collections without modifying global ones. To rollback:
+
+1. Delete the per-workspace collections:
+   ```bash
+   # List ws_* collections
+   curl -s http://localhost:6333/collections | jq -r '.result.collections[].name' | grep '^ws_'
+
+   # Delete each one
+   for col in $(curl -s http://localhost:6333/collections | jq -r '.result.collections[].name' | grep '^ws_'); do
+     curl -X DELETE "http://localhost:6333/collections/$col"
+   done
+   ```
+
+2. The global collections remain untouched unless `--delete-source` was used.
+
+### Troubleshooting
+
+**Issue: "No workspaces found in Postgres"**
+
+The migration requires workspace records in the `workspaces` table. Create workspaces first via the API:
+```bash
+curl -X POST http://localhost:8088/workspaces \
+  -H 'Content-Type: application/json' \
+  -d '{"github_url": "https://github.com/org/repo"}'
+```
+
+**Issue: "Qdrant health check failed"**
+
+Verify Qdrant is running and `QDRANT_HOST` is correct:
+```bash
+curl -s http://localhost:6333/healthz
+```
+
+**Issue: "DATABASE_URL not set"**
+
+Set the connection string for the Postgres instance containing the `workspaces` table:
+```bash
+export DATABASE_URL=postgresql://rustbrain:password@localhost:5432/rustbrain
+```
+
+**Issue: Large collection migration is slow**
+
+Increase batch size and check Qdrant resource usage:
+```bash
+./scripts/migrate-qdrant-workspace.sh --batch-size 2000
+docker stats rustbrain-qdrant
 ```
 
 ## Environment Variables

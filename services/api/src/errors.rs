@@ -61,6 +61,8 @@ pub enum AppError {
     BadRequest(String),
     /// Unclassified server error (HTTP 500)
     Internal(String),
+    /// Operation conflicts with existing resource state (HTTP 409)
+    Conflict(String),
 }
 
 impl fmt::Display for AppError {
@@ -74,6 +76,7 @@ impl fmt::Display for AppError {
             AppError::NotFound(msg) => write!(f, "Not found: {}", msg),
             AppError::BadRequest(msg) => write!(f, "Bad request: {}", msg),
             AppError::Internal(msg) => write!(f, "Internal error: {}", msg),
+            AppError::Conflict(msg) => write!(f, "Conflict: {}", msg),
         }
     }
 }
@@ -89,6 +92,7 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, "NOT_FOUND"),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, "BAD_REQUEST"),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, "INTERNAL_ERROR"),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg, "CONFLICT"),
         };
 
         let body = Json(ApiError {
@@ -134,6 +138,10 @@ mod tests {
             AppError::Internal("panic".to_string()).to_string(),
             "Internal error: panic"
         );
+        assert_eq!(
+            AppError::Conflict("duplicate".to_string()).to_string(),
+            "Conflict: duplicate"
+        );
     }
 
     #[test]
@@ -141,11 +149,27 @@ mod tests {
         use axum::http::StatusCode;
 
         let cases = vec![
-            (AppError::Database("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
-            (AppError::Neo4j("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
-            (AppError::Qdrant("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
-            (AppError::Ollama("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
-            (AppError::Internal("err".into()), StatusCode::INTERNAL_SERVER_ERROR),
+            (
+                AppError::Database("err".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                AppError::Neo4j("err".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                AppError::Qdrant("err".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                AppError::Ollama("err".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                AppError::Internal("err".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (AppError::Conflict("err".into()), StatusCode::CONFLICT),
             (AppError::NotFound("err".into()), StatusCode::NOT_FOUND),
             (AppError::BadRequest("err".into()), StatusCode::BAD_REQUEST),
         ];

@@ -4,6 +4,9 @@ members = [
     "crates/rustbrain-common",
     "services/ingestion",
     "services/api",
+    "services/audit",
+    "services/validator",
+    "services/benchmarker",
 ]
 exclude = [
     "target-repo",

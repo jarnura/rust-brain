@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /home/jarnura/projects/rust-brain/docs/agent-prompts)",
+      "Bash(mkdir -p /home/jarnura/projects/rust-brain/docs/handoff)",
+      "Read(//workspace/**)",
+      "Bash(pip3 list:*)",
+      "Bash(pip3 install:*)",
+      "Bash(/tmp/rustbrain-venv/bin/pip install:*)",
+      "Bash(DATABASE_URL=\"postgresql://rustbrain:rustbrain_dev_2024@localhost:5432/rustbrain\" QDRANT_URL=\"http://localhost:6333\" OLLAMA_URL=\"http://localhost:11434\" /tmp/rustbrain-venv/bin/python3 /home/jarnura/projects/rust-brain/scripts/populate-crate-docs.py)",
+      "Read(//home/jarnura/projects/hyperswitch/crates/common_utils/**)",
+      "Read(//home/jarnura/projects/hyperswitch/**)",
+      "Bash(./scripts/clean-ingestion.sh)",
+      "Bash(./scripts/ingest.sh ~/projects/hyperswitch --memory-budget 32GB)",
+      "Bash(nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader)",
+      "Read(//proc/driver/nvidia/**)",
+      "Bash(PGPASSWORD=rustbrain psql -h localhost -U rustbrain -d rustbrain -t -c \"SELECT count\\(*\\) FROM extracted_items;\")"
+    ],
+    "additionalDirectories": [
+      "/home/jarnura/projects/rust-brain/.opencode/agents",
+      "/home/jarnura/.claude",
+      "/tmp"
+    ]
+  }
+}

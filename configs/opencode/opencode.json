@@ -3,21 +3,19 @@
   "model": "juspay-grid/glm-latest",
   "small_model": "juspay-grid/glm-latest",
   "default_agent": "orchestrator",
-  
   "mcp": {
     "rustbrain": {
       "type": "remote",
       "url": "http://mcp-sse:3001/sse"
     }
   },
-  
   "provider": {
     "juspay-grid": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "LiteLLM Proxy",
       "options": {
         "baseURL": "https://grid.ai.juspay.net",
-        "apiKey": "sk-xCWCWvNq6kno_3KSEIU8lQ"
+        "apiKey": "${LITELLM_API_KEY}"
       },
       "models": {
         "glm-latest": {
@@ -27,26 +25,44 @@
             "output": 16000
           },
           "modalities": {
-            "input": ["text"],
-            "output": ["text"]
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "kimi-latest": {
+          "name": "Kimi Latest",
+          "limit": {
+            "context": 128000,
+            "output": 16000
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
           }
         }
       }
     }
   },
-  
   "instructions": [
-    "You are a Rust code intelligence assistant powered by rust-brain.",
-    "You have MCP tools: search_code, get_function, get_callers, get_trait_impls, find_type_usages, get_module_tree, query_graph.",
-    "Use them proactively to understand and navigate Rust codebases."
+    "You are part of a multi-agent SDLC automation system for Rust codebases, powered by rust-brain.",
+    "rust-brain MCP tools provide code intelligence: search_code, get_function, get_callers, get_trait_impls, find_type_usages, get_module_tree, query_graph, find_calls_with_type, find_trait_impls_for_type, pg_query, context_store, status_check, task_update.",
+    "Use MCP tools for code intelligence queries. Use bash for filesystem, compiler, and git operations.",
+    "Follow your agent-specific system prompt strictly. Never exceed your tool budgets."
   ],
-  
   "agent": {
     "orchestrator": {
-      "description": "Master coordinator. Plans work, routes to researcher and explorer, synthesizes results into final output. Never edits files.",
+      "description": "Control plane. Classifies intent (CLASS A-E), decomposes into task DAGs, dispatches to specialist agents, tracks artifacts via context_store. Never writes code or reads source files.",
       "mode": "primary",
-      "model": "juspay-grid/glm-latest",
-      "prompt": "{file:./.opencode/prompts/orchestrator.txt}",
+      "model": "juspay-grid/kimi-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/orchestrator.md}",
       "steps": 2000,
       "temperature": 0.3,
       "permission": {
@@ -54,30 +70,73 @@
         "bash": {
           "*": "deny",
           "git status": "allow",
-          "git log --oneline*": "allow",
-          "git diff --stat*": "allow",
-          "ls *": "allow",
-          "cat *": "allow"
+          "git log --oneline*": "allow"
         },
         "webfetch": "deny",
         "task": {
           "*": "allow"
         }
       },
-      "tools": {}
+      "tools": {
+        "mcp_rustbrain_context_store": true,
+        "mcp_rustbrain_status_check": true,
+        "mcp_rustbrain_task_update": true
+      }
     },
-    
-    "researcher": {
-      "description": "Knowledge retrieval specialist. Queries vector DB, graph DB via MCP. Returns structured findings with sources and confidence.",
+    "research": {
+      "description": "Knowledge retrieval specialist. Searches embedded docs, ecosystem resources, external references. Produces ResearchBrief with credibility-tagged findings. Never reads source code.",
       "mode": "subagent",
       "model": "juspay-grid/glm-latest",
-      "prompt": "{file:./.opencode/agents/researcher.md}",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/research.md}",
       "steps": 2000,
       "temperature": 0.2,
       "permission": {
         "edit": "deny",
         "bash": {
           "*": "deny"
+        },
+        "webfetch": "allow",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_get_function": true,
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "explorer": {
+      "description": "Codebase cartographer. Navigates code via graph queries, indexed lookups, semantic search, and targeted file reads. Produces CodeMap. Read-only \u2014 never modifies files.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/explorer.md}",
+      "steps": 1000,
+      "temperature": 0.1,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "ls *": "allow",
+          "ls": "allow",
+          "find *": "allow",
+          "fd *": "allow",
+          "wc *": "allow",
+          "tree *": "allow",
+          "tree": "allow",
+          "stat *": "allow",
+          "cargo metadata*": "allow",
+          "cargo tree*": "allow",
+          "git log*": "allow",
+          "git diff*": "allow",
+          "git blame*": "allow"
         },
         "webfetch": "deny",
         "task": {
@@ -91,41 +150,90 @@
         "mcp_rustbrain_get_trait_impls": true,
         "mcp_rustbrain_find_type_usages": true,
         "mcp_rustbrain_get_module_tree": true,
-        "mcp_rustbrain_query_graph": true
+        "mcp_rustbrain_find_calls_with_type": true,
+        "mcp_rustbrain_find_trait_impls_for_type": true,
+        "mcp_rustbrain_context_store": true
       }
     },
-    
-    "explorer": {
-      "description": "Codebase and filesystem navigator. Reads files, runs safe read-only commands, explores project structure.",
+    "planner": {
+      "description": "Architect. Translates ResearchBrief + CodeMap into ordered, dependency-aware ImplementationPlan. Read-only \u2014 specifies changes but never implements them.",
       "mode": "subagent",
       "model": "juspay-grid/glm-latest",
-      "prompt": "{file:./.opencode/agents/explorer.md}",
-      "steps": 500,
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/planner.md}",
+      "steps": 1500,
+      "temperature": 0.2,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_get_callers": true,
+        "mcp_rustbrain_get_trait_impls": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "developer": {
+      "description": "Senior Rust developer. Executes ImplementationPlan via write-check-fix loop. The only agent that writes production code. Compiler is the oracle.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/developer.md}",
+      "steps": 2000,
+      "temperature": 0.1,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "ls *": "allow",
+          "cargo check*": "allow",
+          "cargo clippy*": "allow",
+          "git status": "allow",
+          "git diff*": "allow",
+          "git add*": "allow",
+          "git commit*": "allow",
+          "git log*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_get_function": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "debugger": {
+      "description": "Forensic investigator. Diagnoses compilation errors, test failures, runtime panics by backward tracing through call chains. Produces DiagnosticReport. Never writes code.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/debugger.md}",
+      "steps": 1500,
       "temperature": 0.1,
       "permission": {
         "edit": "deny",
         "bash": {
           "*": "deny",
-          "cd *": "allow",
-          "ls *": "allow",
-          "ls": "allow",
-          "find *": "allow",
-          "fd *": "allow",
           "cat *": "allow",
           "head *": "allow",
-          "tail *": "allow",
           "grep *": "allow",
           "rg *": "allow",
-          "wc *": "allow",
-          "tree *": "allow",
-          "tree": "allow",
-          "stat *": "allow",
-          "git status": "allow",
-          "git log *": "allow",
-          "git diff *": "allow",
-          "git branch*": "allow",
-          "cargo metadata*": "allow",
-          "cargo tree*": "allow"
+          "cargo check*": "allow",
+          "cargo test*": "allow"
         },
         "webfetch": "deny",
         "task": {
@@ -136,33 +244,228 @@
         "mcp_rustbrain_search_code": true,
         "mcp_rustbrain_get_function": true,
         "mcp_rustbrain_get_callers": true,
-        "mcp_rustbrain_get_module_tree": true
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "reviewer": {
+      "description": "Quality gate. Compares ChangeSet against ImplementationPlan across 6 dimensions. Verifies downstream impact via Neo4j caller analysis. Binary approve/reject verdict.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/reviewer.md}",
+      "steps": 1500,
+      "temperature": 0.2,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "cargo clippy*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_get_callers": true,
+        "mcp_rustbrain_get_trait_impls": true,
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "testing": {
+      "description": "Test engineer. Runs regression suite first, generates new tests for coverage gaps, produces TestReport. Writes test files only \u2014 never modifies production code.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/testing.md}",
+      "steps": 2000,
+      "temperature": 0.1,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "cargo test*": "allow",
+          "cargo check*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "deployment": {
+      "description": "Release engineer. Determines semver, updates Cargo.toml in workspace order, generates changelog, creates git tags. Mandatory human gate before push.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/deployment.md}",
+      "steps": 1500,
+      "temperature": 0.2,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "cargo build*": "allow",
+          "cargo check*": "allow",
+          "git status": "allow",
+          "git log*": "allow",
+          "git diff*": "allow",
+          "git add*": "allow",
+          "git commit*": "allow",
+          "git tag*": "allow",
+          "git push*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "documentation": {
+      "description": "Technical writer. Adds rustdoc comments, module guides, architecture docs, migration guides. Writes doc comments and .md files only \u2014 never modifies code logic.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/documentation.md}",
+      "steps": 1500,
+      "temperature": 0.2,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "grep *": "allow",
+          "cargo check*": "allow",
+          "cargo doc*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_query_graph": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "blog_writer": {
+      "description": "Technical writer for external publication. Transforms engineering artifacts into blog posts. Verifies all code examples against actual codebase via pg_query.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/blog_writer.md}",
+      "steps": 1500,
+      "temperature": 0.4,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "grep *": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
+      }
+    },
+    "demo_creator": {
+      "description": "Developer advocate. Creates minimal, runnable code examples. Only communication-phase agent with compiler and runtime access.",
+      "mode": "subagent",
+      "model": "juspay-grid/glm-latest",
+      "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/demo_creator.md}",
+      "steps": 1500,
+      "temperature": 0.2,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "cat *": "allow",
+          "head *": "allow",
+          "grep *": "allow",
+          "cargo check*": "allow",
+          "cargo run*": "allow"
+        },
+        "webfetch": "deny",
+        "task": {
+          "*": "deny"
+        }
+      },
+      "tools": {
+        "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_pg_query": true,
+        "mcp_rustbrain_context_store": true
       }
     }
   },
-  
   "command": {
     "research": {
-      "description": "Ask the researcher agent a specific knowledge question",
-      "template": "Research the following topic deeply using all available knowledge sources:\n\n$ARGUMENTS\n\nReturn structured findings with sources, confidence, and actionable insights.",
-      "agent": "researcher"
+      "description": "Research a topic using embedded docs and external sources",
+      "template": "Research the following topic deeply using all available knowledge sources:\n\n$ARGUMENTS\n\nReturn a structured ResearchBrief with credibility-tagged findings, synthesis, and open questions.",
+      "agent": "research"
     },
     "explore": {
       "description": "Explore the codebase for a specific component or pattern",
-      "template": "Explore the codebase to understand:\n\n$ARGUMENTS\n\nProvide a structural map, key files, entry points, and how the pieces connect.",
+      "template": "Explore the codebase to understand:\n\n$ARGUMENTS\n\nProduce a CodeMap with symbols, relationships, module boundaries, and a context summary.",
       "agent": "explorer"
     },
     "investigate": {
-      "description": "Full investigation: orchestrator runs researcher + explorer in parallel then synthesizes",
-      "template": "Investigate the following thoroughly:\n\n$ARGUMENTS\n\nRun parallel research (knowledge bases) and exploration (codebase) then synthesize a complete, accurate answer.",
+      "description": "CLASS A: Full understanding \u2014 orchestrator runs research + explorer in parallel",
+      "template": "Investigate the following thoroughly:\n\n$ARGUMENTS\n\nClassify as CLASS A. Run Research and Explorer in parallel, merge results into a unified answer.",
       "agent": "orchestrator"
+    },
+    "plan": {
+      "description": "CLASS B: Understand + plan \u2014 produces an ImplementationPlan for review",
+      "template": "Plan the implementation for:\n\n$ARGUMENTS\n\nClassify as CLASS B. Run understand phase, then produce an ImplementationPlan with ordered changes, risk matrix, and test plan. Present for approval before any mutations.",
+      "agent": "orchestrator"
+    },
+    "build": {
+      "description": "CLASS C: Understand + plan + build \u2014 requires human confirmation before writes",
+      "template": "Implement the following:\n\n$ARGUMENTS\n\nClassify as CLASS C. Run understand \u2192 plan \u2192 build cycle with Developer \u21c4 Reviewer loop. Request human confirmation before filesystem writes.",
+      "agent": "orchestrator"
+    },
+    "ship": {
+      "description": "CLASS D: Full pipeline \u2014 build + test + deploy with human gates",
+      "template": "Ship the following:\n\n$ARGUMENTS\n\nClassify as CLASS D. Run full pipeline: understand \u2192 plan \u2192 build \u2192 test \u2192 deploy. Requires human confirmation at build and deploy stages.",
+      "agent": "orchestrator"
+    },
+    "debug": {
+      "description": "Diagnose a specific error or test failure",
+      "template": "Diagnose the following error:\n\n$ARGUMENTS\n\nTrace the error backward through the call chain. Identify root cause vs symptom. Route the fix to the correct agent.",
+      "agent": "debugger"
     }
   },
-  
   "compaction": {
     "auto": true,
     "prune": true,
     "reserved": 12000
   }
 }
-

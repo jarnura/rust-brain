@@ -15,7 +15,7 @@
 
 mod resolver;
 
-pub use resolver::{TypeResolver, TraitImplementation, CallSite, TypeArg, ResolutionQuality};
+pub use resolver::{CallSite, ResolutionQuality, TraitImplementation, TypeArg, TypeResolver};
 
 use anyhow::Result;
 use sqlx::{PgPool, Row};
@@ -25,10 +25,10 @@ use sqlx::{PgPool, Row};
 pub struct TypeResolutionResult {
     /// All discovered trait implementations
     pub trait_impls: Vec<TraitImplementation>,
-    
+
     /// All discovered call sites with concrete type info
     pub call_sites: Vec<CallSite>,
-    
+
     /// Any errors encountered during resolution
     pub errors: Vec<String>,
 }
@@ -57,7 +57,7 @@ impl TypeResolutionService {
             resolver: TypeResolver::new(),
         }
     }
-    
+
     /// Analyze expanded source code for type information
     ///
     /// This method:
@@ -81,14 +81,15 @@ impl TypeResolutionService {
             expanded_source,
             caller_fqns,
         );
-        
+
         // Store results in database
-        self.store_trait_implementations(&result.trait_impls).await?;
+        self.store_trait_implementations(&result.trait_impls)
+            .await?;
         self.store_call_sites(&result.call_sites).await?;
-        
+
         Ok(result)
     }
-    
+
     /// Analyze expanded source using heuristics only (for large files)
     ///
     /// This skips syn-based parsing and uses regex heuristics directly.
@@ -109,22 +110,20 @@ impl TypeResolutionService {
             expanded_source,
             caller_fqns,
         );
-        
+
         // Store results in database
-        self.store_trait_implementations(&result.trait_impls).await?;
+        self.store_trait_implementations(&result.trait_impls)
+            .await?;
         self.store_call_sites(&result.call_sites).await?;
-        
+
         Ok(result)
     }
-    
+
     /// Store trait implementations in the database
-    async fn store_trait_implementations(
-        &self,
-        impls: &[TraitImplementation],
-    ) -> Result<()> {
+    async fn store_trait_implementations(&self, impls: &[TraitImplementation]) -> Result<()> {
         for impl_info in impls {
             let generic_params_json = serde_json::to_value(&impl_info.generic_params)?;
-            
+
             sqlx::query(
                 r#"
                 INSERT INTO trait_implementations 
@@ -150,15 +149,15 @@ impl TypeResolutionService {
             .execute(&self.pool)
             .await?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Store call sites in the database
     async fn store_call_sites(&self, sites: &[CallSite]) -> Result<()> {
         for site in sites {
             let type_args_json = serde_json::to_value(&site.concrete_type_args)?;
-            
+
             sqlx::query(
                 r#"
                 INSERT INTO call_sites 
@@ -177,10 +176,10 @@ impl TypeResolutionService {
             .execute(&self.pool)
             .await?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Query for functions with specific type arguments
     ///
     /// Example: "show me parse for String"
@@ -192,7 +191,7 @@ impl TypeResolutionService {
     ) -> Result<Vec<CallSite>> {
         let pattern = format!("%{}%", type_arg);
         let callee_pattern = format!("%::{}", callee_name);
-        
+
         let rows = sqlx::query(
             r#"
             SELECT 
@@ -207,13 +206,13 @@ impl TypeResolutionService {
             WHERE callee_fqn LIKE $1
               AND concrete_type_args::text LIKE $2
             ORDER BY line_number
-            "#
+            "#,
         )
         .bind(&callee_pattern)
         .bind(&pattern)
         .fetch_all(&self.pool)
         .await?;
-        
+
         let mut sites = Vec::new();
         for row in rows {
             let caller_fqn: String = row.get("caller_fqn");
@@ -223,11 +222,11 @@ impl TypeResolutionService {
             let concrete_type_args_json: Option<serde_json::Value> = row.get("concrete_type_args");
             let is_monomorphized: bool = row.get("is_monomorphized");
             let quality_str: Option<String> = row.get("quality");
-            
+
             let type_args: Vec<TypeArg> = concrete_type_args_json
                 .map(|v| serde_json::from_value(v).unwrap_or_default())
                 .unwrap_or_default();
-            
+
             sites.push(CallSite {
                 caller_fqn,
                 callee_fqn,
@@ -235,20 +234,17 @@ impl TypeResolutionService {
                 line_number: line_number as usize,
                 concrete_type_args: type_args,
                 is_monomorphized,
-                quality: ResolutionQuality::from_str(quality_str.as_deref().unwrap_or_default()),
+                quality: ResolutionQuality::parse_str(quality_str.as_deref().unwrap_or_default()),
             });
         }
-        
+
         Ok(sites)
     }
-    
+
     /// Get all trait implementations for a type
-    pub async fn find_impls_for_type(
-        &self,
-        type_name: &str,
-    ) -> Result<Vec<TraitImplementation>> {
+    pub async fn find_impls_for_type(&self, type_name: &str) -> Result<Vec<TraitImplementation>> {
         let pattern = format!("%{}%", type_name);
-        
+
         let rows = sqlx::query(
             r#"
             SELECT 
@@ -262,12 +258,12 @@ impl TypeResolutionService {
             FROM trait_implementations
             WHERE self_type LIKE $1
             ORDER BY trait_fqn
-            "#
+            "#,
         )
         .bind(&pattern)
         .fetch_all(&self.pool)
         .await?;
-        
+
         let mut impls = Vec::new();
         for row in rows {
             let trait_fqn: String = row.get("trait_fqn");
@@ -277,11 +273,11 @@ impl TypeResolutionService {
             let line_number: i32 = row.get("line_number");
             let generic_params_json: Option<serde_json::Value> = row.get("generic_params");
             let quality_str: Option<String> = row.get("quality");
-            
+
             let generic_params: Vec<crate::parsers::GenericParam> = generic_params_json
                 .map(|v| serde_json::from_value(v).unwrap_or_default())
                 .unwrap_or_default();
-            
+
             impls.push(TraitImplementation {
                 trait_fqn,
                 self_type,
@@ -289,10 +285,10 @@ impl TypeResolutionService {
                 file_path,
                 line_number: line_number as usize,
                 generic_params,
-                quality: ResolutionQuality::from_str(quality_str.as_deref().unwrap_or_default()),
+                quality: ResolutionQuality::parse_str(quality_str.as_deref().unwrap_or_default()),
             });
         }
-        
+
         Ok(impls)
     }
 }
@@ -300,19 +296,19 @@ impl TypeResolutionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_resolution_quality_from_str() {
         assert!(matches!(
-            ResolutionQuality::from_str("analyzed"),
+            ResolutionQuality::parse_str("analyzed"),
             ResolutionQuality::Analyzed
         ));
         assert!(matches!(
-            ResolutionQuality::from_str("heuristic"),
+            ResolutionQuality::parse_str("heuristic"),
             ResolutionQuality::Heuristic
         ));
         assert!(matches!(
-            ResolutionQuality::from_str("unknown"),
+            ResolutionQuality::parse_str("unknown"),
             ResolutionQuality::Heuristic
         ));
     }

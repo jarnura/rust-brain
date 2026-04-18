@@ -1,0 +1,18 @@
+---
+# regression-set eval suite
+# Smaller, fast-running set used to catch regressions in CI.
+
+cases:
+  - id: "fix-cypher-injection"
+    repo: "org/rust-brain"
+    pr: 31
+    expected_outcome: pass
+    weight: 2.0
+    tags: [security, regression]
+
+  - id: "reverted-wrong-approach"
+    repo: "org/rust-brain"
+    pr: 22
+    expected_outcome: reject
+    weight: 1.0
+    tags: [regression]

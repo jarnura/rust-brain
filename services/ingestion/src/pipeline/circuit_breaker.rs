@@ -255,7 +255,10 @@ impl CircuitBreaker {
         self.consecutive_failures.store(0, Ordering::Release);
         let mut guard = self.last_failure_time.lock().await;
         *guard = None;
-        info!("Circuit breaker [{}] force-reset to Closed", self.config.name);
+        info!(
+            "Circuit breaker [{}] force-reset to Closed",
+            self.config.name
+        );
     }
 
     /// Snapshot of metrics for observability.
@@ -313,7 +316,11 @@ impl std::fmt::Display for CircuitBreakerMetrics {
         write!(
             f,
             "[{}] state={}, consecutive_failures={}, total_ok={}, total_err={}",
-            self.name, self.state, self.consecutive_failures, self.total_successes, self.total_failures
+            self.name,
+            self.state,
+            self.consecutive_failures,
+            self.total_successes,
+            self.total_failures
         )
     }
 }

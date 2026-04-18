@@ -10,17 +10,17 @@
 //! Postgres keyword search when Ollama is unavailable, instead of returning
 //! a hard error.
 
-use axum::{
-    extract::State,
-    Json,
-};
+use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use super::{default_limit, CalleeInfo, CallerInfo};
 use crate::errors::AppError;
-use crate::neo4j::{get_callers_from_neo4j, get_callees_from_neo4j};
+use crate::extractors::OptionalWorkspaceId;
+use crate::extractors::WorkspaceId;
+use crate::neo4j::WorkspaceGraphClient;
 use crate::state::AppState;
-use super::{CallerInfo, CalleeInfo, default_limit, default_true};
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Request/Response Types
@@ -37,9 +37,22 @@ pub struct SearchSemanticRequest {
     /// Minimum similarity score (0.0–1.0) to include a result
     #[serde(default)]
     pub score_threshold: Option<f32>,
-    /// Restrict results to a specific crate (not yet wired)
+    /// Restrict results to a specific crate
     #[serde(default)]
     pub crate_filter: Option<String>,
+}
+
+/// Request body for `POST /tools/search_docs`.
+#[derive(Debug, Deserialize)]
+pub struct SearchDocsRequest {
+    /// Natural-language search query
+    pub query: String,
+    /// Maximum number of results (default: 10)
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    /// Minimum similarity score (0.0–1.0) to include a result
+    #[serde(default)]
+    pub score_threshold: Option<f32>,
 }
 
 /// Response for `POST /tools/search_semantic`.
@@ -51,6 +64,28 @@ pub struct SearchSemanticResponse {
     pub query: String,
     /// Number of results returned
     pub total: usize,
+}
+
+/// Response for `POST /tools/search_docs`.
+#[derive(Debug, Serialize)]
+pub struct SearchDocsResponse {
+    /// Matching document snippets ranked by similarity
+    pub results: Vec<DocResult>,
+    /// Echo of the original query
+    pub query: String,
+    /// Number of results returned
+    pub total: usize,
+}
+
+/// A single document search hit from Qdrant vector search.
+#[derive(Debug, Serialize)]
+pub struct DocResult {
+    /// Source file path
+    pub source_file: String,
+    /// Content preview/snippet
+    pub content_preview: String,
+    /// Similarity score (0.0–1.0)
+    pub score: f32,
 }
 
 /// A single search hit from Qdrant vector search or keyword fallback.
@@ -88,7 +123,7 @@ pub struct AggregateSearchRequest {
     #[serde(default)]
     pub score_threshold: Option<f32>,
     /// Include caller/callee graph context for each result
-    #[serde(default)]
+    #[serde(default = "super::default_true")]
     pub include_graph: bool,
     /// Include full source body from Postgres
     #[serde(default)]
@@ -195,6 +230,7 @@ struct PgEnrichmentWithBody {
 /// Ollama is down, instead of returning a hard `AppError::Ollama`.
 pub async fn search_semantic(
     State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(req): Json<SearchSemanticRequest>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
     state.metrics.record_request("search_semantic", "POST");
@@ -205,20 +241,31 @@ pub async fn search_semantic(
     match get_embedding(&state, &req.query).await {
         Ok(embedding) => {
             // Vector search path — full semantic similarity
-            let search_request = serde_json::json!({
+            let mut search_request = serde_json::json!({
                 "vector": embedding,
                 "limit": req.limit,
                 "with_payload": true,
                 "score_threshold": req.score_threshold,
             });
 
+            // Apply crate filter as a Qdrant must-match condition
+            if let Some(ref crate_name) = req.crate_filter {
+                search_request["filter"] = serde_json::json!({
+                    "must": [{
+                        "key": "crate_name",
+                        "match": { "value": crate_name }
+                    }]
+                });
+            }
+
             let search_url = format!(
                 "{}/collections/{}/points/search",
                 state.config.qdrant_host,
-                state.config.collection_name
+                crate::workspace::resolve_code_collection(ws.as_ref(), &state.config)
             );
 
-            let response = state.http_client
+            let response = state
+                .http_client
                 .post(&search_url)
                 .json(&search_request)
                 .send()
@@ -228,7 +275,10 @@ pub async fn search_semantic(
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                return Err(AppError::Qdrant(format!("Qdrant search failed: {} - {}", status, body)));
+                return Err(AppError::Qdrant(format!(
+                    "Qdrant search failed: {} - {}",
+                    status, body
+                )));
             }
 
             let search_result: serde_json::Value = response
@@ -246,8 +296,18 @@ pub async fn search_semantic(
         }
         Err(ollama_err) => {
             // Fallback: keyword search via Postgres when Ollama is unavailable
-            debug!("Ollama unavailable ({}), falling back to keyword search", ollama_err);
-            keyword_search_fallback(&state, &req.query, req.limit).await
+            debug!(
+                "Ollama unavailable ({}), falling back to keyword search",
+                ollama_err
+            );
+            keyword_search_fallback(
+                &state,
+                &req.query,
+                req.limit,
+                req.crate_filter.as_deref(),
+                ws.as_ref(),
+            )
+            .await
         }
     }
 }
@@ -258,55 +318,184 @@ async fn keyword_search_fallback(
     state: &AppState,
     query: &str,
     limit: usize,
+    crate_filter: Option<&str>,
+    workspace_ctx: Option<&crate::neo4j::WorkspaceContext>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
+    let mut conn = acquire_conn(&state.pg_pool, workspace_ctx).await?;
+
     let pattern = format!("%{}%", query);
     let limit_i64 = limit as i64;
 
-    let rows = sqlx::query_as::<_, (String, String, String, String, i32, i32, Option<String>, Option<String>)>(
-        r#"
-        SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
-               ei.signature, ei.doc_comment
-        FROM extracted_items ei
-        LEFT JOIN source_files sf ON ei.source_file_id = sf.id
-        WHERE ei.fqn ILIKE $1
-           OR ei.name ILIKE $1
-           OR ei.doc_comment ILIKE $1
-           OR ei.signature ILIKE $1
-        ORDER BY
-            CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
-            CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
-            ei.name
-        LIMIT $2
-        "#,
-    )
-    .bind(&pattern)
-    .bind(limit_i64)
-    .fetch_all(&state.pg_pool)
-    .await
-    .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?;
+    let (sql, has_crate_filter) = if crate_filter.is_some() {
+        (
+            r#"
+            SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
+                   ei.signature, ei.doc_comment
+            FROM extracted_items ei
+            LEFT JOIN source_files sf ON ei.source_file_id = sf.id
+            WHERE (ei.fqn ILIKE $1
+               OR ei.name ILIKE $1
+               OR ei.doc_comment ILIKE $1
+               OR ei.signature ILIKE $1)
+              AND sf.crate_name = $3
+            ORDER BY
+                CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
+                CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
+                ei.name
+            LIMIT $2
+            "#,
+            true,
+        )
+    } else {
+        (
+            r#"
+            SELECT ei.fqn, ei.name, ei.item_type, COALESCE(sf.file_path, ''), ei.start_line, ei.end_line,
+                   ei.signature, ei.doc_comment
+            FROM extracted_items ei
+            LEFT JOIN source_files sf ON ei.source_file_id = sf.id
+            WHERE ei.fqn ILIKE $1
+               OR ei.name ILIKE $1
+               OR ei.doc_comment ILIKE $1
+               OR ei.signature ILIKE $1
+            ORDER BY
+                CASE WHEN ei.name ILIKE $1 THEN 0 ELSE 1 END,
+                CASE WHEN ei.fqn ILIKE $1 THEN 0 ELSE 1 END,
+                ei.name
+            LIMIT $2
+            "#,
+            false,
+        )
+    };
+
+    let rows = if has_crate_filter {
+        sqlx::query_as::<
+            sqlx::Postgres,
+            (
+                String,
+                String,
+                String,
+                String,
+                i32,
+                i32,
+                Option<String>,
+                Option<String>,
+            ),
+        >(sql)
+        .bind(&pattern)
+        .bind(limit_i64)
+        .bind(crate_filter.unwrap())
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?
+    } else {
+        sqlx::query_as::<
+            sqlx::Postgres,
+            (
+                String,
+                String,
+                String,
+                String,
+                i32,
+                i32,
+                Option<String>,
+                Option<String>,
+            ),
+        >(sql)
+        .bind(&pattern)
+        .bind(limit_i64)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| AppError::Database(format!("Keyword search failed: {}", e)))?
+    };
 
     let results: Vec<SearchResult> = rows
         .into_iter()
         .enumerate()
-        .map(|(i, (fqn, name, kind, file_path, start_line, end_line, signature, docstring))| {
-            SearchResult {
-                fqn,
-                name,
-                kind,
-                file_path,
-                start_line: start_line as u32,
-                end_line: end_line as u32,
-                score: 1.0 - (i as f32 * 0.01), // decreasing pseudo-score for ranking display
-                snippet: signature,
-                docstring,
-            }
-        })
+        .map(
+            |(i, (fqn, name, kind, file_path, start_line, end_line, signature, docstring))| {
+                SearchResult {
+                    fqn,
+                    name,
+                    kind,
+                    file_path,
+                    start_line: start_line as u32,
+                    end_line: end_line as u32,
+                    score: 1.0 - (i as f32 * 0.01), // decreasing pseudo-score for ranking display
+                    snippet: signature,
+                    docstring,
+                }
+            },
+        )
         .collect();
 
     let total = results.len();
     Ok(Json(SearchSemanticResponse {
         query: format!("{} (keyword fallback — Ollama unavailable)", query),
         total,
+        results,
+    }))
+}
+
+/// Searches for documentation using natural-language similarity.
+///
+/// Generates an embedding via Ollama, then performs a vector search against
+/// the `doc_embeddings` Qdrant collection. Returns document snippets with
+/// source file paths and content previews.
+///
+/// # Errors
+///
+/// Returns [`AppError::Ollama`] if embedding generation fails.
+/// Returns [`AppError::Qdrant`] if the vector search request fails.
+pub async fn search_docs(
+    State(state): State<AppState>,
+    OptionalWorkspaceId(ws): OptionalWorkspaceId,
+    Json(req): Json<SearchDocsRequest>,
+) -> Result<Json<SearchDocsResponse>, AppError> {
+    state.metrics.record_request("search_docs", "POST");
+    debug!("Doc search for: {}", req.query);
+
+    let embedding = get_embedding(&state, &req.query).await?;
+
+    let search_request = serde_json::json!({
+        "vector": embedding,
+        "limit": req.limit,
+        "with_payload": true,
+        "score_threshold": req.score_threshold,
+    });
+
+    let search_url = format!(
+        "{}/collections/{}/points/search",
+        state.config.qdrant_host,
+        crate::workspace::resolve_doc_collection(ws.as_ref(), &state.config)
+    );
+
+    let response = state
+        .http_client
+        .post(&search_url)
+        .json(&search_request)
+        .send()
+        .await
+        .map_err(|e| AppError::Qdrant(format!("Failed to search Qdrant: {}", e)))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Qdrant(format!(
+            "Qdrant search failed: {} - {}",
+            status, body
+        )));
+    }
+
+    let search_result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| AppError::Qdrant(format!("Failed to parse Qdrant response: {}", e)))?;
+
+    let results = parse_doc_search_results(&search_result);
+
+    Ok(Json(SearchDocsResponse {
+        query: req.query,
+        total: results.len(),
         results,
     }))
 }
@@ -325,10 +514,14 @@ async fn keyword_search_fallback(
 /// Postgres and Neo4j enrichment errors are silently ignored per-result.
 pub async fn aggregate_search(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Json(req): Json<AggregateSearchRequest>,
 ) -> Result<Json<AggregateSearchResponse>, AppError> {
     state.metrics.record_request("aggregate_search", "POST");
     debug!("Aggregate search for: {}", req.query);
+
+    let graph_client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws.clone());
+    let mut conn = acquire_conn(&state.pg_pool, Some(&ws)).await?;
 
     // Step 1: Get embedding from Ollama
     let embedding = get_embedding(&state, &req.query).await?;
@@ -344,10 +537,11 @@ pub async fn aggregate_search(
     let search_url = format!(
         "{}/collections/{}/points/search",
         state.config.qdrant_host,
-        state.config.collection_name
+        crate::workspace::resolve_code_collection(Some(&ws), &state.config)
     );
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .post(&search_url)
         .json(&search_request)
         .send()
@@ -357,7 +551,10 @@ pub async fn aggregate_search(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Qdrant(format!("Qdrant search failed: {} - {}", status, body)));
+        return Err(AppError::Qdrant(format!(
+            "Qdrant search failed: {} - {}",
+            status, body
+        )));
     }
 
     let search_result: serde_json::Value = response
@@ -371,7 +568,14 @@ pub async fn aggregate_search(
     let mut aggregated = Vec::with_capacity(qdrant_results.len());
 
     for result in &qdrant_results {
-        let enriched = enrich_search_result(&state, result, req.include_graph, req.include_source).await;
+        let enriched = enrich_search_result(
+            &mut conn,
+            &graph_client,
+            result,
+            req.include_graph,
+            req.include_source,
+        )
+        .await;
         aggregated.push(enriched);
     }
 
@@ -392,7 +596,8 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
         "input": text,
     });
 
-    let response = state.http_client
+    let response = state
+        .http_client
         .post(format!("{}/api/embed", state.config.ollama_host))
         .json(&request)
         .send()
@@ -402,7 +607,10 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Ollama(format!("Ollama embedding failed: {} - {}", status, body)));
+        return Err(AppError::Ollama(format!(
+            "Ollama embedding failed: {} - {}",
+            status, body
+        )));
     }
 
     let result: serde_json::Value = response
@@ -410,7 +618,8 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
         .await
         .map_err(|e| AppError::Ollama(format!("Failed to parse Ollama response: {}", e)))?;
 
-    let embedding = result.get("embeddings")
+    let embedding = result
+        .get("embeddings")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|v| v.as_array())
@@ -443,24 +652,38 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                 .filter_map(|r| {
                     let payload = r.get("payload")?;
                     // Qdrant payload uses "item_type" not "kind"
-                    let kind = payload.get("item_type")
+                    let kind = payload
+                        .get("item_type")
                         .and_then(|v| v.as_str())
                         .or_else(|| payload.get("kind").and_then(|v| v.as_str()))
                         .unwrap_or("unknown")
                         .to_string();
                     // file_path may not exist in all payloads
-                    let file_path = payload.get("file_path")
+                    let file_path = payload
+                        .get("file_path")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     // start_line/end_line are stored as i64 in Qdrant
-                    let start_line = payload.get("start_line")
+                    let start_line = payload
+                        .get("start_line")
                         .and_then(|v| v.as_i64())
-                        .or_else(|| payload.get("start_line").and_then(|v| v.as_u64()).map(|n| n as i64))
+                        .or_else(|| {
+                            payload
+                                .get("start_line")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as i64)
+                        })
                         .unwrap_or(0) as u32;
-                    let end_line = payload.get("end_line")
+                    let end_line = payload
+                        .get("end_line")
                         .and_then(|v| v.as_i64())
-                        .or_else(|| payload.get("end_line").and_then(|v| v.as_u64()).map(|n| n as i64))
+                        .or_else(|| {
+                            payload
+                                .get("end_line")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as i64)
+                        })
                         .unwrap_or(0) as u32;
                     Some(SearchResult {
                         fqn: payload.get("fqn")?.as_str()?.to_string(),
@@ -470,8 +693,54 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                         start_line,
                         end_line,
                         score: r.get("score")?.as_f64()? as f32,
-                        snippet: payload.get("snippet").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        docstring: payload.get("docstring").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        snippet: payload
+                            .get("snippet")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        docstring: payload
+                            .get("docstring")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn parse_doc_search_results(search_result: &serde_json::Value) -> Vec<DocResult> {
+    search_result
+        .get("result")
+        .and_then(|v| v.as_array())
+        .map(|results| {
+            results
+                .iter()
+                .filter_map(|r| {
+                    let payload = r.get("payload")?;
+                    // doc_embeddings uses file_path (not source_file)
+                    let source_file = payload
+                        .get("file_path")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| payload.get("source_file").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    // doc_embeddings uses text (not content or content_preview)
+                    let content_preview = payload
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| payload.get("content").and_then(|v| v.as_str()))
+                        .or_else(|| payload.get("content_preview").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    let preview = if content_preview.len() > 500 {
+                        format!("{}...", &content_preview[..500])
+                    } else {
+                        content_preview
+                    };
+                    Some(DocResult {
+                        source_file,
+                        content_preview: preview,
+                        score: r.get("score")?.as_f64()? as f32,
                     })
                 })
                 .collect()
@@ -481,13 +750,18 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
 
 /// Enrich a Qdrant search result with Postgres metadata and Neo4j graph context
 async fn enrich_search_result(
-    state: &AppState,
+    conn: &mut sqlx::PgConnection,
+    graph_client: &WorkspaceGraphClient,
     result: &SearchResult,
     include_graph: bool,
     include_source: bool,
 ) -> AggregatedResult {
     // Query Postgres for full metadata
-    let select_body = if include_source { ", e.body_source" } else { "" };
+    let select_body = if include_source {
+        ", e.body_source"
+    } else {
+        ""
+    };
     let query_str = format!(
         r#"
         SELECT e.visibility, e.signature, e.doc_comment,
@@ -502,7 +776,7 @@ async fn enrich_search_result(
     let pg_data: Option<PgEnrichment> = if include_source {
         sqlx::query_as::<_, PgEnrichmentWithBody>(&query_str)
             .bind(&result.fqn)
-            .fetch_optional(&state.pg_pool)
+            .fetch_optional(conn)
             .await
             .ok()
             .flatten()
@@ -520,7 +794,7 @@ async fn enrich_search_result(
     } else {
         sqlx::query_as::<_, PgEnrichmentBase>(&query_str)
             .bind(&result.fqn)
-            .fetch_optional(&state.pg_pool)
+            .fetch_optional(conn)
             .await
             .ok()
             .flatten()
@@ -537,9 +811,10 @@ async fn enrich_search_result(
             })
     };
 
-    // Get graph context from Neo4j (callers/callees)
+    // Get graph context from Neo4j (callers/callees) — workspace-scoped
     let (callers, callees) = if include_graph {
-        let callers = get_callers_from_neo4j(state, &result.fqn, 1)
+        let callers = graph_client
+            .get_callers(&result.fqn, 1)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -550,7 +825,8 @@ async fn enrich_search_result(
                 line: c.line,
             })
             .collect();
-        let callees = get_callees_from_neo4j(state, &result.fqn)
+        let callees = graph_client
+            .get_callees(&result.fqn)
             .await
             .unwrap_or_default();
         (callers, callees)
@@ -563,18 +839,23 @@ async fn enrich_search_result(
         fqn: result.fqn.clone(),
         name: result.name.clone(),
         kind: result.kind.clone(),
-        file_path: pg_data.as_ref()
+        file_path: pg_data
+            .as_ref()
             .and_then(|d| d.file_path.clone())
             .unwrap_or_else(|| result.file_path.clone()),
-        start_line: pg_data.as_ref()
+        start_line: pg_data
+            .as_ref()
             .map(|d| d.start_line as u32)
             .unwrap_or(result.start_line),
-        end_line: pg_data.as_ref()
+        end_line: pg_data
+            .as_ref()
             .map(|d| d.end_line as u32)
             .unwrap_or(result.end_line),
         visibility: pg_data.as_ref().and_then(|d| d.visibility.clone()),
         signature: pg_data.as_ref().and_then(|d| d.signature.clone()),
-        docstring: pg_data.as_ref().and_then(|d| d.doc_comment.clone())
+        docstring: pg_data
+            .as_ref()
+            .and_then(|d| d.doc_comment.clone())
             .or_else(|| result.docstring.clone()),
         module_path: pg_data.as_ref().and_then(|d| d.module_path.clone()),
         crate_name: pg_data.as_ref().and_then(|d| d.crate_name.clone()),
@@ -630,7 +911,7 @@ mod tests {
         assert_eq!(results[0].file_path, "src/lib.rs");
         assert_eq!(results[0].start_line, 10);
         assert_eq!(results[0].end_line, 20);
-        assert!((results[0].score - 0.95).abs() < f32::EPSILON);
+        assert!((results[0].score - 0.95).abs() < 1e-4);
         assert_eq!(results[0].snippet, Some("fn my_fn() {}".to_string()));
         assert_eq!(results[0].docstring, Some("A function".to_string()));
     }
@@ -806,5 +1087,231 @@ mod tests {
         assert_eq!(deserialized.fqn, "test::item");
         assert_eq!(deserialized.body_source, Some("struct item {}".to_string()));
         assert!(deserialized.callers.is_empty());
+    }
+
+    /// Verify that the Qdrant filter JSON matches the expected structure
+    /// when crate_filter is applied.
+    #[test]
+    fn test_qdrant_crate_filter_json_structure() {
+        let crate_name = "my_crate";
+        let filter = serde_json::json!({
+            "must": [{
+                "key": "crate_name",
+                "match": { "value": crate_name }
+            }]
+        });
+
+        // Verify structure matches Qdrant's expected filter format
+        let must = filter["must"].as_array().unwrap();
+        assert_eq!(must.len(), 1);
+        assert_eq!(must[0]["key"], "crate_name");
+        assert_eq!(must[0]["match"]["value"], "my_crate");
+    }
+
+    #[test]
+    fn test_search_request_with_crate_filter_builds_filter() {
+        // Simulate what the handler does: build a search request then conditionally add filter
+        let crate_filter = Some("tokio".to_string());
+        let embedding = vec![0.1_f32; 3];
+
+        let mut search_request = serde_json::json!({
+            "vector": embedding,
+            "limit": 10,
+            "with_payload": true,
+            "score_threshold": null,
+        });
+
+        if let Some(ref crate_name) = crate_filter {
+            search_request["filter"] = serde_json::json!({
+                "must": [{
+                    "key": "crate_name",
+                    "match": { "value": crate_name }
+                }]
+            });
+        }
+
+        assert!(search_request.get("filter").is_some());
+        assert_eq!(
+            search_request["filter"]["must"][0]["match"]["value"],
+            "tokio"
+        );
+    }
+
+    #[test]
+    fn test_search_request_without_crate_filter_has_no_filter() {
+        let crate_filter: Option<String> = None;
+        let embedding = vec![0.1_f32; 3];
+
+        let mut search_request = serde_json::json!({
+            "vector": embedding,
+            "limit": 10,
+            "with_payload": true,
+            "score_threshold": null,
+        });
+
+        if let Some(ref crate_name) = crate_filter {
+            search_request["filter"] = serde_json::json!({
+                "must": [{
+                    "key": "crate_name",
+                    "match": { "value": crate_name }
+                }]
+            });
+        }
+
+        assert!(search_request.get("filter").is_none());
+    }
+
+    #[test]
+    fn test_search_docs_request_deserialization() {
+        let json = serde_json::json!({
+            "query": "how to authenticate users",
+            "limit": 5,
+            "score_threshold": 0.7
+        });
+
+        let req: SearchDocsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.query, "how to authenticate users");
+        assert_eq!(req.limit, 5);
+        assert_eq!(req.score_threshold, Some(0.7));
+    }
+
+    #[test]
+    fn test_search_docs_request_defaults() {
+        let json = serde_json::json!({
+            "query": "test"
+        });
+
+        let req: SearchDocsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.limit, 10);
+        assert!(req.score_threshold.is_none());
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_empty() {
+        let data = serde_json::json!({"result": []});
+        let results = parse_doc_search_results(&data);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_valid() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.92,
+                    "payload": {
+                        "source_file": "docs/api/authentication.md",
+                        "content": "Authentication is handled via JWT tokens..."
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_file, "docs/api/authentication.md");
+        assert_eq!(
+            results[0].content_preview,
+            "Authentication is handled via JWT tokens..."
+        );
+        assert!((results[0].score - 0.92).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_qdrant_schema() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.92,
+                    "payload": {
+                        "file_path": "docs/api/authentication.md",
+                        "text": "Authentication is handled via JWT tokens...",
+                        "section_title": "Auth",
+                        "crate_name": "rust_brain"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_file, "docs/api/authentication.md");
+        assert_eq!(
+            results[0].content_preview,
+            "Authentication is handled via JWT tokens..."
+        );
+        assert!((results[0].score - 0.92).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_content_preview_fallback() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.85,
+                    "payload": {
+                        "source_file": "README.md",
+                        "content_preview": "Short preview"
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content_preview, "Short preview");
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_truncates_long_content() {
+        let long_content = "x".repeat(600);
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.9,
+                    "payload": {
+                        "source_file": "docs/guide.md",
+                        "content": long_content.clone()
+                    }
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].content_preview.ends_with("..."));
+        assert!(results[0].content_preview.len() <= 503);
+    }
+
+    #[test]
+    fn test_parse_doc_search_results_missing_fields() {
+        let data = serde_json::json!({
+            "result": [
+                {
+                    "score": 0.8,
+                    "payload": {}
+                }
+            ]
+        });
+
+        let results = parse_doc_search_results(&data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_file, "");
+        assert_eq!(results[0].content_preview, "");
+    }
+
+    #[test]
+    fn test_doc_result_serialization() {
+        let result = DocResult {
+            source_file: "docs/api.md".to_string(),
+            content_preview: "API documentation".to_string(),
+            score: 0.95,
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["source_file"], "docs/api.md");
+        assert_eq!(json["content_preview"], "API documentation");
+        let score = json["score"].as_f64().unwrap();
+        assert!((score - 0.95).abs() < 1e-6);
     }
 }

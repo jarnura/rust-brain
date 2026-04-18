@@ -4,11 +4,11 @@
 //! ensuring type consistency across the triple-storage architecture
 //! (Postgres, Neo4j, Qdrant).
 
-pub mod types;
-pub mod errors;
 pub mod config;
+pub mod errors;
 pub mod logging;
+pub mod types;
 
-pub use types::*;
-pub use errors::*;
 pub use config::*;
+pub use errors::*;
+pub use types::*;

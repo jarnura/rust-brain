@@ -20,6 +20,12 @@ pub const CODE_COLLECTION: &str = "code_embeddings";
 /// Collection name for documentation embeddings
 pub const DOC_COLLECTION: &str = "doc_embeddings";
 
+/// Collection name for crate documentation embeddings (one vector per documented symbol)
+pub const CRATE_DOCS_COLLECTION: &str = "crate_docs";
+
+/// Collection name for external documentation embeddings (docs.rs pages)
+pub const EXTERNAL_DOCS_COLLECTION: &str = "external_docs";
+
 /// Qdrant client configuration
 #[derive(Debug, Clone)]
 pub struct QdrantConfig {
@@ -29,6 +35,10 @@ pub struct QdrantConfig {
     pub code_collection: String,
     /// Doc embeddings collection name
     pub doc_collection: String,
+    /// Crate docs embeddings collection name
+    pub crate_docs_collection: String,
+    /// External docs embeddings collection name
+    pub external_docs_collection: String,
     /// Vector dimensions
     pub vector_size: usize,
     /// Request timeout
@@ -41,6 +51,26 @@ impl Default for QdrantConfig {
             base_url: "http://qdrant:6333".to_string(),
             code_collection: CODE_COLLECTION.to_string(),
             doc_collection: DOC_COLLECTION.to_string(),
+            crate_docs_collection: CRATE_DOCS_COLLECTION.to_string(),
+            external_docs_collection: EXTERNAL_DOCS_COLLECTION.to_string(),
+            vector_size: 2560,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl QdrantConfig {
+    /// Create a QdrantConfig for a specific workspace.
+    ///
+    /// Derives per-workspace collection names from the schema name using the
+    /// ADR-005 convention: `ws_<schema>_<collection_type>`.
+    pub fn for_workspace(schema_name: &str) -> Self {
+        Self {
+            base_url: "http://qdrant:6333".to_string(),
+            code_collection: format!("ws_{}_code_embeddings", schema_name),
+            doc_collection: format!("ws_{}_doc_embeddings", schema_name),
+            crate_docs_collection: format!("ws_{}_crate_docs", schema_name),
+            external_docs_collection: format!("ws_{}_external_docs", schema_name),
             vector_size: 2560,
             timeout: Duration::from_secs(30),
         }
@@ -97,7 +127,7 @@ impl PayloadValue {
             _ => None,
         }
     }
-    
+
     /// Get the value as an integer if it is one
     pub fn as_i64(&self) -> Option<i64> {
         match self {
@@ -105,7 +135,7 @@ impl PayloadValue {
             _ => None,
         }
     }
-    
+
     /// Get the value as a boolean if it is one
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -255,76 +285,86 @@ impl QdrantClient {
             .pool_idle_timeout(Some(Duration::from_secs(30)))
             .build()
             .context("Failed to create HTTP client for Qdrant")?;
-        
+
         Ok(Self { config, client })
     }
-    
+
     /// Create client with default configuration
     pub fn with_base_url(base_url: String) -> Result<Self> {
-        let mut config = QdrantConfig::default();
-        config.base_url = base_url;
+        let config = QdrantConfig {
+            base_url,
+            ..QdrantConfig::default()
+        };
         Self::new(config)
     }
-    
+
     /// Check if Qdrant is healthy
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/healthz", self.config.base_url);
-        
+
         let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("Failed to connect to Qdrant")?;
-        
+
         Ok(response.status().is_success())
     }
-    
+
     /// List all collections
     pub async fn list_collections(&self) -> Result<Vec<String>> {
         let url = format!("{}/collections", self.config.base_url);
-        
+
         let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("Failed to list Qdrant collections")?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to list collections: HTTP {} - {}", status, body);
         }
-        
+
         let collections: CollectionsResponse = response
             .json()
             .await
             .context("Failed to parse collections response from Qdrant")?;
-        
-        Ok(collections.result.collections.into_iter().map(|c| c.name).collect())
+
+        Ok(collections
+            .result
+            .collections
+            .into_iter()
+            .map(|c| c.name)
+            .collect())
     }
-    
+
     /// Create a collection if it doesn't exist
     pub async fn ensure_collection(&self, collection: &str) -> Result<()> {
         let collections = self.list_collections().await?;
-        
+
         if collections.contains(&collection.to_string()) {
             debug!("Collection '{}' already exists", collection);
             return Ok(());
         }
-        
-        info!("Creating collection '{}' with vector size {}", collection, self.config.vector_size);
-        
+
+        info!(
+            "Creating collection '{}' with vector size {}",
+            collection, self.config.vector_size
+        );
+
         let url = format!("{}/collections/{}", self.config.base_url, collection);
-        
+
         let request = CreateCollectionRequest {
             vectors: VectorsConfig {
                 size: self.config.vector_size,
                 distance: "Cosine".to_string(),
             },
         };
-        
+
         let response = self
             .client
             .put(&url)
@@ -332,63 +372,74 @@ impl QdrantClient {
             .send()
             .await
             .context("Failed to create Qdrant collection")?;
-        
+
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to create collection '{}': {}", collection, body);
         }
-        
+
         info!("Created collection '{}'", collection);
         Ok(())
     }
-    
+
     /// Ensure both code and doc collections exist
     pub async fn ensure_collections(&self) -> Result<()> {
         self.ensure_collection(&self.config.code_collection).await?;
         self.ensure_collection(&self.config.doc_collection).await?;
         Ok(())
     }
-    
+
+    /// Ensure all four collections exist (code, doc, crate_docs, external_docs)
+    pub async fn ensure_all_collections(&self) -> Result<()> {
+        self.ensure_collection(&self.config.code_collection).await?;
+        self.ensure_collection(&self.config.doc_collection).await?;
+        self.ensure_collection(&self.config.crate_docs_collection)
+            .await?;
+        self.ensure_collection(&self.config.external_docs_collection)
+            .await?;
+        Ok(())
+    }
+
     /// Get collection info
     pub async fn get_collection_info(&self, collection: &str) -> Result<CollectionInfo> {
         let url = format!("{}/collections/{}", self.config.base_url, collection);
-        
+
         let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("Failed to get collection info")?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Collection '{}' not found", collection);
         }
-        
+
         let info: CollectionInfoResponse = response
             .json()
             .await
             .context("Failed to parse collection info")?;
-        
+
         Ok(info.result)
     }
-    
+
     /// Upsert a single point (idempotent)
     pub async fn upsert_point(&self, collection: &str, point: Point) -> Result<()> {
         let url = format!(
             "{}/collections/{}/points?wait=true",
             self.config.base_url, collection
         );
-        
+
         let point_struct = PointStruct {
             id: point.id.to_string(),
             vector: point.vector,
             payload: point.payload,
         };
-        
+
         let request = UpsertRequest {
             points: vec![point_struct],
         };
-        
+
         let response = self
             .client
             .put(&url)
@@ -396,26 +447,26 @@ impl QdrantClient {
             .send()
             .await
             .context("Failed to upsert point to Qdrant")?;
-        
+
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to upsert point: {}", body);
         }
-        
+
         Ok(())
     }
-    
+
     /// Upsert multiple points in batch (idempotent)
     pub async fn upsert_points(&self, collection: &str, points: Vec<Point>) -> Result<()> {
         if points.is_empty() {
             return Ok(());
         }
-        
+
         let url = format!(
             "{}/collections/{}/points?wait=true",
             self.config.base_url, collection
         );
-        
+
         let point_structs: Vec<PointStruct> = points
             .into_iter()
             .map(|p| PointStruct {
@@ -424,11 +475,11 @@ impl QdrantClient {
                 payload: p.payload,
             })
             .collect();
-        
+
         let request = UpsertRequest {
             points: point_structs,
         };
-        
+
         let response = self
             .client
             .put(&url)
@@ -436,16 +487,16 @@ impl QdrantClient {
             .send()
             .await
             .context("Failed to upsert points to Qdrant")?;
-        
+
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to upsert points: {}", body);
         }
-        
+
         debug!("Upserted batch of points to collection '{}'", collection);
         Ok(())
     }
-    
+
     /// Search for similar vectors
     pub async fn search(
         &self,
@@ -456,7 +507,7 @@ impl QdrantClient {
             "{}/collections/{}/points/search",
             self.config.base_url, collection
         );
-        
+
         let response = self
             .client
             .post(&url)
@@ -464,36 +515,36 @@ impl QdrantClient {
             .send()
             .await
             .context("Failed to search Qdrant")?;
-        
+
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Search failed: {}", body);
         }
-        
+
         let search_response: SearchResponse = response
             .json()
             .await
             .context("Failed to parse search response")?;
-        
+
         Ok(search_response.result)
     }
-    
+
     /// Delete a point by ID
     pub async fn delete_point(&self, collection: &str, id: Uuid) -> Result<()> {
         let url = format!(
             "{}/collections/{}/points/delete?wait=true",
             self.config.base_url, collection
         );
-        
+
         #[derive(Debug, Serialize)]
         struct DeleteRequest {
             points: Vec<String>,
         }
-        
+
         let request = DeleteRequest {
             points: vec![id.to_string()],
         };
-        
+
         let response = self
             .client
             .post(&url)
@@ -501,29 +552,29 @@ impl QdrantClient {
             .send()
             .await
             .context("Failed to delete point from Qdrant")?;
-        
+
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to delete point: {}", body);
         }
-        
+
         Ok(())
     }
-    
+
     /// Delete points by filter
     pub async fn delete_by_filter(&self, collection: &str, filter: Filter) -> Result<()> {
         let url = format!(
             "{}/collections/{}/points/delete?wait=true",
             self.config.base_url, collection
         );
-        
+
         #[derive(Debug, Serialize)]
         struct DeleteByFilterRequest {
             filter: Filter,
         }
-        
+
         let request = DeleteByFilterRequest { filter };
-        
+
         let response = self
             .client
             .post(&url)
@@ -531,25 +582,35 @@ impl QdrantClient {
             .send()
             .await
             .context("Failed to delete points by filter from Qdrant")?;
-        
+
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to delete points by filter: {}", body);
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the code collection name
     pub fn code_collection(&self) -> &str {
         &self.config.code_collection
     }
-    
+
     /// Get the doc collection name
     pub fn doc_collection(&self) -> &str {
         &self.config.doc_collection
     }
-    
+
+    /// Get the crate docs collection name
+    pub fn crate_docs_collection(&self) -> &str {
+        &self.config.crate_docs_collection
+    }
+
+    /// Get the external docs collection name
+    pub fn external_docs_collection(&self) -> &str {
+        &self.config.external_docs_collection
+    }
+
     /// Get vector size
     pub fn vector_size(&self) -> usize {
         self.config.vector_size
@@ -559,16 +620,18 @@ impl QdrantClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_config_default() {
         let config = QdrantConfig::default();
         assert_eq!(config.base_url, "http://qdrant:6333");
         assert_eq!(config.code_collection, CODE_COLLECTION);
         assert_eq!(config.doc_collection, DOC_COLLECTION);
+        assert_eq!(config.crate_docs_collection, CRATE_DOCS_COLLECTION);
+        assert_eq!(config.external_docs_collection, EXTERNAL_DOCS_COLLECTION);
         assert_eq!(config.vector_size, 2560);
     }
-    
+
     #[test]
     fn test_payload_value_from_string() {
         let v: PayloadValue = "test".into();
@@ -577,7 +640,7 @@ mod tests {
             _ => panic!("Expected String variant"),
         }
     }
-    
+
     #[test]
     fn test_payload_value_from_int() {
         let v: PayloadValue = 42i64.into();
@@ -616,9 +679,9 @@ mod tests {
 
     #[test]
     fn test_payload_value_from_f64() {
-        let v: PayloadValue = 3.14f64.into();
+        let v: PayloadValue = 2.5f64.into();
         match v {
-            PayloadValue::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            PayloadValue::Float(f) => assert!((f - 2.5).abs() < f64::EPSILON),
             _ => panic!("Expected Float variant"),
         }
     }

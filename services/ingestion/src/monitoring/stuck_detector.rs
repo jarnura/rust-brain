@@ -247,9 +247,8 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_prevents_alert() {
-        let detector = StuckDetector::with_thresholds(
-            std::array::from_fn(|_| Duration::from_millis(100)),
-        );
+        let detector =
+            StuckDetector::with_thresholds(std::array::from_fn(|_| Duration::from_millis(100)));
 
         // Start watchdog with fast polling.
         let cancel = CancellationToken::new();
@@ -348,10 +347,10 @@ mod tests {
     fn default_thresholds() {
         let detector = StuckDetector::new();
         assert_eq!(detector.thresholds[0], Duration::from_secs(600)); // expand
-        assert_eq!(detector.thresholds[1], Duration::from_secs(30));  // parse
-        assert_eq!(detector.thresholds[2], Duration::from_secs(30));  // typecheck
-        assert_eq!(detector.thresholds[3], Duration::from_secs(60));  // extract
-        assert_eq!(detector.thresholds[4], Duration::from_secs(60));  // graph
-        assert_eq!(detector.thresholds[5], Duration::from_secs(90));  // embed
+        assert_eq!(detector.thresholds[1], Duration::from_secs(30)); // parse
+        assert_eq!(detector.thresholds[2], Duration::from_secs(30)); // typecheck
+        assert_eq!(detector.thresholds[3], Duration::from_secs(60)); // extract
+        assert_eq!(detector.thresholds[4], Duration::from_secs(60)); // graph
+        assert_eq!(detector.thresholds[5], Duration::from_secs(90)); // embed
     }
 }

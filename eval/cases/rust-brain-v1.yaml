@@ -1,0 +1,48 @@
+---
+# rust-brain-v1 eval suite
+# Reference cases drawn from accepted PRs in the rust-brain repo.
+# expected_outcome: pass  → agent should reproduce or improve on the PR
+# expected_outcome: reject → agent should flag the PR as wrong / harmful
+
+cases:
+  - id: "add-workspace-endpoint"
+    repo: "org/rust-brain"
+    pr: 49
+    expected_outcome: pass
+    weight: 1.0
+    tags: [workspace, api]
+
+  - id: "fix-cypher-injection"
+    repo: "org/rust-brain"
+    pr: 31
+    expected_outcome: pass
+    weight: 1.5
+    tags: [security, neo4j]
+
+  - id: "reverted-wrong-approach"
+    repo: "org/rust-brain"
+    pr: 22
+    expected_outcome: reject
+    weight: 0.5
+    tags: [refactor]
+
+  - id: "add-docker-client"
+    repo: "org/rust-brain"
+    pr: 40
+    expected_outcome: pass
+    weight: 1.0
+    tags: [docker, infra]
+
+  - id: "opencode-orchestrator"
+    repo: "org/rust-brain"
+    pr: 43
+    expected_outcome: pass
+    weight: 1.0
+    tags: [orchestration, opencode]
+
+  - id: "validator-llm-judge"
+    repo: "org/rust-brain"
+    pr: 55
+    expected_outcome: pass
+    weight: 1.2
+    tags: [validator, judge, llm]

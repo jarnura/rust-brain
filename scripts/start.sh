@@ -99,8 +99,8 @@ echo "=== Phase 4: Pulling Ollama Models ==="
 bash scripts/pull-models.sh
 
 echo ""
-echo "=== Phase 5: Starting Observability Stack ==="
-docker-compose up -d postgres-exporter node-exporter prometheus grafana pgweb
+echo "=== Phase 5: Starting Observability + Audit Stack ==="
+docker-compose up -d postgres-exporter node-exporter prometheus grafana pgweb audit
 
 echo ""
 echo "=== Phase 6: Waiting for Observability Stack ==="

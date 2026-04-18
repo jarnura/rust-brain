@@ -2,13 +2,20 @@
 //!
 //! This module contains all the MCP tools that wrap the rust-brain API.
 
+pub mod aggregate_search;
+pub mod consistency_check;
+pub mod context_store;
 pub mod find_type_usages;
 pub mod get_callers;
 pub mod get_function;
 pub mod get_module_tree;
 pub mod get_trait_impls;
+pub mod pg_query;
 pub mod query_graph;
 pub mod search_code;
+pub mod search_docs;
+pub mod status_check;
+pub mod task_update;
 pub mod typecheck_tools;
 
 use crate::client::ApiClient;
@@ -20,6 +27,7 @@ use tracing::{debug, info, instrument, warn};
 pub fn all_definitions() -> Vec<Value> {
     let definitions = vec![
         search_code::definition(),
+        search_docs::definition(),
         get_function::definition(),
         get_callers::definition(),
         get_trait_impls::definition(),
@@ -28,6 +36,12 @@ pub fn all_definitions() -> Vec<Value> {
         query_graph::definition(),
         typecheck_tools::definition_find_calls_with_type(),
         typecheck_tools::definition_find_trait_impls_for_type(),
+        pg_query::definition(),
+        context_store::definition(),
+        status_check::definition(),
+        task_update::definition(),
+        aggregate_search::definition(),
+        consistency_check::definition(),
     ];
     debug!(count = definitions.len(), "Returning tool definitions");
     definitions
@@ -45,6 +59,10 @@ pub async fn execute_tool(
         "search_code" => {
             let request: search_code::SearchCodeRequest = serde_json::from_value(arguments)?;
             search_code::execute(client, request).await
+        }
+        "search_docs" => {
+            let request: search_docs::SearchDocsRequest = serde_json::from_value(arguments)?;
+            search_docs::execute(client, request).await
         }
         "get_function" => {
             let request: get_function::GetFunctionRequest = serde_json::from_value(arguments)?;
@@ -78,6 +96,30 @@ pub async fn execute_tool(
             let request: typecheck_tools::FindTraitImplsForTypeRequest = serde_json::from_value(arguments)?;
             typecheck_tools::execute_find_trait_impls_for_type(client, request).await
         }
+        "pg_query" => {
+            let request: pg_query::PgQueryRequest = serde_json::from_value(arguments)?;
+            pg_query::execute(client, request).await
+        }
+        "context_store" => {
+            let request: context_store::ContextStoreRequest = serde_json::from_value(arguments)?;
+            context_store::execute(client, request).await
+        }
+        "status_check" => {
+            let request: status_check::StatusCheckRequest = serde_json::from_value(arguments)?;
+            status_check::execute(client, request).await
+        }
+        "task_update" => {
+            let request: task_update::TaskUpdateRequest = serde_json::from_value(arguments)?;
+            task_update::execute(client, request).await
+        }
+        "aggregate_search" => {
+            let request: aggregate_search::AggregateSearchRequest = serde_json::from_value(arguments)?;
+            aggregate_search::execute(client, request).await
+        }
+        "consistency_check" => {
+            let request: consistency_check::ConsistencyCheckRequest = serde_json::from_value(arguments)?;
+            consistency_check::execute(client, request).await
+        }
         unknown => {
             warn!(tool = %unknown, "Unknown tool requested");
             Err(crate::error::McpError::InvalidRequest(format!(
@@ -95,7 +137,7 @@ mod tests {
     #[test]
     fn test_all_definitions_count() {
         let definitions = all_definitions();
-        assert_eq!(definitions.len(), 9);
+        assert_eq!(definitions.len(), 16);
     }
 
     #[test]
@@ -137,6 +179,7 @@ mod tests {
             .collect();
         
         assert!(names.contains(&"search_code"));
+        assert!(names.contains(&"search_docs"));
         assert!(names.contains(&"get_function"));
         assert!(names.contains(&"get_callers"));
         assert!(names.contains(&"get_trait_impls"));
@@ -145,6 +188,12 @@ mod tests {
         assert!(names.contains(&"query_graph"));
         assert!(names.contains(&"find_calls_with_type"));
         assert!(names.contains(&"find_trait_impls_for_type"));
+        assert!(names.contains(&"pg_query"));
+        assert!(names.contains(&"context_store"));
+        assert!(names.contains(&"status_check"));
+        assert!(names.contains(&"task_update"));
+        assert!(names.contains(&"aggregate_search"));
+        assert!(names.contains(&"consistency_check"));
     }
 
     #[test]

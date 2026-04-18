@@ -52,7 +52,7 @@ pub fn generate_text_representation(item: &ParsedItem) -> TextRepresentation {
         ItemType::ExternBlock => generate_unknown_text(item, "extern"),
         ItemType::Unknown(s) => generate_unknown_text(item, s),
     };
-    
+
     TextRepresentation {
         text,
         item_type: item.item_type.as_str().to_string(),
@@ -65,17 +65,18 @@ pub fn extract_doc_chunks(item: &ParsedItem, max_chunk_size: usize) -> Vec<DocCh
     if item.doc_comment.is_empty() {
         return Vec::new();
     }
-    
+
     // Split by paragraph boundaries (double newlines)
-    let paragraphs: Vec<&str> = item.doc_comment
+    let paragraphs: Vec<&str> = item
+        .doc_comment
         .split("\n\n")
         .filter(|p| !p.trim().is_empty())
         .collect();
-    
+
     let mut chunks = Vec::new();
     let mut current_chunk = String::new();
     let mut chunk_index = 0;
-    
+
     for paragraph in paragraphs {
         // If adding this paragraph would exceed max size, start a new chunk
         if !current_chunk.is_empty() && current_chunk.len() + paragraph.len() + 2 > max_chunk_size {
@@ -90,7 +91,7 @@ pub fn extract_doc_chunks(item: &ParsedItem, max_chunk_size: usize) -> Vec<DocCh
             }
             current_chunk = String::new();
         }
-        
+
         // If paragraph itself is too large, split by sentences
         if paragraph.len() > max_chunk_size {
             // First, add any accumulated content
@@ -104,7 +105,7 @@ pub fn extract_doc_chunks(item: &ParsedItem, max_chunk_size: usize) -> Vec<DocCh
                 chunk_index += 1;
                 current_chunk = String::new();
             }
-            
+
             // Split by sentences (rough heuristic)
             for sentence_chunk in split_by_sentences(paragraph, max_chunk_size) {
                 chunks.push(DocChunk {
@@ -122,7 +123,7 @@ pub fn extract_doc_chunks(item: &ParsedItem, max_chunk_size: usize) -> Vec<DocCh
             current_chunk.push_str(paragraph);
         }
     }
-    
+
     // Add final chunk
     if !current_chunk.trim().is_empty() {
         chunks.push(DocChunk {
@@ -132,7 +133,7 @@ pub fn extract_doc_chunks(item: &ParsedItem, max_chunk_size: usize) -> Vec<DocCh
             chunk_index,
         });
     }
-    
+
     chunks
 }
 
@@ -140,7 +141,7 @@ pub fn extract_doc_chunks(item: &ParsedItem, max_chunk_size: usize) -> Vec<DocCh
 fn split_by_sentences(text: &str, max_size: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
-    
+
     // Simple sentence splitting on common punctuation
     for sentence in text.split_inclusive(&['.', '!', '?', '\n']) {
         if current.len() + sentence.len() > max_size && !current.is_empty() {
@@ -149,11 +150,11 @@ fn split_by_sentences(text: &str, max_size: usize) -> Vec<String> {
         }
         current.push_str(sentence);
     }
-    
+
     if !current.trim().is_empty() {
         chunks.push(current.trim().to_string());
     }
-    
+
     chunks
 }
 
@@ -165,10 +166,10 @@ fn generate_function_text(item: &ParsedItem) -> String {
     let return_type = extract_return_type_from_signature(&item.signature);
     let trait_bounds = where_clauses_to_string(&item.where_clauses);
     let body_preview = extract_body_preview(&item.body_source, MAX_BODY_PREVIEW_LINES);
-    
+
     // Extract module and crate from FQN
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} fn {name}{generics}({params}) -> {return_type}
 {doc_comment}
@@ -196,9 +197,9 @@ fn generate_struct_text(item: &ParsedItem) -> String {
     let generics = generics_to_string(&item.generic_params);
     let field_summary = extract_struct_fields(&item.body_source);
     let derive_traits = extract_derive_traits(&item.attributes);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} struct {name}{generics} {{ {field_summary} }}
 {doc_comment}
@@ -222,9 +223,9 @@ fn generate_enum_text(item: &ParsedItem) -> String {
     let generics = generics_to_string(&item.generic_params);
     let variant_summary = extract_enum_variants(&item.body_source);
     let derive_traits = extract_derive_traits(&item.attributes);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} enum {name}{generics} {{ {variant_summary} }}
 {doc_comment}
@@ -248,9 +249,9 @@ fn generate_trait_text(item: &ParsedItem) -> String {
     let generics = generics_to_string(&item.generic_params);
     let supertraits = extract_supertraits(&item.signature);
     let method_summary = extract_trait_methods(&item.body_source);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} trait {name}{generics}{supertraits} {{ {method_summary} }}
 {doc_comment}
@@ -259,7 +260,11 @@ Crate: {crate_name}"#,
         visibility = visibility,
         name = item.name,
         generics = generics,
-        supertraits = if supertraits.is_empty() { String::new() } else { format!(": {}", supertraits) },
+        supertraits = if supertraits.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", supertraits)
+        },
         method_summary = method_summary,
         doc_comment = format_doc_comment(&item.doc_comment),
         module_path = module_path,
@@ -272,9 +277,9 @@ fn generate_impl_text(item: &ParsedItem) -> String {
     let generics = generics_to_string(&item.generic_params);
     let impl_signature = extract_impl_signature(&item.signature);
     let method_summary = extract_impl_methods(&item.body_source);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"impl{generics} {impl_signature} {{ {method_summary} }}
 {doc_comment}
@@ -294,9 +299,9 @@ fn generate_type_alias_text(item: &ParsedItem) -> String {
     let visibility = visibility_to_string(&item.visibility);
     let generics = generics_to_string(&item.generic_params);
     let target_type = extract_type_alias_target(&item.signature);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} type {name}{generics} = {target_type};
 {doc_comment}
@@ -316,9 +321,9 @@ Crate: {crate_name}"#,
 fn generate_const_text(item: &ParsedItem) -> String {
     let visibility = visibility_to_string(&item.visibility);
     let (ty, value) = extract_const_info(&item.signature);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} const {name}: {ty} = {value};
 {doc_comment}
@@ -338,9 +343,9 @@ Crate: {crate_name}"#,
 fn generate_static_text(item: &ParsedItem) -> String {
     let visibility = visibility_to_string(&item.visibility);
     let (ty, value) = extract_static_info(&item.signature);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} static {name}: {ty} = {value};
 {doc_comment}
@@ -360,9 +365,9 @@ Crate: {crate_name}"#,
 fn generate_macro_text(item: &ParsedItem) -> String {
     let visibility = visibility_to_string(&item.visibility);
     let macro_rules = extract_macro_rules(&item.body_source);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} macro_rules! {name} {{ {macro_rules} }}
 {doc_comment}
@@ -380,9 +385,9 @@ Crate: {crate_name}"#,
 /// Generate text for modules
 fn generate_module_text(item: &ParsedItem) -> String {
     let visibility = visibility_to_string(&item.visibility);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} mod {name}
 {doc_comment}
@@ -400,9 +405,9 @@ Crate: {crate_name}"#,
 fn generate_use_text(item: &ParsedItem) -> String {
     let visibility = visibility_to_string(&item.visibility);
     let import_path = extract_use_path(&item.signature);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} use {import_path}
 Module: {module_path}
@@ -417,9 +422,9 @@ Crate: {crate_name}"#,
 /// Generate text for unknown item types
 fn generate_unknown_text(item: &ParsedItem, type_name: &str) -> String {
     let visibility = visibility_to_string(&item.visibility);
-    
+
     let (crate_name, module_path) = split_fqn(&item.fqn);
-    
+
     format!(
         r#"{visibility} {type_name} {name}
 {doc_comment}
@@ -459,7 +464,7 @@ fn generics_to_string(generics: &[GenericParam]) -> String {
     if generics.is_empty() {
         return String::new();
     }
-    
+
     let params: Vec<String> = generics
         .iter()
         .map(|g| {
@@ -467,21 +472,21 @@ fn generics_to_string(generics: &[GenericParam]) -> String {
                 "lifetime" => format!("'{}", g.name),
                 _ => g.name.clone(),
             };
-            
+
             if !g.bounds.is_empty() {
                 s.push_str(": ");
                 s.push_str(&g.bounds.join(" + "));
             }
-            
+
             if let Some(default) = &g.default {
                 s.push_str(" = ");
                 s.push_str(default);
             }
-            
+
             s
         })
         .collect();
-    
+
     format!("<{}>", params.join(", "))
 }
 
@@ -490,14 +495,12 @@ fn where_clauses_to_string(where_clauses: &[WhereClause]) -> String {
     if where_clauses.is_empty() {
         return "none".to_string();
     }
-    
+
     let clauses: Vec<String> = where_clauses
         .iter()
-        .map(|wc| {
-            format!("{}: {}", wc.subject, wc.bounds.join(" + "))
-        })
+        .map(|wc| format!("{}: {}", wc.subject, wc.bounds.join(" + ")))
         .collect();
-    
+
     clauses.join(", ")
 }
 
@@ -541,7 +544,8 @@ fn extract_body_preview(body: &str, max_lines: usize) -> String {
 
     // Include full body for short items (better embedding quality)
     if line_count <= FULL_BODY_THRESHOLD_LINES {
-        return body.lines()
+        return body
+            .lines()
             .enumerate()
             .map(|(i, line)| format!("{:4}: {}", i + 1, line))
             .collect::<Vec<_>>()
@@ -552,7 +556,8 @@ fn extract_body_preview(body: &str, max_lines: usize) -> String {
     let head_lines = max_lines * 2 / 3; // ~13 lines from top
     let tail_lines = max_lines - head_lines; // ~7 lines from bottom
 
-    let head: Vec<String> = body.lines()
+    let head: Vec<String> = body
+        .lines()
         .take(head_lines)
         .enumerate()
         .map(|(i, line)| format!("{:4}: {}", i + 1, line))
@@ -567,7 +572,10 @@ fn extract_body_preview(body: &str, max_lines: usize) -> String {
         .collect();
 
     let mut result = head;
-    result.push(format!("  ... ({} lines omitted) ...", line_count - head_lines - tail_lines));
+    result.push(format!(
+        "  ... ({} lines omitted) ...",
+        line_count - head_lines - tail_lines
+    ));
     result.extend(tail);
     result.join("\n")
 }
@@ -586,14 +594,14 @@ fn split_fqn(fqn: &str) -> (String, String) {
     if parts.is_empty() {
         return (String::new(), String::new());
     }
-    
+
     let crate_name = parts[0].to_string();
     let module_path = if parts.len() > 1 {
         parts[..parts.len() - 1].join("::")
     } else {
         crate_name.clone()
     };
-    
+
     (crate_name, module_path)
 }
 
@@ -603,14 +611,14 @@ fn extract_struct_fields(body: &str) -> String {
     let mut in_field = false;
     let _current_field = String::new();
     let mut brace_count = 0;
-    
+
     for line in body.lines() {
         // Skip attributes and doc comments
         let trimmed = line.trim();
         if trimmed.starts_with("#[") || trimmed.starts_with("///") || trimmed.starts_with("//!") {
             continue;
         }
-        
+
         // Track braces
         for c in trimmed.chars() {
             match c {
@@ -619,12 +627,12 @@ fn extract_struct_fields(body: &str) -> String {
                 _ => {}
             }
         }
-        
+
         // After opening brace, we're in fields
         if brace_count > 0 {
             in_field = true;
         }
-        
+
         if in_field && trimmed.contains(':') && !trimmed.starts_with("//") {
             // Extract field name and type
             if let Some(colon_pos) = trimmed.find(':') {
@@ -635,7 +643,7 @@ fn extract_struct_fields(body: &str) -> String {
             }
         }
     }
-    
+
     if fields.is_empty() {
         "no fields".to_string()
     } else {
@@ -648,15 +656,15 @@ fn extract_enum_variants(body: &str) -> String {
     let mut variants = Vec::new();
     let mut in_enum = false;
     let mut brace_count = 0;
-    
+
     for line in body.lines() {
         let trimmed = line.trim();
-        
+
         // Skip attributes and doc comments
         if trimmed.starts_with("#[") || trimmed.starts_with("///") || trimmed.starts_with("//!") {
             continue;
         }
-        
+
         // Track braces
         for c in trimmed.chars() {
             match c {
@@ -665,12 +673,12 @@ fn extract_enum_variants(body: &str) -> String {
                 _ => {}
             }
         }
-        
+
         // After opening brace
         if brace_count > 0 {
             in_enum = true;
         }
-        
+
         if in_enum {
             // Look for variant names (identifiers before { or ( or = or ,)
             if let Some(first_char) = trimmed.chars().next() {
@@ -682,16 +690,22 @@ fn extract_enum_variants(body: &str) -> String {
                         .or_else(|| trimmed.find('='))
                         .or_else(|| trimmed.find(','))
                         .unwrap_or(trimmed.len());
-                    
+
                     let variant_name = trimmed[..end_pos].trim();
-                    if !variant_name.is_empty() && variant_name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+                    if !variant_name.is_empty()
+                        && variant_name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_ascii_uppercase())
+                            .unwrap_or(false)
+                    {
                         variants.push(variant_name.to_string());
                     }
                 }
             }
         }
     }
-    
+
     if variants.is_empty() {
         "no variants".to_string()
     } else {
@@ -732,15 +746,15 @@ fn extract_supertraits(signature: &str) -> String {
 /// Extract trait methods from body
 fn extract_trait_methods(body: &str) -> String {
     let mut methods = Vec::new();
-    
+
     for line in body.lines() {
         let trimmed = line.trim();
-        
+
         // Skip attributes and doc comments
         if trimmed.starts_with("#[") || trimmed.starts_with("///") || trimmed.starts_with("//!") {
             continue;
         }
-        
+
         // Look for fn declarations
         if trimmed.starts_with("fn ") || trimmed.starts_with("async fn ") {
             // Extract method name
@@ -758,7 +772,7 @@ fn extract_trait_methods(body: &str) -> String {
             }
         }
     }
-    
+
     if methods.is_empty() {
         "no methods".to_string()
     } else {
@@ -798,7 +812,7 @@ fn extract_const_info(signature: &str) -> (String, String) {
     // Format: const NAME: Type = value;
     let mut ty = "unknown".to_string();
     let mut value = "unknown".to_string();
-    
+
     if let Some(colon_pos) = signature.find(':') {
         let after_colon = &signature[colon_pos + 1..];
         if let Some(eq_pos) = after_colon.find('=') {
@@ -808,7 +822,7 @@ fn extract_const_info(signature: &str) -> (String, String) {
             value = after_eq[..end].trim().to_string();
         }
     }
-    
+
     (ty, value)
 }
 
@@ -823,7 +837,7 @@ fn extract_macro_rules(body: &str) -> String {
     let mut patterns = Vec::new();
     let mut depth = 0;
     let mut current = String::new();
-    
+
     for c in body.chars() {
         match c {
             '{' => {
@@ -850,7 +864,7 @@ fn extract_macro_rules(body: &str) -> String {
             }
         }
     }
-    
+
     if patterns.is_empty() {
         "simplified".to_string()
     } else {
@@ -870,14 +884,14 @@ fn extract_use_path(signature: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_split_fqn() {
         let (crate_name, module_path) = split_fqn("my_crate::module::submodule::function");
         assert_eq!(crate_name, "my_crate");
         assert_eq!(module_path, "my_crate::module::submodule");
     }
-    
+
     #[test]
     fn test_extract_doc_chunks() {
         let item = ParsedItem {
@@ -889,18 +903,20 @@ mod tests {
             generic_params: vec![],
             where_clauses: vec![],
             attributes: vec![],
-            doc_comment: "This is paragraph one.\n\nThis is paragraph two.\n\nThis is paragraph three.".to_string(),
+            doc_comment:
+                "This is paragraph one.\n\nThis is paragraph two.\n\nThis is paragraph three."
+                    .to_string(),
             start_line: 1,
             end_line: 5,
             body_source: "pub fn func() {}".to_string(),
             generated_by: None,
         };
-        
+
         let chunks = extract_doc_chunks(&item, 50);
         assert!(!chunks.is_empty());
         assert!(chunks.iter().all(|c| c.source_fqn == "test::module::func"));
     }
-    
+
     #[test]
     fn test_generate_function_text() {
         let item = ParsedItem {
@@ -1029,21 +1045,33 @@ mod tests {
 
     #[test]
     fn test_extract_return_type() {
-        assert_eq!(extract_return_type_from_signature("fn foo() -> i32 {"), "i32");
+        assert_eq!(
+            extract_return_type_from_signature("fn foo() -> i32 {"),
+            "i32"
+        );
         assert_eq!(extract_return_type_from_signature("fn foo()"), "()");
-        assert_eq!(extract_return_type_from_signature("fn foo() -> Result<String, Error> where T: Clone"), "Result<String, Error>");
+        assert_eq!(
+            extract_return_type_from_signature("fn foo() -> Result<String, Error> where T: Clone"),
+            "Result<String, Error>"
+        );
     }
 
     #[test]
     fn test_extract_params() {
-        assert_eq!(extract_params_from_signature("fn foo(x: i32, y: String)"), "x: i32, y: String");
+        assert_eq!(
+            extract_params_from_signature("fn foo(x: i32, y: String)"),
+            "x: i32, y: String"
+        );
         assert_eq!(extract_params_from_signature("fn foo()"), "");
     }
 
     #[test]
     fn test_format_doc_comment() {
         assert_eq!(format_doc_comment(""), "No documentation");
-        assert_eq!(format_doc_comment("Hello world"), "Documentation: Hello world");
+        assert_eq!(
+            format_doc_comment("Hello world"),
+            "Documentation: Hello world"
+        );
     }
 
     #[test]
@@ -1099,7 +1127,7 @@ mod tests {
                 default: None,
             },
         ];
-        
+
         let result = generics_to_string(&generics);
         assert!(result.contains("T: Clone + Send"));
         assert!(result.contains("'a"));
@@ -1108,7 +1136,10 @@ mod tests {
     #[test]
     fn test_body_preview_short_item_includes_full_body() {
         // Items under FULL_BODY_THRESHOLD_LINES should include full body
-        let body = (1..=10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let body = (1..=10)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let preview = extract_body_preview(&body, MAX_BODY_PREVIEW_LINES);
         // All 10 lines should be present
         assert!(preview.contains("line 1"));
@@ -1119,7 +1150,10 @@ mod tests {
     #[test]
     fn test_body_preview_long_item_shows_head_and_tail() {
         // Items over FULL_BODY_THRESHOLD_LINES should show head + tail
-        let body = (1..=100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let body = (1..=100)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let preview = extract_body_preview(&body, MAX_BODY_PREVIEW_LINES);
         // Should have head lines
         assert!(preview.contains("line 1"));

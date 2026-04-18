@@ -85,7 +85,9 @@ impl SynParser {
         skeleton: &SkeletonItem,
     ) -> Result<Vec<ParsedItem>> {
         match item {
-            SynItem::Impl(impl_item) => self.parse_impl_with_methods(impl_item, source, module_path, skeleton),
+            SynItem::Impl(impl_item) => {
+                self.parse_impl_with_methods(impl_item, source, module_path, skeleton)
+            }
             other => {
                 let parsed = self.item_to_parsed_single(other, source, module_path, skeleton)?;
                 Ok(vec![parsed])
@@ -313,13 +315,31 @@ impl SynParser {
 
         // Determine if this is a trait impl
         let (impl_name, trait_fqn) = if let Some((_, path, _)) = &item.trait_ {
-            let trait_name = path
+            // Extract trait name without generics (for FQN construction)
+            let trait_name_bare = path
                 .segments
                 .iter()
                 .map(|s| s.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");
-            (format!("{}_{}", trait_name, self_type), Some(trait_name.clone()))
+            // Extract trait name with generics (for trait matching)
+            let trait_name_full = path
+                .segments
+                .iter()
+                .map(|s| {
+                    let ident = s.ident.to_string();
+                    if s.arguments.is_empty() {
+                        ident
+                    } else {
+                        format!("{}{}", ident, s.arguments.to_token_stream())
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("::");
+            (
+                format!("{}_{}", trait_name_bare, self_type),
+                Some(trait_name_full),
+            )
         } else {
             (self_type.clone(), None)
         };
@@ -1332,10 +1352,17 @@ pub fn simple() {}"#;
     fn helper(&self) -> i32 { 42 }
 }"#;
         let skeleton = make_skeleton(0, source.len());
-        let items = parser.parse_items(source, "my_crate::my_mod", &skeleton).unwrap();
+        let items = parser
+            .parse_items(source, "my_crate::my_mod", &skeleton)
+            .unwrap();
 
         // Should emit impl block + 2 methods = 3 items
-        assert_eq!(items.len(), 3, "Expected 3 items (impl + 2 methods), got {}", items.len());
+        assert_eq!(
+            items.len(),
+            3,
+            "Expected 3 items (impl + 2 methods), got {}",
+            items.len()
+        );
 
         // First item is the impl block
         assert!(matches!(items[0].item_type, ItemType::Impl));
@@ -1362,7 +1389,9 @@ pub fn simple() {}"#;
     }
 }"#;
         let skeleton = make_skeleton(0, source.len());
-        let items = parser.parse_items(source, "crate::module", &skeleton).unwrap();
+        let items = parser
+            .parse_items(source, "crate::module", &skeleton)
+            .unwrap();
 
         // impl block + 1 method
         assert_eq!(items.len(), 2);
@@ -1397,9 +1426,14 @@ pub fn simple() {}"#;
     pub fn process(&self, data: &str) -> bool { true }
 }"#;
         let skeleton = make_skeleton(0, source.len());
-        let items = parser.parse_items(source, "my_crate::utils", &skeleton).unwrap();
+        let items = parser
+            .parse_items(source, "my_crate::utils", &skeleton)
+            .unwrap();
 
-        let method = items.iter().find(|i| i.name == "process").expect("Should find process method");
+        let method = items
+            .iter()
+            .find(|i| i.name == "process")
+            .expect("Should find process method");
         // Canonical format: module::Type::method
         assert_eq!(method.fqn, "my_crate::utils::MyStruct::process");
     }

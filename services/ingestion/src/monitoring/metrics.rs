@@ -44,10 +44,7 @@ impl MetricsRegistry {
         )?;
 
         let memory_pressure = GaugeVec::new(
-            Opts::new(
-                "ingestion_memory_pressure",
-                "Current memory pressure level",
-            ),
+            Opts::new("ingestion_memory_pressure", "Current memory pressure level"),
             &["level"],
         )?;
 

@@ -11,13 +11,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use super::{default_depth, CalleeInfo, CallerInfo, CallerNode};
 use crate::errors::AppError;
-use crate::neo4j::{
-    get_callers_from_neo4j, get_callees_from_neo4j,
-    get_callers_for_impl_with_prefix, get_callees_for_impl_with_prefix,
-};
+use crate::extractors::WorkspaceId;
+use crate::neo4j::WorkspaceGraphClient;
 use crate::state::AppState;
-use super::{CallerInfo, CalleeInfo, CallerNode, default_depth};
+use crate::workspace::acquire_conn;
 
 // =============================================================================
 // Request/Response Types
@@ -106,27 +105,60 @@ pub struct CallersResponse {
 /// an empty caller list.
 pub async fn get_function(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetFunctionQuery>,
 ) -> Result<Json<FunctionDetail>, AppError> {
     state.metrics.record_request("get_function", "GET");
     debug!("Get function: {}", query.fqn);
 
-    let row = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<String>, i32, i32, Option<String>, Option<String>, Option<String>)>(
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws.clone());
+
+    let mut conn = acquire_conn(&state.pg_pool, Some(&ws)).await?;
+
+    let row = sqlx::query_as::<
+        sqlx::Postgres,
+        (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i32,
+            i32,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
         r#"
         SELECT e.fqn, e.name, e.item_type, e.visibility, e.signature, e.doc_comment as docstring,
                sf.file_path, e.start_line, e.end_line, sf.module_path, sf.crate_name, e.body_source
         FROM extracted_items e
         LEFT JOIN source_files sf ON e.source_file_id = sf.id
         WHERE e.fqn = $1
-        "#
+        "#,
     )
     .bind(&query.fqn)
-    .fetch_optional(&state.pg_pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| AppError::Database(format!("Failed to query function: {}", e)))?;
 
-    let (fqn, name, item_type, visibility, signature, docstring, file_path, start_line, end_line, module_path, crate_name, body_source) =
-        row.ok_or_else(|| AppError::NotFound(format!("Item not found: {}", query.fqn)))?;
+    let (
+        fqn,
+        name,
+        item_type,
+        visibility,
+        signature,
+        docstring,
+        file_path,
+        start_line,
+        end_line,
+        module_path,
+        crate_name,
+        body_source,
+    ) = row.ok_or_else(|| AppError::NotFound(format!("Item not found: {}", query.fqn)))?;
 
     // For impl blocks, aggregate callers/callees from child methods.
     // Impl nodes don't have CALLS relationships directly — their methods do.
@@ -150,11 +182,14 @@ pub async fn get_function(
             format!("{}::", self_type)
         };
 
-        debug!("Impl block detected: fqn={}, self_type={}, method_prefix={}", fqn, self_type, method_prefix);
+        debug!(
+            "Impl block detected: fqn={}, self_type={}, method_prefix={}",
+            fqn, self_type, method_prefix
+        );
 
         let (caller_result, callee_result) = tokio::join!(
-            get_callers_for_impl_with_prefix(&state, &method_prefix, 1),
-            get_callees_for_impl_with_prefix(&state, &method_prefix),
+            client.get_callers_for_impl(&method_prefix, 1),
+            client.get_callees_for_impl(&method_prefix),
         );
 
         let callers: Vec<CallerInfo> = caller_result
@@ -171,8 +206,8 @@ pub async fn get_function(
     } else {
         // Standard function/method: direct CALLS query
         let (caller_result, callee_result) = tokio::join!(
-            get_callers_from_neo4j(&state, &query.fqn, 1),
-            get_callees_from_neo4j(&state, &query.fqn),
+            client.get_callers(&query.fqn, 1),
+            client.get_callees(&query.fqn),
         );
 
         let callers: Vec<CallerInfo> = caller_result
@@ -218,6 +253,7 @@ pub async fn get_function(
 /// Returns [`AppError::Neo4j`] if the graph query fails.
 pub async fn get_callers(
     State(state): State<AppState>,
+    WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetCallersQuery>,
 ) -> Result<Json<CallersResponse>, AppError> {
     state.metrics.record_request("get_callers", "GET");
@@ -231,7 +267,8 @@ pub async fn get_callers(
 
     debug!("Get callers for: {} (depth: {})", query.fqn, query.depth);
 
-    let callers = get_callers_from_neo4j(&state, &query.fqn, query.depth).await?;
+    let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
+    let callers = client.get_callers(&query.fqn, query.depth).await?;
 
     Ok(Json(CallersResponse {
         fqn: query.fqn,
@@ -263,7 +300,10 @@ fn extract_self_type_from_impl(name: &str, signature: &Option<String>) -> String
                         '<' => depth += 1,
                         '>' => {
                             depth -= 1;
-                            if depth == 0 { end = i + 1; break; }
+                            if depth == 0 {
+                                end = i + 1;
+                                break;
+                            }
                         }
                         _ => {}
                     }

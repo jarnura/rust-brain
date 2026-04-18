@@ -11,7 +11,12 @@ services:
   # ---------------------------------------------------------------------------
 
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+      args:
+        AGE_COMMIT: ${AGE_COMMIT:-8c74fd24dd91bba54fdf4793fccd0fb7bd2bb9d8}
+    image: rustbrain-postgres:latest
     container_name: rustbrain-postgres
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -41,11 +46,20 @@ services:
       - "${PGWEB_PORT:-8085}:8081"
     environment:
       PGWEB_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   neo4j:
     image: neo4j:5-community
@@ -151,6 +165,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: rustbrain-blackbox-exporter
+    ports:
+      - "${BLACKBOX_EXPORTER_PORT:-9115}:9115"
+    volumes:
+      - ./configs/prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
   node-exporter:
     image: prom/node-exporter:v1.8.0
@@ -159,6 +191,10 @@ services:
       - "${NODE_EXPORTER_PORT:-9100}:9100"
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   prometheus:
     image: prom/prometheus:v2.51.0
@@ -167,6 +203,7 @@ services:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -182,6 +219,10 @@ services:
       - node-exporter
     restart: unless-stopped
     networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   grafana:
     image: grafana/grafana:11.0.0
@@ -229,12 +270,38 @@ services:
       RUST_LOG: ${RUST_LOG:-info,rustbrain_api=debug}
       API_PORT: 8080
       OPENCODE_HOST: http://opencode:4096
+      # Docker socket access for per-workspace volume orchestration.
+      # Override with DOCKER_HOST env var if using a remote daemon.
+      DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
+      GH_TOKEN: ${GH_TOKEN:-}
+      # Host-side clone root — must match the host path that backs the bind
+      # mount below so docker run -v <host_path>:... works from the API container.
+      WORKSPACE_HOST_CLONE_ROOT: ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}
+      # Ingestion image triggered per-workspace after clone completes.
+      INGESTION_IMAGE: ${INGESTION_IMAGE:-rustbrain-ingestion:latest}
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-rustbrain-opencode:latest}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-rustbrain_rustbrain-net}
+      RUSTBRAIN_PUBLIC_HOST: ${RUSTBRAIN_PUBLIC_HOST:-}
+      RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS: ${CONTAINER_KEEP_ALIVE_SECS:-0}
+      OPENCODE_CONFIG_HOST_PATH: ${OPENCODE_CONFIG_HOST_PATH:-}
+      MCP_SSE_URL: ${MCP_SSE_URL:-http://mcp-sse:3001/sse}
     networks:
       rustbrain-net:
         aliases:
           - api
     volumes:
       - ./.snapshot-manifest.json:/app/.snapshot-manifest.json:ro
+      # Docker socket mount — required for DockerClient (workspace volume CRUD).
+      # The API container calls `docker volume create/rm/inspect` at runtime.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared clone directory — bind-mounted so the host Docker daemon can
+      # mount workspace clone paths into the ingestion container.
+      - ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}:/tmp/rustbrain-clones
+    # Grant the rustbrain user access to /var/run/docker.sock.
+    # DOCKER_GID must match the host docker group gid (check: stat -c %g /var/run/docker.sock).
+    # Common values: 999 (Ubuntu), 125 (Debian-based), 998 (Fedora).
+    group_add:
+      - "${DOCKER_GID:-999}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -254,7 +321,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
 
   # ---------------------------------------------------------------------------
   # MCP LAYER
@@ -330,18 +397,27 @@ services:
       LITELLM_BASE_URL: ${LITELLM_BASE_URL}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
       CHAT_MODEL: ${CHAT_MODEL:-glm-latest}
+      # Git-based write workflow configuration
+      TARGET_REPO_URL: ${TARGET_REPO_URL:-}
+      TARGET_REPO_PATH: /workspace/target-repo
+      OPENCODE_WORK_DIR: ${OPENCODE_WORK_DIR:-/workspace/target-repo-work}
+      GIT_USER_NAME: ${GIT_USER_NAME:-OpenCode Developer}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-opencode@rustbrain.local}
+      FEATURE_BRANCH_PREFIX: ${FEATURE_BRANCH_PREFIX:-opencode}
+      GH_TOKEN: ${GH_TOKEN:-}
     volumes:
       - opencode_data:/home/opencode/.local/share/opencode
-      - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
+      - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json.template:ro
       - ./configs/opencode/.opencode:/home/opencode/.config/opencode/.opencode:ro
       - ./:/home/opencode/projects/rust-brain:ro
-      - ${TARGET_REPO_PATH:-.}:/workspace/target-repo:ro  # Ingested project (e.g. hyperswitch)
+      - ${TARGET_REPO_PATH:-.}:/workspace/target-repo:ro
+      - opencode_work:/workspace/target-repo-work
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4096/ || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 600s
     depends_on:
       mcp-sse:
         condition: service_healthy
@@ -353,18 +429,92 @@ services:
           memory: 512M
 
   # ---------------------------------------------------------------------------
+  # EDITOR PLAYGROUND FRONTEND
+  # ---------------------------------------------------------------------------
+
+  playground-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${PLAYGROUND_API_BASE_URL:-http://localhost:8088}
+    container_name: rustbrain-playground-ui
+    ports:
+      - "${PLAYGROUND_UI_PORT:-8090}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  # ---------------------------------------------------------------------------
   # INGESTION LAYER
   # ---------------------------------------------------------------------------
+
+  # Audit service — workspace leak detection and compliance scanning
+  # Runs periodic Cypher queries against Neo4j to detect cross-workspace
+  # contamination and orphan nodes. Also detects orphaned Docker volumes
+  # and containers not tracked in Postgres. Exposes metrics at :8090/metrics.
+  audit:
+    build:
+      context: .
+      dockerfile: services/audit/Dockerfile
+    container_name: rustbrain-audit
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      AUDIT_PORT: "8090"
+      AUDIT_INTERVAL_SECS: ${AUDIT_INTERVAL_SECS:-600}
+      LEAK_DETECTION_DRY_RUN: ${LEAK_DETECTION_DRY_RUN:-true}
+      AUDIT_LOG_RETENTION_DAYS: ${AUDIT_LOG_RETENTION_DAYS:-90}
+      RUST_LOG: ${RUST_LOG:-info,rustbrain_audit=debug}
+    ports:
+      - "${AUDIT_PORT:-8090}:8090"
+    volumes:
+      # Docker socket access for detecting orphaned volumes/containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Grant access to Docker socket (same GID as API container)
+    group_add:
+      - "${DOCKER_GID:-999}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8090/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rustbrain-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   ingestion:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
+    image: rustbrain-ingestion:latest
     container_name: rustbrain-ingestion
     volumes:
-      - ${HOME}/.cargo/registry:/root/.cargo/registry:ro  # Share cargo cache
-      - ${HOME}/.cargo/git:/root/.cargo/git:ro            # Share git cache
-      - rustbrain-expand-cache:/tmp/rustbrain-expand-cache  # Persist expand cache
+      - ${HOME}/.cargo/registry:/home/rustbrain/.cargo/registry:ro
+      - ${HOME}/.cargo/git:/home/rustbrain/.cargo/git:ro
+      - rustbrain-expand-cache:/tmp/rustbrain-expand-cache
       # NOTE: target-repo is mounted via `docker compose run -v` in ingest.sh
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -422,4 +572,5 @@ volumes:
   prometheus_data:
   grafana_data:
   opencode_data:
+  opencode_work:
   rustbrain-expand-cache:

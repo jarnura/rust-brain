@@ -57,6 +57,7 @@ check_service "Qdrant Dashboard" "http://localhost:6333/healthz"
 check_service "Ollama API" "http://localhost:11434/api/tags"
 check_service "Prometheus" "http://localhost:9090/-/healthy"
 check_service "Grafana" "http://localhost:3000/api/health"
+check_service "Audit Service" "http://localhost:${AUDIT_PORT:-8090}/health"
 
 echo ""
 echo "=== TCP Ports ==="

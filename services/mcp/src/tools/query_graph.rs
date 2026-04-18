@@ -10,17 +10,55 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::instrument;
 
-/// Request for graph query
+/// Request for graph query — flat schema (no nested parameters object).
+/// All template params are top-level fields alongside query_name.
 #[derive(Debug, Deserialize)]
 pub struct QueryGraphRequest {
     /// Name of a pre-approved query template.
-    /// Available: find_functions_by_name, find_callers, find_callees,
-    /// find_trait_implementations, find_by_fqn, find_neighbors,
-    /// find_nodes_by_label, find_module_contents, count_by_label, find_crate_overview
     pub query_name: String,
-    /// Parameters for the query template (e.g. fqn, name, crate_name, label, limit)
+    /// Nested parameters object (legacy format — still accepted)
     #[serde(default)]
     pub parameters: HashMap<String, serde_json::Value>,
+    /// Flat params — preferred format, avoids nested JSON issues
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub fqn: Option<String>,
+    #[serde(default)]
+    pub crate_name: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub trait_name: Option<String>,
+    #[serde(default)]
+    pub type_name: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub depth: Option<i64>,
+}
+
+impl QueryGraphRequest {
+    /// Merge flat params into the parameters HashMap.
+    /// Flat params take precedence over nested ones.
+    pub fn merged_parameters(&self) -> HashMap<String, serde_json::Value> {
+        let mut params = self.parameters.clone();
+        if let Some(ref v) = self.name { params.insert("name".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.fqn { params.insert("fqn".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.crate_name { params.insert("crate_name".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.label { params.insert("label".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.path { params.insert("path".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.trait_name { params.insert("trait_name".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.type_name { params.insert("type_name".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.prefix { params.insert("prefix".into(), serde_json::json!(v)); }
+        if let Some(v) = self.limit { params.insert("limit".into(), serde_json::json!(v)); }
+        if let Some(v) = self.depth { params.insert("depth".into(), serde_json::json!(v)); }
+        params
+    }
 }
 
 /// Response from graph query
@@ -37,10 +75,11 @@ pub struct GraphQueryResponse {
 /// Execute the query_graph tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<String> {
+    let params = request.merged_parameters();
     let response: GraphQueryResponse = client
         .post("/tools/query_graph", &serde_json::json!({
             "query_name": request.query_name,
-            "parameters": request.parameters,
+            "parameters": params,
         }))
         .await?;
 
@@ -123,8 +162,8 @@ pub fn definition() -> serde_json::Value {
     serde_json::json!({
         "name": "query_graph",
         "description": "Execute a named query template against the code knowledge graph. \
-                        Choose from pre-approved templates to explore code relationships safely. \
-                        Pass 'limit' (1-100) in parameters to control result count.",
+                        All parameters are flat (no nested objects). \
+                        Example: {\"query_name\": \"find_crate_dependencies\", \"crate_name\": \"router\"}",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -141,13 +180,61 @@ pub fn definition() -> serde_json::Value {
                         "find_nodes_by_label",
                         "find_module_contents",
                         "count_by_label",
-                        "find_crate_overview"
+                        "find_crate_overview",
+                        "find_crate_dependencies",
+                        "find_crate_dependents",
+                        "get_trait_impls_api",
+                        "find_usages_of_type",
+                        "get_module_tree",
+                        "get_callers",
+                        "get_callers_for_impl",
+                        "get_callees_for_impl",
+                        "get_callees",
+                        "consistency_fqns",
+                        "consistency_fqns_filtered",
+                        "consistency_count"
                     ]
                 },
-                "parameters": {
-                    "type": "object",
-                    "description": "Template parameters. Common keys: fqn (str), name (str), crate_name (str), label (str: Crate|Module|Function|Struct|Enum|Trait|Impl|Type|TypeAlias|Const|Static|Macro), limit (int 1-100, default 25).",
-                    "additionalProperties": true
+                "name": {
+                    "type": "string",
+                    "description": "Function/trait/module name to search for"
+                },
+                "fqn": {
+                    "type": "string",
+                    "description": "Fully qualified name (e.g. router::routes::payments::payments_create)"
+                },
+                "crate_name": {
+                    "type": "string",
+                    "description": "Crate name (for find_crate_overview, find_crate_dependencies, find_crate_dependents)"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Node label filter",
+                    "enum": ["Function", "Struct", "Enum", "Trait", "Impl", "Module", "Crate", "Type", "TypeAlias", "Const", "Static", "Macro"]
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Module path (for find_module_contents)"
+                },
+                "trait_name": {
+                    "type": "string",
+                    "description": "Trait name (for get_trait_impls_api)"
+                },
+                "type_name": {
+                    "type": "string",
+                    "description": "Type name (for find_usages_of_type)"
+                },
+                "prefix": {
+                    "type": "string",
+                    "description": "FQN prefix (for get_callers_for_impl, get_callees_for_impl)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (1-100, default 25)"
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Traversal depth (1-5, default 1, for find_callers/find_neighbors)"
                 }
             },
             "required": ["query_name"]
@@ -174,7 +261,9 @@ mod tests {
 
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query_name"].is_object());
-        assert!(schema["properties"]["parameters"].is_object());
+        assert!(schema["properties"]["name"].is_object());
+        assert!(schema["properties"]["fqn"].is_object());
+        assert!(schema["properties"]["crate_name"].is_object());
 
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("query_name")));
@@ -212,6 +301,40 @@ mod tests {
 
         assert_eq!(request.query_name, "find_crate_overview");
         assert!(request.parameters.is_empty());
+    }
+
+    #[test]
+    fn test_query_graph_request_flat_format() {
+        // This is the new preferred format — no nested parameters object
+        let json = r#"{"query_name": "find_crate_dependencies", "crate_name": "router"}"#;
+        let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(request.query_name, "find_crate_dependencies");
+        assert_eq!(request.crate_name, Some("router".to_string()));
+
+        let merged = request.merged_parameters();
+        assert_eq!(merged.get("crate_name").unwrap(), "router");
+    }
+
+    #[test]
+    fn test_query_graph_request_flat_overrides_nested() {
+        // Flat params take precedence over nested
+        let json = r#"{"query_name": "find_callers", "name": "flat_name", "parameters": {"name": "nested_name"}}"#;
+        let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
+
+        let merged = request.merged_parameters();
+        assert_eq!(merged.get("name").unwrap(), "flat_name");
+    }
+
+    #[test]
+    fn test_query_graph_request_flat_with_limit_depth() {
+        let json = r#"{"query_name": "find_callers", "fqn": "router::payments::create", "limit": 50, "depth": 3}"#;
+        let request: QueryGraphRequest = serde_json::from_str(json).unwrap();
+
+        let merged = request.merged_parameters();
+        assert_eq!(merged.get("fqn").unwrap(), "router::payments::create");
+        assert_eq!(merged.get("limit").unwrap(), 50);
+        assert_eq!(merged.get("depth").unwrap(), 3);
     }
 
     #[test]
@@ -342,6 +465,9 @@ mod tests {
         let request = QueryGraphRequest {
             query_name: "find_functions_by_name".to_string(),
             parameters: params,
+            name: None, fqn: None, crate_name: None, label: None,
+            path: None, trait_name: None, type_name: None, prefix: None,
+            limit: None, depth: None,
         };
 
         assert_eq!(request.query_name, "find_functions_by_name");

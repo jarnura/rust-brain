@@ -1,5 +1,7 @@
 # rust-brain
 
+[![CI](https://github.com/jarnura/rust-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/jarnura/rust-brain/actions/workflows/ci.yml)
+
 A production-grade Rust code intelligence platform. Ingests Rust codebases and builds a queryable knowledge graph with semantic search, call graph traversal, trait resolution, and monomorphization tracking.
 
 ## Architecture
@@ -166,11 +168,12 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 
 ## Agent Tool API
 
-### Code Intelligence (9 endpoints)
+### Code Intelligence (12 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /tools/search_semantic` | Natural language code search |
+| `POST /tools/search_docs` | Documentation semantic search |
 | `POST /tools/aggregate_search` | Cross-database aggregated search |
 | `GET /tools/get_function?fqn=` | Full function details with source |
 | `GET /tools/get_callers?fqn=` | Direct and transitive callers |
@@ -178,10 +181,11 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `GET /tools/find_usages_of_type?type_name=` | Where a type is used |
 | `GET /tools/get_module_tree?crate=` | Module hierarchy |
 | `POST /tools/query_graph` | Raw Cypher queries |
+| `POST /tools/pg_query` | Read-only SQL queries |
 | `GET /tools/find_calls_with_type?type_name=` | Call sites with specific type argument (turbofish) |
 | `GET /tools/find_trait_impls_for_type?type_name=` | All trait implementations for a given type |
 
-### Chat (6 endpoints)
+### Chat (10 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -190,7 +194,43 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `POST /tools/chat/send` | Send message to stream |
 | `POST /tools/chat/sessions` | Create session |
 | `GET /tools/chat/sessions` | List sessions |
+| `GET /tools/chat/sessions/:id` | Get session details |
 | `DELETE /tools/chat/sessions/:id` | Delete session |
+| `POST /tools/chat/sessions/:id/fork` | Fork a session |
+| `POST /tools/chat/sessions/:id/abort` | Abort streaming session |
+
+### Workspace (8 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /workspaces` | Create workspace from GitHub repo |
+| `GET /workspaces` | List all workspaces |
+| `GET /workspaces/:id` | Get workspace details |
+| `DELETE /workspaces/:id` | Archive workspace and cleanup |
+| `GET /workspaces/:id/files` | List workspace file tree |
+| `GET /workspaces/:id/stream` | SSE stream of workspace events |
+| `GET /workspaces/:id/diff` | Get uncommitted changes |
+| `POST /workspaces/:id/commit` | Commit changes |
+| `POST /workspaces/:id/reset` | Discard changes |
+
+### Execution (4 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /workspaces/:id/execute` | Start multi-agent execution |
+| `GET /workspaces/:id/executions` | List executions for workspace |
+| `GET /executions/:id` | Get execution status |
+| `GET /executions/:id/events` | SSE stream of agent events |
+
+### System (5 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Service health with per-store counts |
+| `GET /metrics` | Prometheus metrics |
+| `GET /api/snapshot` | Snapshot info |
+| `GET /api/consistency` | Cross-store consistency check |
+| `GET /api/ingestion/progress` | Ingestion progress |
 
 ## Key Files
 
@@ -203,12 +243,25 @@ PROJECT_STATE.md         ← Current project state
 
 ## Playground
 
-The playground UI at **http://localhost:8088/playground** provides 4 pages for interactive exploration:
+The playground UI at **http://localhost:8088/playground** provides interactive exploration:
 
 - **Dashboard** (`index.html`): Real-time service health, ingestion stats, quick actions
 - **Query Playground** (`playground.html`): 7 query types (semantic, function, callers, trait impls, type usages, module tree, Cypher) with JSON/table view toggle
 - **Audit Trail** (`audit.html`): Known issues and system audit information
 - **Gap Analysis** (`gaps.html`): Feature completeness tracking
+
+### Editor Playground
+
+The Workspace API enables an **Editor Playground** workflow: create isolated workspaces from GitHub repos, run AI agents against them, and review/commit the results. Each workspace is sandboxed with its own Docker volume and Postgres schema.
+
+```bash
+# Quick start: create workspace → execute → review
+curl -X POST http://localhost:8088/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{"github_url": "https://github.com/juspay/hyperswitch"}'
+```
+
+See [Getting Started](./docs/getting-started.md#editor-playground) for the full walkthrough and [API Spec](./docs/api-spec.md#workspace-management) for endpoint details.
 
 See [docs/playground.md](./docs/playground.md) for detailed documentation.
 
@@ -232,6 +285,67 @@ See [docs/opencode-integration.md](./docs/opencode-integration.md) for architect
 - **Monorepo-first**: FQN scheme and graph schema support multi-repo with zero schema changes
 - **Streaming responses**: SSE-based MCP transport for real-time tool invocations in IDEs
 - **Model flexibility**: LiteLLM routing supports Anthropic, OpenAI, local models with transparent fallbacks
+
+## CI/CD
+
+### What Runs in CI
+
+The CI pipeline (`.github/workflows/ci.yml`) runs automatically on all pull requests and pushes to `main`:
+
+| Job | Command | Description |
+|-----|---------|-------------|
+| **fmt** | `cargo fmt --check` | Enforces code formatting |
+| **clippy** | `cargo clippy --all-targets -- -D warnings` | Linting (warnings = failures) |
+| **test** | `cargo test --workspace` | Unit tests only |
+| **build** | `cargo build --release` | Release compilation |
+| **nightly** | `cargo check --workspace` | Future compatibility check |
+
+### What Requires Docker
+
+Integration tests require the full docker-compose stack (Postgres, Neo4j, Qdrant, Ollama). These are **not run in CI** due to resource constraints and are marked with `#[ignore]` in the codebase.
+
+To run integration tests locally:
+
+```bash
+# Start the infrastructure
+./scripts/start.sh
+
+# Wait for services to be healthy
+./scripts/healthcheck.sh
+
+# Run integration tests (includes ignored tests)
+cargo test --workspace -- --include-ignored
+
+# Or run specific integration test files
+cargo test --test api_integration -- --include-ignored
+```
+
+**Integration test requirements:**
+- Postgres (DATABASE_URL)
+- Neo4j (NEO4J_URL)  
+- Qdrant (QDRANT_URL)
+- Ollama (EMBEDDING_URL) — optional for some tests
+
+### Branch Protection Recommendations
+
+For the `main` branch, configure these settings in GitHub (Settings → Branches → Add rule):
+
+1. **Required status checks:**
+   - `fmt` — Format check
+   - `clippy` — Linting
+   - `test` — Unit tests
+   - `build` — Release build
+
+2. **Additional settings:**
+   - ✅ Require a pull request before merging
+   - ✅ Require approvals (recommended: 1)
+   - ✅ Require status checks to pass before merging
+   - ✅ Require branches to be up to date before merging
+   - ✅ Require linear history (optional, keeps history clean)
+
+3. **Do NOT require:**
+   - `nightly` job (allowed to fail, catches future breaking changes)
+   - `integration` job (only runs on main branch pushes)
 
 ## Status
 

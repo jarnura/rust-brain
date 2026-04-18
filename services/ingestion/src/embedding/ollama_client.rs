@@ -41,11 +41,22 @@ pub struct OllamaConfig {
 
 impl Default for OllamaConfig {
     fn default() -> Self {
+        // Allow timeout and batch size override via environment
+        let timeout_secs = std::env::var("OLLAMA_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300); // 5 minutes default for large codebases
+
+        let batch_size = std::env::var("OLLAMA_BATCH_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(MAX_BATCH_SIZE);
+
         Self {
             base_url: "http://ollama:11434".to_string(),
             model: DEFAULT_MODEL.to_string(),
-            max_batch_size: MAX_BATCH_SIZE,
-            timeout: Duration::from_secs(60),
+            max_batch_size: batch_size,
+            timeout: Duration::from_secs(timeout_secs),
             max_retries: 5,
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(30),
@@ -86,7 +97,6 @@ struct EmbedBatchResponse {
     embeddings: Vec<Vec<f64>>,
 }
 
-
 impl OllamaClient {
     /// Create a new Ollama client
     pub fn new(config: OllamaConfig) -> Result<Self> {
@@ -96,26 +106,28 @@ impl OllamaClient {
             .pool_idle_timeout(Some(Duration::from_secs(30)))
             .build()
             .context("Failed to create HTTP client for Ollama")?;
-        
+
         Ok(Self { config, client })
     }
-    
+
     /// Create client with default configuration
     pub fn with_base_url(base_url: String) -> Result<Self> {
-        let mut config = OllamaConfig::default();
-        config.base_url = base_url;
+        let config = OllamaConfig {
+            base_url,
+            ..OllamaConfig::default()
+        };
         Self::new(config)
     }
-    
+
     /// Get embedding for a single text
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let request = EmbedRequest {
             model: self.config.model.clone(),
             prompt: text.to_string(),
         };
-        
+
         let url = format!("{}/api/embeddings", self.config.base_url);
-        
+
         let response = self
             .client
             .post(&url)
@@ -123,21 +135,21 @@ impl OllamaClient {
             .send()
             .await
             .context("Failed to send embedding request to Ollama")?;
-        
+
         let status = response.status();
-        
+
         if status.is_success() {
             let embed_response: EmbedResponse = response
                 .json()
                 .await
                 .context("Failed to parse Ollama embedding response")?;
-            
+
             let embedding: Vec<f32> = embed_response
                 .embedding
                 .into_iter()
                 .map(|f| f as f32)
                 .collect();
-            
+
             if embedding.len() != EXPECTED_DIMENSIONS {
                 warn!(
                     "Unexpected embedding dimensions: {} (expected {})",
@@ -145,77 +157,72 @@ impl OllamaClient {
                     EXPECTED_DIMENSIONS
                 );
             }
-            
+
             Ok(embedding)
         } else {
             let error_body = response.text().await.unwrap_or_default();
             anyhow::bail!("Ollama embedding failed: {} - {}", status, error_body)
         }
     }
-    
+
     /// Get embeddings for a batch of texts with retry logic
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        
+
         // Use the batch embedding endpoint
         let request = EmbedBatchRequest {
             model: self.config.model.clone(),
             input: texts.to_vec(),
         };
-        
+
         let url = format!("{}/api/embed", self.config.base_url);
-        
+
         // Retry with exponential backoff
         let mut backoff = self.config.initial_backoff;
         let mut attempt = 0;
-        
+
         loop {
             attempt += 1;
-            
-            let response = self
-                .client
-                .post(&url)
-                .json(&request)
-                .send()
-                .await;
-            
+
+            let response = self.client.post(&url).json(&request).send().await;
+
             match response {
                 Ok(resp) => {
                     let status = resp.status();
-                    
+
                     // Rate limited or service unavailable
-                    if status.as_u16() == 429 || status.as_u16() == 503 {
-                        if attempt <= self.config.max_retries {
-                            warn!(
-                                "Ollama rate limited (attempt {}/{}), backing off for {:?}",
-                                attempt, self.config.max_retries, backoff
-                            );
-                            tokio::time::sleep(backoff).await;
-                            backoff = std::cmp::min(backoff * 2, self.config.max_backoff);
-                            continue;
-                        }
+                    if (status.as_u16() == 429 || status.as_u16() == 503)
+                        && attempt <= self.config.max_retries
+                    {
+                        warn!(
+                            "Ollama rate limited (attempt {}/{}), backing off for {:?}",
+                            attempt, self.config.max_retries, backoff
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = std::cmp::min(backoff * 2, self.config.max_backoff);
+                        continue;
                     }
-                    
+
                     if status.is_success() {
                         let batch_response: EmbedBatchResponse = resp
                             .json()
                             .await
                             .context("Failed to parse Ollama batch embedding response")?;
-                        
+
                         let embeddings: Vec<Vec<f32>> = batch_response
                             .embeddings
                             .into_iter()
                             .map(|e| e.into_iter().map(|f| f as f32).collect())
                             .collect();
-                        
+
                         debug!(
                             "Generated {} embeddings ({} dimensions each)",
                             embeddings.len(),
                             embeddings.first().map(|e| e.len()).unwrap_or(0)
                         );
-                        
+
                         return Ok(embeddings);
                     } else {
                         let error_body = resp.text().await.unwrap_or_default();
@@ -237,70 +244,70 @@ impl OllamaClient {
             }
         }
     }
-    
+
     /// Process a large number of texts in batches
     pub async fn embed_all(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let mut all_embeddings = Vec::with_capacity(texts.len());
-        
+
         for chunk in texts.chunks(self.config.max_batch_size) {
             let batch_embeddings = self.embed_batch(chunk).await?;
             all_embeddings.extend(batch_embeddings);
         }
-        
+
         Ok(all_embeddings)
     }
-    
+
     /// Check if Ollama is healthy
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/api/tags", self.config.base_url);
-        
+
         let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("Failed to connect to Ollama")?;
-        
+
         Ok(response.status().is_success())
     }
-    
+
     /// Check if the configured model is available
     pub async fn check_model(&self) -> Result<bool> {
         #[derive(Debug, Deserialize)]
         struct TagsResponse {
             models: Vec<ModelInfo>,
         }
-        
+
         #[derive(Debug, Deserialize)]
         struct ModelInfo {
             name: String,
         }
-        
+
         let url = format!("{}/api/tags", self.config.base_url);
-        
+
         let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("Failed to get model list from Ollama")?;
-        
+
         if !response.status().is_success() {
             return Ok(false);
         }
-        
+
         let tags: TagsResponse = response
             .json()
             .await
             .context("Failed to parse Ollama tags response")?;
-        
+
         // Check if our model is in the list (may have :latest suffix)
         let model_available = tags.models.iter().any(|m| {
-            m.name == self.config.model 
+            m.name == self.config.model
                 || m.name == format!("{}:latest", self.config.model)
                 || m.name.starts_with(&format!("{}:", self.config.model))
         });
-        
+
         if !model_available {
             warn!(
                 "Model '{}' not found in Ollama. Available models: {:?}",
@@ -308,15 +315,15 @@ impl OllamaClient {
                 tags.models.iter().map(|m| &m.name).collect::<Vec<_>>()
             );
         }
-        
+
         Ok(model_available)
     }
-    
+
     /// Get the configured model name
     pub fn model(&self) -> &str {
         &self.config.model
     }
-    
+
     /// Get expected embedding dimensions
     pub fn dimensions(&self) -> usize {
         EXPECTED_DIMENSIONS
@@ -326,7 +333,7 @@ impl OllamaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_config_default() {
         let config = OllamaConfig::default();
@@ -334,7 +341,7 @@ mod tests {
         assert_eq!(config.model, DEFAULT_MODEL);
         assert_eq!(config.max_batch_size, MAX_BATCH_SIZE);
     }
-    
+
     #[test]
     fn test_expected_dimensions() {
         assert_eq!(EXPECTED_DIMENSIONS, 2560);

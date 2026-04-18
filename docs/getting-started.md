@@ -189,10 +189,7 @@ Use this if you want to ingest your own crate instead of using the snapshot.
 ### Prepare a Rust Crate
 
 ```bash
-# Option 1: Use a sample crate (provided in tests/fixtures)
-ls tests/fixtures/sample_crate/
-
-# Option 2: Use any local Rust crate
+# Use any local Rust crate
 # Ensure it compiles with `cargo check`
 ```
 
@@ -369,6 +366,93 @@ curl -X POST http://localhost:8088/tools/query_graph \
     "query": "MATCH (f:Function)-[:CALLS]->(g:Function) WHERE f.name CONTAINS \"parse\" RETURN f.name, g.name LIMIT 10"
   }' | jq .
 ```
+
+## Editor Playground
+
+The Editor Playground lets you create isolated workspaces from GitHub repositories, run AI agents against them, and review the results — all through the API or the playground UI.
+
+### Prerequisites
+
+- The API service must be running (`bash scripts/start.sh`)
+- Docker must be available (the API creates volumes and containers per workspace)
+- A GitHub repository URL to work with
+
+### Quick Workflow
+
+The playground follows a simple lifecycle: **create workspace → run execution → review changes → commit or reset**.
+
+```bash
+# 1. Create a workspace (returns 202, cloning happens in the background)
+curl -X POST http://localhost:8088/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{"github_url": "https://github.com/juspay/hyperswitch", "name": "hyperswitch-test"}'
+
+# Response: {"id":"<workspace-id>","status":"cloning","message":"Workspace created. Clone started in the background."}
+
+# 2. Poll until status is "ready" (cloning + indexing takes 2-5 min)
+curl http://localhost:8088/workspaces/<workspace-id> | jq .status
+
+# 3. Browse the file tree
+curl http://localhost:8088/workspaces/<workspace-id>/files | jq .
+
+# 4. Run an execution (returns 202, agents work in the background)
+curl -X POST http://localhost:8088/workspaces/<workspace-id>/execute \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Add error handling to the payment module"}'
+
+# Response: {"id":"<execution-id>","status":"running","message":"Execution started..."}
+
+# 5. Stream agent events in real time
+curl -N "http://localhost:8088/workspaces/<workspace-id>/stream?execution_id=<execution-id>"
+
+# Or poll execution status:
+curl http://localhost:8088/executions/<execution-id> | jq .status
+
+# 6. Review changes
+curl http://localhost:8088/workspaces/<workspace-id>/diff
+
+# 7. Commit or discard
+curl -X POST http://localhost:8088/workspaces/<workspace-id>/commit \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Add error handling to payment module"}'
+
+# Or discard all changes:
+curl -X POST http://localhost:8088/workspaces/<workspace-id>/reset
+
+# 8. Clean up when done
+curl -X DELETE http://localhost:8088/workspaces/<workspace-id>
+```
+
+### What Happens During Execution
+
+When you `POST /workspaces/:id/execute`, the API:
+
+1. Spawns an ephemeral OpenCode container with the workspace volume mounted
+2. The orchestrator agent dispatches sub-agents through phases: researching → planning → developing
+3. Agent events (reasoning, tool calls, file edits) are stored in Postgres and streamed via SSE
+4. When the agent finishes (or times out), the container is stopped
+5. The diff summary is recorded on the execution record
+
+### Execution Timeouts
+
+The default timeout is 7200 seconds (2 hours). Override with `timeout_secs`:
+
+```bash
+curl -X POST http://localhost:8088/workspaces/<workspace-id>/execute \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Fix the bug", "timeout_secs": 3600}'
+```
+
+### Workspace Isolation
+
+Each workspace gets its own:
+- **Docker volume** for the cloned source code (default 10 GB)
+- **Postgres schema** for extracted code items (e.g. `ws_abc123456789`)
+- **Execution containers** that are isolated from other workspaces
+
+See [Workspace Volumes](./workspace-volumes.md) for volume management details, and [Architecture](./architecture.md#editor-playground) for the full architecture diagram.
+
+---
 
 ## Troubleshooting
 

@@ -13,14 +13,28 @@
 //! | [`ingestion`] | `GET /api/ingestion/progress` |
 //! | [`playground`] | Playground HTML serving |
 
-pub mod health;
-pub mod search;
-pub mod graph;
-pub mod items;
+pub mod artifacts;
+pub mod benchmarker;
 pub mod chat;
+pub mod consistency;
+pub mod execution;
+pub mod graph;
+pub mod graph_templates;
+pub mod health;
 pub mod ingestion;
+pub mod items;
+pub mod pg_query;
 pub mod playground;
+pub mod search;
+pub mod tasks;
 pub mod typecheck;
+pub mod validator;
+pub mod workspace;
+pub mod workspace_commit;
+pub mod workspace_diff;
+pub mod workspace_label;
+pub mod workspace_reset;
+pub mod workspace_stream;
 
 use serde::{Deserialize, Serialize};
 
@@ -70,11 +84,17 @@ pub struct CallerNode {
 // =============================================================================
 
 /// Serde default for boolean fields that should default to `true`.
-pub fn default_true() -> bool { true }
+pub fn default_true() -> bool {
+    true
+}
 /// Serde default for `limit` query parameters (10 results).
-pub fn default_limit() -> usize { 10 }
+pub fn default_limit() -> usize {
+    10
+}
 /// Serde default for `depth` query parameters (1 hop).
-pub fn default_depth() -> usize { 1 }
+pub fn default_depth() -> usize {
+    1
+}
 
 #[cfg(test)]
 mod tests {

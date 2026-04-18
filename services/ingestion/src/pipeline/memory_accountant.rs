@@ -25,12 +25,12 @@ pub mod channel_capacity {
 /// Per-stage default memory quotas
 fn default_stage_quotas() -> HashMap<String, u64> {
     let mut quotas = HashMap::new();
-    quotas.insert("discover".to_string(), 512 * 1024 * 1024);       // 512 MB
-    quotas.insert("expand".to_string(), 2 * 1024 * 1024 * 1024);    // 2 GB
-    quotas.insert("parse".to_string(), 3 * 1024 * 1024 * 1024);     // 3 GB
-    quotas.insert("typecheck".to_string(), 1024 * 1024 * 1024);     // 1 GB
-    quotas.insert("graph".to_string(), 2 * 1024 * 1024 * 1024);     // 2 GB
-    quotas.insert("embed".to_string(), 1536 * 1024 * 1024);         // 1.5 GB
+    quotas.insert("discover".to_string(), 512 * 1024 * 1024); // 512 MB
+    quotas.insert("expand".to_string(), 2 * 1024 * 1024 * 1024); // 2 GB
+    quotas.insert("parse".to_string(), 3 * 1024 * 1024 * 1024); // 3 GB
+    quotas.insert("typecheck".to_string(), 1024 * 1024 * 1024); // 1 GB
+    quotas.insert("graph".to_string(), 2 * 1024 * 1024 * 1024); // 2 GB
+    quotas.insert("embed".to_string(), 1536 * 1024 * 1024); // 1.5 GB
     quotas
 }
 
@@ -148,7 +148,13 @@ impl MemoryAccountant {
 
     /// Current reserved bytes for a given stage (for diagnostics).
     pub async fn stage_reserved(&self, stage: &str) -> u64 {
-        *self.inner.lock().await.stage_reserved.get(stage).unwrap_or(&0)
+        *self
+            .inner
+            .lock()
+            .await
+            .stage_reserved
+            .get(stage)
+            .unwrap_or(&0)
     }
 
     /// Check if a file should be skipped based on its size (pre-flight check).
@@ -255,10 +261,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reserve_and_drop_releases() {
-        let accountant = MemoryAccountant::with_budget(
-            1024,
-            [("test".to_string(), 1024)].into_iter().collect(),
-        );
+        let accountant =
+            MemoryAccountant::with_budget(1024, [("test".to_string(), 1024)].into_iter().collect());
 
         {
             let guard = accountant.reserve("test", 512).await;
@@ -276,10 +280,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_quota_blocks_then_proceeds() {
-        let accountant = MemoryAccountant::with_budget(
-            2048,
-            [("small".to_string(), 100)].into_iter().collect(),
-        );
+        let accountant =
+            MemoryAccountant::with_budget(2048, [("small".to_string(), 100)].into_iter().collect());
 
         let g1 = accountant.reserve("small", 80).await;
         assert_eq!(accountant.stage_reserved("small").await, 80);

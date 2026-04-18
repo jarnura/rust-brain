@@ -1,0 +1,7 @@
+# Apache AGE graph extension override for the POC environment.
+# Usage:  docker compose -f docker-compose.yml -f docker-compose.age-poc.yml up -d postgres
+# Production uses only docker-compose.yml (no AGE init script mounted).
+services:
+  postgres:
+    volumes:
+      - ./scripts/02-age-setup.sql:/docker-entrypoint-initdb.d/02-age-setup.sql
