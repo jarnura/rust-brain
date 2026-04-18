@@ -217,7 +217,7 @@ impl EmbeddingService {
         let mut points = Vec::with_capacity(items.len());
         let mut results = Vec::with_capacity(items.len());
 
-        for (item, embedding) in items.iter().zip(embeddings.into_iter()) {
+        for (item, embedding) in items.iter().zip(embeddings) {
             let text_rep = generate_text_representation(item);
             let point_id = self.fqn_to_point_id(&item.fqn);
             let payload = self.build_item_payload(item, &text_rep.text);
@@ -266,7 +266,7 @@ impl EmbeddingService {
         let mut results = Vec::with_capacity(chunks.len());
         let mut points = Vec::with_capacity(chunks.len());
 
-        for (chunk, embedding) in chunks.into_iter().zip(embeddings.into_iter()) {
+        for (chunk, embedding) in chunks.into_iter().zip(embeddings) {
             let point_id = self.doc_chunk_to_point_id(&chunk);
             let payload = self.build_doc_payload(&chunk);
 

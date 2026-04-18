@@ -12,7 +12,7 @@ fn parse_fixture() -> Vec<rustbrain_ingestion::parsers::ParsedItem> {
     let parser = DualParser::new().unwrap();
     // Tests run from workspace root
     let fixture_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target-repo/src/lib.rs");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_crate.rs");
     let source = std::fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("Cannot read {:?}: {}", fixture_path, e));
     let result = parser.parse(&source, "test_fixture").unwrap();

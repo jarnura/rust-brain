@@ -246,18 +246,17 @@ pub async fn chat_stream_handler(
                                                     .event("tool_call")
                                                     .data(payload.to_string()));
                                             }
-                                            Some("step-finish") => {
-                                                // Only emit complete if we have accumulated text
-                                                if !accumulated_text.is_empty() {
-                                                    let payload = serde_json::json!({
-                                                        "message": accumulated_text,
-                                                        "source": "opencode",
-                                                    });
-                                                    yield Ok(Event::default()
-                                                        .event("complete")
-                                                        .data(payload.to_string()));
-                                                    accumulated_text.clear();
-                                                }
+                                            Some("step-finish")
+                                                if !accumulated_text.is_empty() =>
+                                            {
+                                                let payload = serde_json::json!({
+                                                    "message": accumulated_text,
+                                                    "source": "opencode",
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("complete")
+                                                    .data(payload.to_string()));
+                                                accumulated_text.clear();
                                             }
                                             _ => {}
                                         }
