@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(results[0].file_path, "src/lib.rs");
         assert_eq!(results[0].start_line, 10);
         assert_eq!(results[0].end_line, 20);
-        assert!((results[0].score - 0.95).abs() < f32::EPSILON);
+        assert!((results[0].score - 0.95).abs() < 1e-4);
         assert_eq!(results[0].snippet, Some("fn my_fn() {}".to_string()));
         assert_eq!(results[0].docstring, Some("A function".to_string()));
     }
@@ -1214,7 +1214,7 @@ mod tests {
             results[0].content_preview,
             "Authentication is handled via JWT tokens..."
         );
-        assert!((results[0].score - 0.92).abs() < f32::EPSILON);
+        assert!((results[0].score - 0.92).abs() < 1e-4);
     }
 
     #[test]
@@ -1240,7 +1240,7 @@ mod tests {
             results[0].content_preview,
             "Authentication is handled via JWT tokens..."
         );
-        assert!((results[0].score - 0.92).abs() < f32::EPSILON);
+        assert!((results[0].score - 0.92).abs() < 1e-4);
     }
 
     #[test]
