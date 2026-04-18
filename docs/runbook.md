@@ -789,6 +789,80 @@ docker exec rustbrain-postgres psql -U rustbrain -c \
   "DELETE FROM workspace_audit_log WHERE created_at < now() - interval '90 days';"
 ```
 
+### 15. Cross-Workspace Relationship and Label Mismatch Alert
+
+**Symptoms:**
+- Prometheus alert `CrossWorkspaceRelationshipDetected` fires (severity: critical)
+- Prometheus alert `LabelMismatchDetected` fires (severity: warning)
+- Grafana "Workspace Isolation" dashboard shows non-zero cross-workspace edge or mismatch counts
+- Audit service logs show `ALERT: N cross-workspace relationships detected` or `ALERT: N label-context mismatches detected`
+
+**Diagnosis:**
+
+```bash
+# Check cross-workspace metrics
+curl -s http://localhost:8090/metrics | grep -E 'rustbrain_workspace_leak_cross_workspace|rustbrain_workspace_leak_label_mismatch'
+
+# Find specific cross-workspace relationships
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (src)-[r]->(tgt) WITH src, tgt, type(r) AS rel_type, [l IN labels(src) WHERE l STARTS WITH 'Workspace_'][0] AS src_ws, [l IN labels(tgt) WHERE l STARTS WITH 'Workspace_'][0] AS tgt_ws WHERE src_ws IS NOT NULL AND tgt_ws IS NOT NULL AND src_ws <> tgt_ws RETURN src.fqn, src_ws, tgt.fqn, tgt_ws, rel_type LIMIT 50"
+
+# Find label-context mismatches (nodes whose workspace label differs from neighbors)
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n)-[r]-(neighbor) WITH n, [l IN labels(n) WHERE l STARTS WITH 'Workspace_'][0] AS node_ws, neighbor, [l IN labels(neighbor) WHERE l STARTS WITH 'Workspace_'][0] AS nbr_ws WHERE node_ws IS NOT NULL AND nbr_ws IS NOT NULL AND node_ws <> nbr_ws RETURN n.fqn, node_ws, nbr_ws, count(neighbor) AS mismatch_cnt ORDER BY mismatch_cnt DESC LIMIT 50"
+
+# Query audit log for recorded discrepancies
+docker exec rustbrain-postgres psql -U rustbrain -c \
+  "SELECT workspace_id, operation, detail, created_at FROM workspace_audit_log WHERE operation IN ('cross_workspace_relationship', 'label_mismatch') ORDER BY created_at DESC LIMIT 20;"
+```
+
+**Containment steps:**
+
+1. **Identify the affected workspaces** from the alert detail or audit log entries.
+
+2. **Block further cross-workspace writes** by suspending the affected workspace:
+   ```bash
+   curl -X PATCH http://localhost:8088/api/workspaces/{workspace_id} \
+     -H 'Content-Type: application/json' -d '{"status": "suspended"}'
+   ```
+
+3. **For cross-workspace relationships** — delete the offending edges:
+   ```cypher
+   MATCH (src:Workspace_X)-[r]->(tgt:Workspace_Y)
+   WHERE src.fqn = $source_fqn AND tgt.fqn = $target_fqn
+   DELETE r
+   ```
+
+4. **For label mismatches** — relabel the node to the correct workspace:
+   ```cypher
+   MATCH (n:Workspace_WRONG {fqn: $fqn})
+   REMOVE n:Workspace_WRONG
+   SET n:Workspace_CORRECT
+   ```
+
+5. **Verify remediation:**
+   ```bash
+   curl -s http://localhost:8090/metrics | grep rustbrain_workspace_leak
+   # All cross_workspace_relationships and label_mismatches should be 0
+   ```
+
+6. **Re-enable the workspace** once confirmed clean:
+   ```bash
+   curl -X PATCH http://localhost:8088/api/workspaces/{workspace_id} \
+     -H 'Content-Type: application/json' -d '{"status": "active"}'
+   ```
+
+**Common root causes:**
+- Ingestion pipeline bug: `workspace_label` not passed to `NodeBuilder` or `RelationshipBuilder`
+- Direct Neo4j bolt writes bypassing the API middleware
+- Race condition during concurrent ingestion of overlapping crates
+- Stale workspace label after workspace archival and re-creation
+
+**Prevention:**
+- The audit service scans at `AUDIT_INTERVAL_SECS` intervals (default: 600s)
+- Alerts fire within 1-5 minutes of detection
+- All discrepancies are recorded in `workspace_audit_log` for forensic analysis
+
 ## Resetting Data
 
 ### Reset All Data

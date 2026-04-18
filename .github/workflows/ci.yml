@@ -328,6 +328,7 @@ jobs:
         run: |
           cargo test --test workspace_neo4j_isolation --no-run
           cargo test --test workspace_e2e_isolation --no-run
+          cargo test --test workspace_isolation_contract --no-run
           cargo build --bin rustbrain-api
 
       - name: Initialize database schema
@@ -380,11 +381,15 @@ jobs:
           # Run non-ignored unit tests (should always pass)
           cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation 2>&1 | tee test-output.txt
 
-          # Run contract tests (error-path: missing/invalid workspace header)
+          # Run contract tests (error-path: missing/invalid workspace header, write-rejection)
           # These only need the API server — no workspace data required
+          cargo test --test workspace_isolation_contract -- --include-ignored 2>&1 | tee -a test-output.txt
+
+          # Run specific error-path tests from neo4j isolation suite
           cargo test --test workspace_neo4j_isolation -- \
             test_query_graph_without_workspace_returns_400 \
-            test_query_graph_with_invalid_workspace_returns_404 \
+            test_query_graph_with_nonexistent_workspace_returns_empty \
+            test_query_graph_with_malformed_workspace_returns_400 \
             test_get_module_tree_without_workspace_returns_400 \
             --include-ignored 2>&1 | tee -a test-output.txt
 

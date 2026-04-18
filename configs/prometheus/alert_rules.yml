@@ -114,3 +114,34 @@ groups:
             Check that scripts/leak-detector.sh is scheduled and executing
             successfully.
           runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"
+
+      - alert: CrossWorkspaceRelationshipDetected
+        expr: rustbrain_workspace_leak_cross_workspace_relationships > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: workspace-isolation
+        annotations:
+          summary: "Cross-workspace relationships detected in Neo4j"
+          description: |
+            {{ $value }} relationship(s) connect nodes from different workspaces.
+            This indicates a workspace isolation breach — edges should never
+            cross workspace boundaries. Investigate the audit log for
+            cross_workspace_relationship entries and the runbook section
+            "Cross-workspace relationship and label mismatch alert".
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-relationship-and-label-mismatch-alert"
+
+      - alert: LabelMismatchDetected
+        expr: rustbrain_workspace_leak_label_mismatches > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: workspace-isolation
+        annotations:
+          summary: "Workspace label-context mismatches detected in Neo4j"
+          description: |
+            {{ $value }} node(s) have a workspace label that conflicts with
+            their neighbors' labels. This can indicate a mislabeled node from
+            incorrect ingestion. Check the audit log for label_mismatch
+            entries and the runbook for remediation steps.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-relationship-and-label-mismatch-alert"

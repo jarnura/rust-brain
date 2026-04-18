@@ -110,6 +110,7 @@ async fn run_periodic_scan(state: AppState) {
 }
 
 async fn run_single_scan(state: &AppState) {
+    let scan_start = std::time::Instant::now();
     info!("Starting leak detection scan cycle");
 
     match leak_detector::detect_docker_leaks(&state.pg_pool, state.config.dry_run).await {
@@ -193,6 +194,8 @@ async fn run_single_scan(state: &AppState) {
             metrics::MULTI_LABEL_NODES.set(result.multi_label_nodes as f64);
             metrics::ORPHAN_NODES.set(result.orphan_nodes as f64);
             metrics::BASELINE_ORPHAN_NODES.set(result.baseline_orphan_nodes as f64);
+            metrics::CROSS_WORKSPACE_RELATIONSHIPS.set(result.cross_workspace_relationships as f64);
+            metrics::LABEL_MISMATCHES.set(result.label_mismatches as f64);
 
             if result.multi_label_nodes > 0 {
                 warn!(
@@ -206,7 +209,45 @@ async fn run_single_scan(state: &AppState) {
                     result.orphan_nodes, result.baseline_orphan_nodes
                 );
             }
-            if result.multi_label_nodes == 0 && result.orphan_nodes <= result.baseline_orphan_nodes
+            if result.cross_workspace_relationships > 0 {
+                warn!(
+                    "Neo4j cross-workspace relationships: {} edges connecting different workspaces",
+                    result.cross_workspace_relationships
+                );
+
+                for detail in &result.cross_workspace_details {
+                    if let Err(e) =
+                        audit_writer::record_cross_workspace_relationship(&state.pg_pool, detail)
+                            .await
+                    {
+                        error!(
+                            "Failed to write audit record for cross-workspace relationship {}->{}: {}",
+                            detail.source_fqn, detail.target_fqn, e
+                        );
+                    }
+                }
+            }
+            if result.label_mismatches > 0 {
+                warn!(
+                    "Neo4j label-context mismatches: {} nodes with conflicting workspace labels",
+                    result.label_mismatches
+                );
+
+                for detail in &result.label_mismatch_details {
+                    if let Err(e) =
+                        audit_writer::record_label_mismatch(&state.pg_pool, detail).await
+                    {
+                        error!(
+                            "Failed to write audit record for label mismatch {}: {}",
+                            detail.fqn, e
+                        );
+                    }
+                }
+            }
+            if result.multi_label_nodes == 0
+                && result.orphan_nodes <= result.baseline_orphan_nodes
+                && result.cross_workspace_relationships == 0
+                && result.label_mismatches == 0
             {
                 info!("No Neo4j cross-workspace leaks detected");
             }
@@ -222,8 +263,11 @@ async fn run_single_scan(state: &AppState) {
         error!("Audit log pruning failed: {}", e);
     }
 
+    let elapsed = scan_start.elapsed().as_secs_f64();
+    metrics::SCAN_DURATION_SECS.set(elapsed);
+
     let now = chrono::Utc::now().timestamp();
     metrics::DETECTION_TIMESTAMP.set(now as f64);
 
-    info!("Leak detection scan cycle complete");
+    info!("Leak detection scan cycle complete (took {:.2}s)", elapsed);
 }

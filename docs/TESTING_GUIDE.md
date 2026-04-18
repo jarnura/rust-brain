@@ -305,6 +305,7 @@ Request → WorkspaceId extractor → WorkspaceGraphClient → inject_workspace_
 | Category | File | Count | Requires Docker | Status |
 |----------|------|-------|-----------------|--------|
 | Unit tests (assertion helpers) | `tests/common/mod.rs` | 12 | No | ✅ Passing |
+| Contract (HTTP-level error paths + write-rejection) | `tests/workspace_isolation_contract.rs` | 25 | API server only | ⏳ `#[ignore]` |
 | Integration (per-template isolation) | `tests/workspace_neo4j_isolation.rs` | 22 | Yes | ⏳ `#[ignore]` |
 | E2E (full workspace lifecycle) | `tests/workspace_e2e_isolation.rs` | 8 | Yes | ⏳ `#[ignore]` |
 | Graph template `resolve_with_workspace` | `handlers/graph_templates.rs` | ~3 | No | ✅ Passing |
@@ -321,6 +322,20 @@ The 12 unit tests in `tests/common/mod.rs` verify the isolation assertion helper
 
 These run as part of `cargo test --workspace` without any external dependencies.
 
+### Contract Tests (API Server Only)
+
+The 25 `#[ignore]` tests in `workspace_isolation_contract.rs` test the HTTP-level contract for workspace isolation. They require the API server running but do NOT need any workspaces provisioned or data ingested:
+
+| Test Group | Count | What It Verifies |
+|------------|-------|-----------------|
+| Missing workspace header → 400 | 6 | All workspace-scoped endpoints return 400 when `X-Workspace-Id` is absent |
+| Invalid workspace header → 400 | 2 | Special characters and empty strings in `X-Workspace-Id` return 400 |
+| Write-rejection security | 13 | `query_graph` rejects CREATE, DELETE, MERGE, SET, REMOVE, DETACH DELETE, and dangerous APOC procedures |
+| Parameter sanitization | 2 | Injected `workspace_label`/`workspace_id` parameters don't crash the server |
+| Read-only queries accepted | 3 | MATCH, template queries, and `apoc.path.expand` are not rejected as writes |
+
+These run in the CI `workspace-isolation-tests` job after the API server health check passes.
+
 ### Integration Tests (Docker Required)
 
 The 22 `#[ignore]` tests in `workspace_neo4j_isolation.rs` cover:
@@ -328,8 +343,8 @@ The 22 `#[ignore]` tests in `workspace_neo4j_isolation.rs` cover:
 | Test Group | Count | What It Verifies |
 |------------|-------|-----------------|
 | Per-template isolation | 8 | Each graph template returns only nodes with the caller's `Workspace_<id>` label |
-| Direct endpoint isolation | 6 | `query_graph`, `search_semantic`, `aggregate_search` scoped to workspace |
-| Error paths | 4 | Missing workspace header, invalid workspace ID, unauthenticated access |
+| Direct endpoint isolation | 4 | `get_callers`, `get_module_tree`, `get_trait_impls`, `find_usages_of_type` scoped to workspace |
+| Error paths | 4 | Missing workspace header → 400, nonexistent workspace → 200+empty, malformed workspace → 400 |
 | User Cypher isolation | 2 | `execute_user_cypher` injects `:Workspace_<id>` server-side; cannot bypass with MATCH |
 | Concurrent queries | 2 | Parallel requests from two workspaces don't intermix results |
 
@@ -351,6 +366,9 @@ cargo test --test common
 # Or the full workspace unit test suite
 cargo test --workspace
 
+# Contract tests (API server only, no workspace data needed)
+cargo test --test workspace_isolation_contract -- --include-ignored
+
 # Integration tests (requires Docker stack running)
 cargo test --test workspace_neo4j_isolation -- --include-ignored
 
@@ -358,21 +376,20 @@ cargo test --test workspace_neo4j_isolation -- --include-ignored
 cargo test --test workspace_e2e_isolation -- --include-ignored
 
 # All isolation tests together
-cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation -- --include-ignored
+cargo test --test workspace_neo4j_isolation --test workspace_e2e_isolation --test workspace_isolation_contract -- --include-ignored
 ```
 
 ### CI Status
 
-Integration and E2E tests are marked `#[ignore]` because they require the Docker stack (Postgres, Neo4j, Qdrant). The CI workflow (`.github/workflows/ci.yml`, commit ef80049) includes service containers but the `--include-ignored` flag is **commented out** pending workspace label injection during ingestion.
+Contract tests run in the CI `workspace-isolation-tests` job. They require the API server but not workspace data, and run with `--include-ignored`.
 
-**Current CI runs:** Unit tests only (`cargo test --workspace` runs ignored tests as skipped).
+Integration and E2E tests are marked `#[ignore]` because they require the Docker stack (Postgres, Neo4j, Qdrant) plus workspace provisioning. These run with `continue-on-error: true` in CI until self-hosted runners with Docker-in-Docker are available.
 
-**Unblock criteria:** Once ingestion applies `Workspace_<id>` labels to all Neo4j nodes, uncomment the `--include-ignored` line in CI and remove `continue-on-error: true`.
+**Current CI runs:** Unit tests (`cargo test --workspace`) + contract tests (`workspace_isolation_contract --include-ignored`) + specific error-path tests.
 
 ### Known Gaps
 
 | Gap | Status | Issue |
 |-----|--------|-------|
-| Ingestion does not yet inject `Workspace_<id>` labels | Open | Blocks integration test enablement |
-| `--include-ignored` commented out in CI | Waiting | Dependent on ingestion labels |
-| `continue-on-error: true` on integration test step | Active | Remove once tests pass reliably |
+| Full integration tests need Docker-in-Docker for workspace provisioning | Active | `continue-on-error: true` on integration test step |
+| `continue-on-error: true` on integration test step | Active | Remove once self-hosted runner is available |

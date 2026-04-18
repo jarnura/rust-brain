@@ -1,11 +1,14 @@
 //! Audit log writer for the workspace_audit_log table.
 //!
-//! Writes records for detected leaks and cleaned resources.
-//! Also handles retention-based pruning of old audit entries.
+//! Writes records for detected leaks, Neo4j workspace discrepancies,
+//! and cleaned resources. Also handles retention-based pruning of old
+//! audit entries.
 
 use sqlx::PgPool;
 use tracing::{debug, info};
 use uuid::Uuid;
+
+use crate::neo4j_scanner::{CrossWorkspaceDetail, LabelMismatchDetail};
 
 /// Records a `leak_detected` event in the workspace_audit_log table.
 ///
@@ -97,6 +100,71 @@ pub async fn prune_audit_log(pool: &PgPool, retention_days: u32) -> anyhow::Resu
     Ok(deleted)
 }
 
+pub async fn record_cross_workspace_relationship(
+    pool: &PgPool,
+    detail: &CrossWorkspaceDetail,
+) -> anyhow::Result<()> {
+    let workspace_id = workspace_id_from_label(&detail.source_workspace);
+
+    let detail_json = serde_json::json!({
+        "source_fqn": detail.source_fqn,
+        "source_workspace": detail.source_workspace,
+        "target_fqn": detail.target_fqn,
+        "target_workspace": detail.target_workspace,
+        "rel_type": detail.rel_type,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO workspace_audit_log (workspace_id, operation, actor, detail)
+        VALUES ($1, 'cross_workspace_relationship', 'audit-service', $2)
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(detail_json)
+    .execute(pool)
+    .await?;
+
+    debug!(
+        "Recorded cross_workspace_relationship: {} -[:{}]-> {}",
+        detail.source_fqn, detail.rel_type, detail.target_fqn
+    );
+
+    Ok(())
+}
+
+pub async fn record_label_mismatch(
+    pool: &PgPool,
+    detail: &LabelMismatchDetail,
+) -> anyhow::Result<()> {
+    let workspace_id = workspace_id_from_label(&detail.actual_workspace);
+
+    let detail_json = serde_json::json!({
+        "fqn": detail.fqn,
+        "actual_workspace": detail.actual_workspace,
+        "expected_workspace": detail.expected_workspace,
+        "neighbor_count": detail.neighbor_count,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO workspace_audit_log (workspace_id, operation, actor, detail)
+        VALUES ($1, 'label_mismatch', 'audit-service', $2)
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(detail_json)
+    .execute(pool)
+    .await?;
+
+    debug!(
+        "Recorded label_mismatch: {} has {} but neighbors suggest {}",
+        detail.fqn, detail.actual_workspace, detail.expected_workspace
+    );
+
+    Ok(())
+}
+
 /// Attempts to find the workspace_id associated with a resource.
 ///
 /// For volumes named `rustbrain-ws-<short_id>`, looks up the workspace by
@@ -131,5 +199,64 @@ async fn find_workspace_for_resource(
             result.ok().flatten().unwrap_or(Uuid::nil())
         }
         _ => Uuid::nil(),
+    }
+}
+
+fn workspace_id_from_label(label: &str) -> Uuid {
+    match label.strip_prefix("Workspace_") {
+        Some(hex) if hex.len() >= 32 => {
+            let padded = format!(
+                "{}-{}-{}-{}-{}",
+                &hex[0..8],
+                &hex[8..12],
+                &hex[12..16],
+                &hex[16..20],
+                &hex[20..32]
+            );
+            Uuid::parse_str(&padded).unwrap_or(Uuid::nil())
+        }
+        _ => Uuid::nil(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_id_from_label_valid() {
+        let uuid_str = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
+        let label = format!("Workspace_{}", uuid_str);
+        let result = workspace_id_from_label(&label);
+
+        let expected = Uuid::parse_str("a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6").unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_workspace_id_from_label_no_prefix() {
+        let result = workspace_id_from_label("some_random_string");
+        assert_eq!(result, Uuid::nil());
+    }
+
+    #[test]
+    fn test_workspace_id_from_label_short_hex() {
+        let result = workspace_id_from_label("Workspace_abc123");
+        assert_eq!(result, Uuid::nil());
+    }
+
+    #[test]
+    fn test_workspace_id_from_label_invalid_hex() {
+        let result = workspace_id_from_label("Workspace_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
+        assert_eq!(result, Uuid::nil());
+    }
+
+    #[test]
+    fn test_workspace_id_from_label_legacy_zero() {
+        let result = workspace_id_from_label("Workspace_00000000000000000000000000000000");
+        assert_eq!(
+            result,
+            Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap()
+        );
     }
 }

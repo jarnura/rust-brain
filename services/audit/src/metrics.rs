@@ -14,52 +14,59 @@ use crate::AppState;
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
 
-    /// Number of nodes with multiple Workspace_* labels (cross-workspace contamination).
     pub static ref MULTI_LABEL_NODES: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_workspace_leak_multi_label_nodes",
             "Number of Neo4j nodes with multiple Workspace_ labels indicating cross-workspace contamination")
     ).unwrap();
 
-    /// Number of nodes with zero Workspace_* labels (orphan nodes).
     pub static ref ORPHAN_NODES: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_workspace_leak_orphan_nodes",
             "Number of Neo4j nodes with zero Workspace_ labels (orphan nodes)")
     ).unwrap();
 
-    /// Baseline count of orphan nodes (pre-Phase-3 data not yet labeled).
     pub static ref BASELINE_ORPHAN_NODES: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_workspace_leak_baseline_orphan_nodes",
             "Baseline count of orphan nodes from before Workspace_ labels were applied")
     ).unwrap();
 
-    /// Number of Docker volumes not tracked in Postgres.
     pub static ref ORPHAN_VOLUMES: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_leak_orphan_volumes_total",
             "Number of Docker volumes not tracked in Postgres")
     ).unwrap();
 
-    /// Number of Docker containers not tracked in Postgres.
     pub static ref ORPHAN_CONTAINERS: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_leak_orphan_containers_total",
             "Number of Docker containers not tracked in Postgres")
     ).unwrap();
 
-    /// Unix timestamp of last leak detection run.
     pub static ref DETECTION_TIMESTAMP: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_leak_detection_timestamp_seconds",
             "Unix timestamp of last leak detection run")
     ).unwrap();
 
-    /// Number of orphaned volumes removed in the current run.
     pub static ref CLEANUP_VOLUMES_REMOVED: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_leak_cleanup_volumes_removed_total",
             "Number of orphaned volumes removed in the current run")
     ).unwrap();
 
-    /// Number of orphaned containers removed in the current run.
     pub static ref CLEANUP_CONTAINERS_REMOVED: Gauge = Gauge::with_opts(
         Opts::new("rustbrain_leak_cleanup_containers_removed_total",
             "Number of orphaned containers removed in the current run")
+    ).unwrap();
+
+    pub static ref CROSS_WORKSPACE_RELATIONSHIPS: Gauge = Gauge::with_opts(
+        Opts::new("rustbrain_workspace_leak_cross_workspace_relationships",
+            "Number of relationships connecting nodes from different workspaces")
+    ).unwrap();
+
+    pub static ref LABEL_MISMATCHES: Gauge = Gauge::with_opts(
+        Opts::new("rustbrain_workspace_leak_label_mismatches",
+            "Number of nodes whose workspace label conflicts with their neighbors")
+    ).unwrap();
+
+    pub static ref SCAN_DURATION_SECS: Gauge = Gauge::with_opts(
+        Opts::new("rustbrain_audit_scan_duration_seconds",
+            "Duration of the last audit scan cycle in seconds")
     ).unwrap();
 }
 
@@ -85,9 +92,20 @@ pub fn init() {
     REGISTRY
         .register(Box::new(CLEANUP_CONTAINERS_REMOVED.clone()))
         .unwrap();
+    REGISTRY
+        .register(Box::new(CROSS_WORKSPACE_RELATIONSHIPS.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(LABEL_MISMATCHES.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(SCAN_DURATION_SECS.clone()))
+        .unwrap();
 
-    // Set initial baseline to 0; operators should adjust after initial scan
     BASELINE_ORPHAN_NODES.set(0.0);
+    CROSS_WORKSPACE_RELATIONSHIPS.set(0.0);
+    LABEL_MISMATCHES.set(0.0);
+    SCAN_DURATION_SECS.set(0.0);
 }
 
 /// Axum handler for GET /metrics — returns Prometheus-format metrics.
