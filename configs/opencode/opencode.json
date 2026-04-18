@@ -15,7 +15,7 @@
       "name": "LiteLLM Proxy",
       "options": {
         "baseURL": "https://grid.ai.juspay.net",
-        "apiKey": "sk-xCWCWvNq6kno_3KSEIU8lQ"
+        "apiKey": "${LITELLM_API_KEY}"
       },
       "models": {
         "glm-latest": {

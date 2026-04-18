@@ -143,8 +143,15 @@ create_feature_branch() {
 # Verify OpenCode Config
 # =============================================================================
 verify_opencode_config() {
-    if [ -f "/home/opencode/.config/opencode/opencode.json" ]; then
-        log_info "OpenCode config found at /home/opencode/.config/opencode/opencode.json"
+    local template="/home/opencode/.config/opencode/opencode.json.template"
+    local config="/home/opencode/.config/opencode/opencode.json"
+
+    if [ -f "$template" ]; then
+        log_info "Generating OpenCode config from template (substituting env vars)"
+        sed "s|\${LITELLM_API_KEY}|${LITELLM_API_KEY:-}|g" "$template" > "$config"
+        log_info "OpenCode config written to $config"
+    elif [ -f "$config" ]; then
+        log_info "OpenCode config found at $config"
     else
         log_warn "OpenCode config not found - using defaults"
     fi

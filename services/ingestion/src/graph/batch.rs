@@ -704,8 +704,6 @@ impl BatchProcessor {
 
 #[cfg(test)]
 mod tests {
-    use super::super::nodes::NodeData;
-    use super::super::NodeType;
     use super::*;
 
     #[test]

@@ -3,7 +3,6 @@
 //! This module provides graph database integration for rust-brain, enabling
 //! construction and querying of code relationships using Neo4j.
 
-mod age_poc;
 mod batch;
 mod nodes;
 mod relationships;

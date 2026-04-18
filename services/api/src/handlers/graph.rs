@@ -839,10 +839,10 @@ mod tests {
 
     #[test]
     fn test_rejects_load_csv() {
-        assert!(validate_cypher(
-            "LOAD CSV FROM 'http://example.com/data.csv' AS line RETURN line"
-        )
-        .is_err());
+        assert!(
+            validate_cypher("LOAD CSV FROM 'http://example.com/data.csv' AS line RETURN line")
+                .is_err()
+        );
     }
 
     #[test]
@@ -878,10 +878,8 @@ mod tests {
 
     #[test]
     fn test_rejects_apoc_hidden_in_comment() {
-        let err = validate_cypher(
-            "CALL /* sneaky */ apoc.cypher.run('MATCH (n) RETURN n', {})",
-        )
-        .unwrap_err();
+        let err = validate_cypher("CALL /* sneaky */ apoc.cypher.run('MATCH (n) RETURN n', {})")
+            .unwrap_err();
         assert!(err.to_string().contains("apoc.cypher.run"));
     }
 }
