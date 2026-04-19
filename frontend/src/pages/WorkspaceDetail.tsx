@@ -44,7 +44,7 @@ export function WorkspaceDetail() {
         {workspace && (
           <div className="px-3 py-1.5 border-b border-dark-800">
             <p className="text-xs font-medium text-dark-200 truncate">{workspace.name}</p>
-            <p className="text-[10px] text-dark-500 truncate">{workspace.github_url}</p>
+            <p className="text-[10px] text-dark-500 truncate">{workspace.source_url}</p>
           </div>
         )}
         <div className="flex-1 overflow-y-auto p-1">

@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { API_BASE, createWorkspace, listWorkspaces } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 import type { Workspace } from '../types'
+import { IndexingProgress } from './IndexingProgress'
 
 function statusBadge(status: Workspace['status']) {
   const map: Record<string, string> = {
+    pending: 'bg-dark-700 text-dark-300',
     cloning: 'bg-yellow-900 text-yellow-300',
     indexing: 'bg-blue-900 text-blue-300',
     ready: 'bg-green-900 text-green-300',
@@ -23,7 +25,7 @@ export function RepoManager() {
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Poll workspace until it leaves the 'cloning'/'indexing' state
+  // Poll workspace until it leaves the 'pending'/'cloning'/'indexing' state
   function pollWorkspace(id: string) {
     const interval = setInterval(async () => {
       try {
@@ -31,7 +33,11 @@ export function RepoManager() {
         if (!res.ok) return
         const ws = (await res.json()) as Workspace
         upsertWorkspace(ws)
-        if (ws.status !== 'cloning' && ws.status !== 'indexing') {
+        if (
+          ws.status !== 'pending' &&
+          ws.status !== 'cloning' &&
+          ws.status !== 'indexing'
+        ) {
           clearInterval(interval)
         }
       } catch {
@@ -48,15 +54,25 @@ export function RepoManager() {
     try {
       const res = await createWorkspace(url.trim(), name.trim() || undefined)
       // Optimistically show the new workspace
+      const nowIso = new Date().toISOString()
       const placeholder: Workspace = {
         id: res.id,
         name: name.trim() || url.split('/').pop() || res.id,
-        github_url: url.trim(),
+        source_type: 'github',
+        source_url: url.trim(),
+        schema_name: null,
         status: 'cloning',
         clone_path: null,
         volume_name: null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        default_branch: null,
+        github_auth_method: null,
+        index_started_at: null,
+        index_completed_at: null,
+        index_stage: null,
+        index_progress: null,
+        index_error: null,
+        created_at: nowIso,
+        updated_at: nowIso,
       }
       upsertWorkspace(placeholder)
       setUrl('')
@@ -134,23 +150,31 @@ export function RepoManager() {
         <p className="text-dark-500 text-sm italic">No workspaces yet.</p>
       ) : (
         <ul className="space-y-1.5">
-          {workspaces.map((ws) => (
-            <li key={ws.id}>
-              <button
-                onClick={() => handleSelect(ws)}
-                disabled={ws.status !== 'ready'}
-                className="w-full text-left px-3 py-2 rounded bg-dark-800 hover:bg-dark-700 disabled:opacity-60 disabled:cursor-default transition-colors group"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-dark-100 truncate group-hover:text-white transition-colors">
-                    {ws.name}
-                  </span>
-                  <span className={statusBadge(ws.status)}>{ws.status}</span>
-                </div>
-                <p className="text-xs text-dark-500 truncate mt-0.5">{ws.github_url}</p>
-              </button>
-            </li>
-          ))}
+          {workspaces.map((ws) => {
+            const showProgress =
+              ws.status === 'pending' ||
+              ws.status === 'cloning' ||
+              ws.status === 'indexing' ||
+              ws.status === 'error'
+            return (
+              <li key={ws.id}>
+                <button
+                  onClick={() => handleSelect(ws)}
+                  disabled={ws.status !== 'ready'}
+                  className="w-full text-left px-3 py-2 rounded bg-dark-800 hover:bg-dark-700 disabled:opacity-80 disabled:cursor-default transition-colors group"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-dark-100 truncate group-hover:text-white transition-colors">
+                      {ws.name}
+                    </span>
+                    <span className={statusBadge(ws.status)}>{ws.status}</span>
+                  </div>
+                  <p className="text-xs text-dark-500 truncate mt-0.5">{ws.source_url}</p>
+                  {showProgress && <IndexingProgress workspace={ws} />}
+                </button>
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>

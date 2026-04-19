@@ -1,19 +1,59 @@
 // ─── Workspace ───────────────────────────────────────────────────────────────
 
 export type WorkspaceStatus =
+  | 'pending'
   | 'cloning'
   | 'indexing'
   | 'ready'
   | 'error'
   | 'archived'
 
+export type WorkspaceSourceType = 'github' | 'local'
+
+/**
+ * Names of the 6 ingestion pipeline stages, in order.
+ * Keep aligned with `services/ingestion/src/pipeline/mod.rs::STAGE_NAMES`.
+ */
+export const INDEX_STAGE_NAMES = [
+  'expand',
+  'parse',
+  'typecheck',
+  'extract',
+  'graph',
+  'embed',
+] as const
+
+export type IndexStageName = (typeof INDEX_STAGE_NAMES)[number]
+
+/**
+ * Shape of the `index_progress` JSON column. The ingestion pipeline writes
+ * arbitrary metadata here — these fields are best-effort and may be missing.
+ */
+export interface IndexProgress {
+  current_stage?: IndexStageName | string
+  completed_stages?: Array<IndexStageName | string>
+  percent?: number
+  items_total?: number
+  items_processed?: number
+  [key: string]: unknown
+}
+
 export interface Workspace {
   id: string
   name: string
-  github_url: string
+  source_type: WorkspaceSourceType | string
+  source_url: string
+  schema_name: string | null
   status: WorkspaceStatus
   clone_path: string | null
   volume_name: string | null
+  default_branch: string | null
+  github_auth_method?: string | null
+  index_started_at: string | null
+  index_completed_at: string | null
+  index_stage: IndexStageName | string | null
+  index_progress: IndexProgress | null
+  index_error: string | null
   created_at: string
   updated_at: string
 }
