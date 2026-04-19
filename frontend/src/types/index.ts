@@ -64,6 +64,47 @@ export interface CreateWorkspaceResponse {
   message: string
 }
 
+// ─── Workspace stats ─────────────────────────────────────────────────────────
+
+/**
+ * Cross-store consistency deltas returned by `GET /workspaces/:id/stats`.
+ * Matches `ConsistencyInfo` in `services/api/src/handlers/workspace_stats.rs`.
+ */
+export interface WorkspaceStatsConsistency {
+  pg_vs_neo4j_delta: number
+  pg_vs_qdrant_delta: number
+  status: 'consistent' | 'inconsistent' | string
+}
+
+/**
+ * Workspace isolation checks returned by `GET /workspaces/:id/stats`.
+ * Matches `IsolationInfo` in `services/api/src/handlers/workspace_stats.rs`.
+ */
+export interface WorkspaceStatsIsolation {
+  multi_label_nodes: number
+  cross_workspace_edges: number
+  label_mismatches: number
+}
+
+/**
+ * Per-workspace stats returned by `GET /workspaces/:id/stats` (RUSA-215).
+ * Values come from Postgres, Neo4j, and Qdrant scoped to this workspace.
+ */
+export interface WorkspaceStats {
+  workspace_id: string
+  status: string
+  pg_items_count: number
+  neo4j_nodes_count: number
+  neo4j_edges_count: number
+  qdrant_vectors_count: number
+  consistency: WorkspaceStatsConsistency
+  isolation: WorkspaceStatsIsolation
+  /** Seconds the last indexing run took, if known. */
+  index_duration_seconds?: number | null
+  created_at: string
+  indexed_at?: string | null
+}
+
 // ─── File tree ───────────────────────────────────────────────────────────────
 
 export interface FileNode {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { listWorkspaces } from './api/client'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { WorkspaceSwitcher } from './components/WorkspaceSwitcher'
 import { WorkspaceDetail } from './pages/WorkspaceDetail'
 import { WorkspaceList } from './pages/WorkspaceList'
 import { useWorkspaceStore } from './store/workspace'
@@ -70,6 +71,7 @@ function AppContent() {
         <span className="font-bold text-white">Rust Brain</span>
         <span className="text-dark-600">·</span>
         <span className="text-dark-400 text-sm">Editor Playground</span>
+        {activeWorkspaceId && <WorkspaceSwitcher />}
       </header>
 
       {/* Main content */}

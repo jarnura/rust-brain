@@ -7,6 +7,7 @@ import type {
   FileNode,
   ResetResponse,
   Workspace,
+  WorkspaceStats,
 } from '../types'
 
 // Resolve API base: use env override if set, otherwise derive from the
@@ -69,6 +70,14 @@ export function listWorkspaces(): Promise<Workspace[]> {
 
 export function getWorkspace(id: string): Promise<Workspace> {
   return get(`/workspaces/${id}`)
+}
+
+/**
+ * Fetch per-workspace stats: item counts across Postgres, Neo4j, and Qdrant,
+ * plus consistency deltas and isolation checks. See `GET /workspaces/:id/stats`.
+ */
+export function getWorkspaceStats(id: string): Promise<WorkspaceStats> {
+  return get(`/workspaces/${id}/stats`)
 }
 
 /**
