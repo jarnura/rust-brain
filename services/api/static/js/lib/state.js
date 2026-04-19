@@ -12,6 +12,8 @@ const INITIAL_STATE = {
     functionDetail: null,
     callGraph: null,
     connected: false,
+    currentWorkspaceId: null,
+    workspaces: [],
 };
 
 class AppState {
@@ -116,6 +118,14 @@ class AppState {
 
     setConnected(connected) {
         this.set({ connected });
+    }
+
+    setCurrentWorkspaceId(workspaceId) {
+        this.set({ currentWorkspaceId: workspaceId });
+    }
+
+    setWorkspaces(workspaces) {
+        this.set({ workspaces: [...workspaces] });
     }
 }
 

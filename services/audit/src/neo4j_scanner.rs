@@ -6,8 +6,13 @@
 //! 3. Relationships connecting nodes from different workspaces (cross-workspace edges)
 //! 4. Nodes whose workspace label conflicts with their relationship context
 //!
+//! Per-workspace breakdowns (RUSA-214) aggregate counts by workspace label for
+//! each category, enabling per-workspace Prometheus metrics.
+//!
 //! These queries implement the approach documented in ADR-005 and ADR-006,
 //! where each workspace's nodes carry a `Workspace_<id>` label for isolation.
+
+use std::collections::HashMap;
 
 use neo4rs::{query, Graph};
 use serde::{Deserialize, Serialize};
@@ -16,22 +21,27 @@ use tracing::{debug, info, warn};
 /// Result of a Neo4j leak scan.
 #[derive(Debug, Default)]
 pub struct Neo4jScanResult {
-    /// Number of nodes with multiple Workspace_* labels (cross-workspace contamination).
     pub multi_label_nodes: i64,
-    /// Number of nodes with zero Workspace_* labels (orphan nodes).
     pub orphan_nodes: i64,
-    /// Baseline count of orphan nodes (pre-Phase-3 data not yet labeled).
-    /// On first run, this is set to the current orphan count. Subsequent runs
-    /// compare against this baseline to detect new orphans.
     pub baseline_orphan_nodes: i64,
-    /// Number of relationships connecting nodes from different workspaces.
     pub cross_workspace_relationships: i64,
-    /// Number of nodes whose workspace label conflicts with their neighbors'.
     pub label_mismatches: i64,
-    /// Detailed cross-workspace relationship records.
     pub cross_workspace_details: Vec<CrossWorkspaceDetail>,
-    /// Detailed label mismatch records.
     pub label_mismatch_details: Vec<LabelMismatchDetail>,
+    pub per_workspace: PerWorkspaceBreakdown,
+}
+
+/// Per-workspace breakdown of leak detection counts.
+///
+/// Keys are Neo4j workspace labels (e.g., `"Workspace_a1b2c3d4e5f6"`).
+/// The special key `"_unlabeled"` is used for orphan nodes that have no
+/// workspace label at all.
+#[derive(Debug, Default)]
+pub struct PerWorkspaceBreakdown {
+    pub multi_label_nodes: HashMap<String, i64>,
+    pub cross_workspace_rels: HashMap<String, i64>,
+    pub label_mismatches: HashMap<String, i64>,
+    pub orphan_nodes: i64,
 }
 
 /// Details of a single cross-workspace relationship.
@@ -108,6 +118,8 @@ pub async fn scan_neo4j_leaks(
             result.label_mismatches
         );
     }
+
+    result.per_workspace = build_per_workspace_breakdown(graph, &result).await?;
 
     Ok(result)
 }
@@ -244,6 +256,70 @@ async fn find_label_mismatches(graph: &Graph) -> anyhow::Result<Vec<LabelMismatc
     Ok(details)
 }
 
+async fn build_per_workspace_breakdown(
+    graph: &Graph,
+    result: &Neo4jScanResult,
+) -> anyhow::Result<PerWorkspaceBreakdown> {
+    let mut breakdown = PerWorkspaceBreakdown {
+        multi_label_nodes: count_multi_label_nodes_per_workspace(graph).await?,
+        cross_workspace_rels: HashMap::new(),
+        label_mismatches: HashMap::new(),
+        orphan_nodes: result.orphan_nodes,
+    };
+
+    for detail in &result.cross_workspace_details {
+        *breakdown
+            .cross_workspace_rels
+            .entry(detail.source_workspace.clone())
+            .or_insert(0) += 1;
+        *breakdown
+            .cross_workspace_rels
+            .entry(detail.target_workspace.clone())
+            .or_insert(0) += 1;
+    }
+
+    for detail in &result.label_mismatch_details {
+        *breakdown
+            .label_mismatches
+            .entry(detail.actual_workspace.clone())
+            .or_insert(0) += 1;
+    }
+
+    debug!(
+        "Per-workspace breakdown: {} workspaces with multi-label nodes, {} with cross-workspace rels, {} with label mismatches",
+        breakdown.multi_label_nodes.len(),
+        breakdown.cross_workspace_rels.len(),
+        breakdown.label_mismatches.len()
+    );
+
+    Ok(breakdown)
+}
+
+async fn count_multi_label_nodes_per_workspace(
+    graph: &Graph,
+) -> anyhow::Result<HashMap<String, i64>> {
+    let cypher = r#"
+        MATCH (n)
+        WITH n, [l IN labels(n) WHERE l STARTS WITH 'Workspace_'] AS ws_labels
+        WHERE size(ws_labels) > 1
+        UNWIND ws_labels AS ws
+        RETURN ws, count(n) AS cnt
+    "#;
+
+    let mut query_result = graph.execute(query(cypher)).await?;
+    let mut counts = HashMap::new();
+
+    while let Some(row) = query_result.next().await? {
+        let ws: String = row.get("ws").unwrap_or_default();
+        let cnt: i64 = row.get("cnt").unwrap_or(0);
+        if !ws.is_empty() {
+            counts.insert(ws, cnt);
+        }
+    }
+
+    Ok(counts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +334,78 @@ mod tests {
         assert_eq!(result.label_mismatches, 0);
         assert!(result.cross_workspace_details.is_empty());
         assert!(result.label_mismatch_details.is_empty());
+        assert!(result.per_workspace.multi_label_nodes.is_empty());
+        assert!(result.per_workspace.cross_workspace_rels.is_empty());
+        assert!(result.per_workspace.label_mismatches.is_empty());
+        assert_eq!(result.per_workspace.orphan_nodes, 0);
+    }
+
+    #[test]
+    fn test_per_workspace_breakdown_aggregation() {
+        let details = vec![
+            CrossWorkspaceDetail {
+                source_fqn: "a::f1".to_string(),
+                source_workspace: "Workspace_abc".to_string(),
+                target_fqn: "b::f2".to_string(),
+                target_workspace: "Workspace_def".to_string(),
+                rel_type: "CALLS".to_string(),
+            },
+            CrossWorkspaceDetail {
+                source_fqn: "a::f3".to_string(),
+                source_workspace: "Workspace_abc".to_string(),
+                target_fqn: "c::f4".to_string(),
+                target_workspace: "Workspace_ghi".to_string(),
+                rel_type: "CONTAINS".to_string(),
+            },
+        ];
+
+        let mut rel_breakdown: HashMap<String, i64> = HashMap::new();
+        for detail in &details {
+            *rel_breakdown
+                .entry(detail.source_workspace.clone())
+                .or_insert(0) += 1;
+            *rel_breakdown
+                .entry(detail.target_workspace.clone())
+                .or_insert(0) += 1;
+        }
+
+        assert_eq!(*rel_breakdown.get("Workspace_abc").unwrap(), 2);
+        assert_eq!(*rel_breakdown.get("Workspace_def").unwrap(), 1);
+        assert_eq!(*rel_breakdown.get("Workspace_ghi").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_per_workspace_label_mismatch_aggregation() {
+        let details = vec![
+            LabelMismatchDetail {
+                fqn: "a::f1".to_string(),
+                actual_workspace: "Workspace_abc".to_string(),
+                expected_workspace: "Workspace_def".to_string(),
+                neighbor_count: 5,
+            },
+            LabelMismatchDetail {
+                fqn: "a::f2".to_string(),
+                actual_workspace: "Workspace_abc".to_string(),
+                expected_workspace: "Workspace_ghi".to_string(),
+                neighbor_count: 3,
+            },
+            LabelMismatchDetail {
+                fqn: "b::f3".to_string(),
+                actual_workspace: "Workspace_def".to_string(),
+                expected_workspace: "Workspace_abc".to_string(),
+                neighbor_count: 2,
+            },
+        ];
+
+        let mut mismatch_breakdown: HashMap<String, i64> = HashMap::new();
+        for detail in &details {
+            *mismatch_breakdown
+                .entry(detail.actual_workspace.clone())
+                .or_insert(0) += 1;
+        }
+
+        assert_eq!(*mismatch_breakdown.get("Workspace_abc").unwrap(), 2);
+        assert_eq!(*mismatch_breakdown.get("Workspace_def").unwrap(), 1);
     }
 
     #[test]

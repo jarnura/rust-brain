@@ -893,4 +893,11 @@ mod tests {
         let req: CreateWorkspaceRequest = serde_json::from_str(json).unwrap();
         assert!(req.name.is_none());
     }
+
+    #[test]
+    fn test_create_workspace_request_empty_name() {
+        let json = r#"{"github_url": "https://github.com/org/repo", "name": ""}"#;
+        let req: CreateWorkspaceRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name.as_deref(), Some(""));
+    }
 }

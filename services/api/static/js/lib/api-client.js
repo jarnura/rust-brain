@@ -17,6 +17,44 @@ class ApiClient {
         this.baseUrl = baseUrl || window.location.origin;
         this.defaultTimeout = 30_000;
         this.chatTimeout = 600_000;  // 10 minutes for long LLM responses
+        /** @type {string|null} Active workspace ID — attached as X-Workspace-Id header */
+        this._workspaceId = null;
+    }
+
+    // ------------------------------------------------------------------ workspace
+
+    /**
+     * Set the active workspace ID. All subsequent requests will include
+     * the `X-Workspace-Id` header automatically.
+     * @param {string|null} id  Workspace UUID or null to clear
+     */
+    setWorkspace(id) {
+        this._workspaceId = id || null;
+    }
+
+    /**
+     * Get the currently active workspace ID.
+     * @returns {string|null}
+     */
+    getWorkspaceId() {
+        return this._workspaceId;
+    }
+
+    /**
+     * List all non-archived workspaces.
+     * @returns {Promise<Array<{id: string, name: string, status: string, source_url: string}>>}
+     */
+    listWorkspaces() {
+        return this._get('/workspaces');
+    }
+
+    /**
+     * Get a single workspace by ID.
+     * @param {string} id  Workspace UUID
+     * @returns {Promise<object>}
+     */
+    getWorkspace(id) {
+        return this._get(`/workspaces/${encodeURIComponent(id)}`);
     }
 
     // ------------------------------------------------------------------ core
@@ -28,9 +66,14 @@ class ApiClient {
         const controller = new AbortController();
         const tid = setTimeout(() => controller.abort(), ms);
 
+        const headers = { 'Content-Type': 'application/json', ...options.headers };
+        if (this._workspaceId) {
+            headers['X-Workspace-Id'] = this._workspaceId;
+        }
+
         try {
             const response = await fetch(url, {
-                headers: { 'Content-Type': 'application/json', ...options.headers },
+                headers,
                 ...options,
                 signal: controller.signal,
             });

@@ -389,4 +389,49 @@ mod tests {
         // is not in that state, rows_affected == 0 and Err is returned.
         let _ = ();
     }
+
+    #[test]
+    fn from_db_str_unknown_defaults_to_pending() {
+        assert_eq!(
+            WorkspaceStatus::from_db_str("unknown_status"),
+            WorkspaceStatus::Pending
+        );
+        assert_eq!(
+            WorkspaceStatus::from_db_str("random"),
+            WorkspaceStatus::Pending
+        );
+    }
+
+    #[test]
+    fn from_db_str_empty_defaults_to_pending() {
+        assert_eq!(WorkspaceStatus::from_db_str(""), WorkspaceStatus::Pending);
+    }
+
+    #[test]
+    fn from_db_str_all_variants() {
+        assert_eq!(
+            WorkspaceStatus::from_db_str("cloning"),
+            WorkspaceStatus::Cloning
+        );
+        assert_eq!(
+            WorkspaceStatus::from_db_str("indexing"),
+            WorkspaceStatus::Indexing
+        );
+        assert_eq!(
+            WorkspaceStatus::from_db_str("ready"),
+            WorkspaceStatus::Ready
+        );
+        assert_eq!(
+            WorkspaceStatus::from_db_str("error"),
+            WorkspaceStatus::Error
+        );
+        assert_eq!(
+            WorkspaceStatus::from_db_str("archived"),
+            WorkspaceStatus::Archived
+        );
+        assert_eq!(
+            WorkspaceStatus::from_db_str("pending"),
+            WorkspaceStatus::Pending
+        );
+    }
 }

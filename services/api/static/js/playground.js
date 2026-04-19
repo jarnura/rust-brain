@@ -10,9 +10,13 @@
  *  - Initialize collapsible sidebar
  *  - Initialize split-pane resizers
  *  - Initialize command palette (Cmd+K)
+ *  - Initialize workspace dropdown (query scoping)
  *  - Keyboard shortcuts: Cmd+1-9 → tabs, Cmd+/ → sidebar, Escape
  *  - Window resize handler
  */
+
+import { apiClient } from './lib/api-client.js';
+import { state } from './lib/state.js';
 
 // ── highlight.js registration ──────────────────────────────────────────────
 if (window.hljs) {
@@ -370,6 +374,8 @@ async function initPlayground() {
 
   updateConnectionStatus();
   setInterval(updateConnectionStatus, 30000);
+
+  initWorkspaceDropdown();
 }
 
 async function updateConnectionStatus() {
@@ -390,6 +396,34 @@ async function updateConnectionStatus() {
   } catch {
     statusDot.className = 'status-dot status-unhealthy';
     statusLabel.textContent = 'OFFLINE';
+  }
+}
+
+// ── Workspace dropdown ──────────────────────────────────────────────────────
+
+async function initWorkspaceDropdown() {
+  const select = document.getElementById('workspace-select');
+  if (!select) return;
+
+  select.addEventListener('change', () => {
+    const id = select.value || null;
+    apiClient.setWorkspace(id);
+    state.setCurrentWorkspaceId(id);
+  });
+
+  try {
+    const result = await apiClient.listWorkspaces();
+    const workspaces = Array.isArray(result) ? result : (result?.workspaces ?? []);
+    state.setWorkspaces(workspaces);
+
+    for (const ws of workspaces) {
+      if (ws.status === 'archived') continue;
+      const opt = document.createElement('option');
+      opt.value = ws.id;
+      opt.textContent = `${ws.name || ws.id.slice(0, 8)} (${ws.status})`;
+      select.appendChild(opt);
+    }
+  } catch {
   }
 }
 

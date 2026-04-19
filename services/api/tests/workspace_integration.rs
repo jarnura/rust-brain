@@ -998,3 +998,365 @@ async fn test_workspace_create_without_optional_name() {
     // Cleanup
     cleanup_workspace(workspace_id).await;
 }
+
+// =============================================================================
+// 6. Git Operations (diff, commit, reset)
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_diff_returns_patch_or_clean() {
+    let name = format!("ws-diff-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Wait for ready (or accept current state)
+    let _ = wait_for_workspace_status(&ws_id, "ready", 30).await;
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{}/diff", ws_id))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/diff failed");
+
+    let status = resp.status();
+    if status == 200 {
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            has_key(&body, "patch"),
+            "diff response must have 'patch' key"
+        );
+        assert!(
+            has_key(&body, "clean"),
+            "diff response must have 'clean' key"
+        );
+    } else {
+        // 400 is acceptable if workspace is not yet cloned
+        assert!(status == 400, "Expected 200 or 400, got {}", status);
+    }
+
+    cleanup_workspace(&ws_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_diff_nonexistent_workspace_404() {
+    let fake_id = "00000000-0000-0000-0000-000000000000";
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{}/diff", fake_id))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/diff failed");
+
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_commit_empty_message_400() {
+    let name = format!("ws-commit-empty-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/commit", ws_id))
+        .json(&json!({
+            "message": ""
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/commit failed");
+
+    assert_eq!(resp.status(), 400, "Empty commit message should return 400");
+
+    cleanup_workspace(&ws_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_commit_whitespace_message_400() {
+    let name = format!("ws-commit-ws-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/commit", ws_id))
+        .json(&json!({
+            "message": "   "
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/commit failed");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "Whitespace-only commit message should return 400"
+    );
+
+    cleanup_workspace(&ws_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_commit_nothing_to_commit_400() {
+    let name = format!("ws-commit-clean-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Wait for ready so the workspace is cloned
+    let _ = wait_for_workspace_status(&ws_id, "ready", 30).await;
+
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/commit", ws_id))
+        .json(&json!({
+            "message": "test commit on clean workspace"
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/commit failed");
+
+    let status = resp.status();
+    // 400 if nothing to commit or not cloned; 200 is also possible if there were changes
+    assert!(
+        status == 400 || status == 200,
+        "Expected 400 (nothing to commit) or 200, got {}",
+        status
+    );
+
+    cleanup_workspace(&ws_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_reset_returns_head_sha() {
+    let name = format!("ws-reset-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let _ = wait_for_workspace_status(&ws_id, "ready", 30).await;
+
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/reset", ws_id))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/reset failed");
+
+    let status = resp.status();
+    if status == 200 {
+        let body: Value = resp.json().await.unwrap();
+        assert!(
+            has_key(&body, "message"),
+            "reset response must have 'message' key"
+        );
+        assert!(
+            has_key(&body, "head_sha"),
+            "reset response must have 'head_sha' key"
+        );
+    } else {
+        // 400 if workspace not yet cloned
+        assert_eq!(status, 400, "Expected 200 or 400, got {}", status);
+    }
+
+    cleanup_workspace(&ws_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_reset_nonexistent_workspace_404() {
+    let fake_id = "00000000-0000-0000-0000-000000000000";
+    let resp = client()
+        .post(format!("{BASE}/workspaces/{}/reset", fake_id))
+        .send()
+        .await
+        .expect("POST /workspaces/:id/reset failed");
+
+    assert_eq!(resp.status(), 404);
+}
+
+// =============================================================================
+// 7. Stats & Stream
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_returns_all_fields() {
+    let name = format!("ws-stats-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{}/stats", ws_id))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+
+    assert_eq!(resp.status(), 200);
+
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        has_key(&body, "workspace_id"),
+        "stats must have workspace_id"
+    );
+    assert!(has_key(&body, "status"), "stats must have status");
+    assert!(
+        has_key(&body, "pg_items_count"),
+        "stats must have pg_items_count"
+    );
+    assert!(
+        has_key(&body, "neo4j_nodes_count"),
+        "stats must have neo4j_nodes_count"
+    );
+    assert!(
+        has_key(&body, "neo4j_edges_count"),
+        "stats must have neo4j_edges_count"
+    );
+    assert!(
+        has_key(&body, "qdrant_vectors_count"),
+        "stats must have qdrant_vectors_count"
+    );
+
+    // Consistency sub-object
+    assert!(has_key(&body, "consistency"), "stats must have consistency");
+    let consistency = &body["consistency"];
+    assert!(
+        has_key(consistency, "pg_vs_neo4j_delta"),
+        "consistency must have pg_vs_neo4j_delta"
+    );
+    assert!(
+        has_key(consistency, "pg_vs_qdrant_delta"),
+        "consistency must have pg_vs_qdrant_delta"
+    );
+    assert!(
+        has_key(consistency, "status"),
+        "consistency must have status"
+    );
+
+    // Isolation sub-object
+    assert!(has_key(&body, "isolation"), "stats must have isolation");
+    let isolation = &body["isolation"];
+    assert!(
+        has_key(isolation, "multi_label_nodes"),
+        "isolation must have multi_label_nodes"
+    );
+    assert!(
+        has_key(isolation, "cross_workspace_edges"),
+        "isolation must have cross_workspace_edges"
+    );
+    assert!(
+        has_key(isolation, "label_mismatches"),
+        "isolation must have label_mismatches"
+    );
+
+    cleanup_workspace(&ws_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stream_nonexistent_execution_404() {
+    let name = format!("ws-stream-{}", uuid_v4());
+    let create_resp = client()
+        .post(format!("{BASE}/workspaces"))
+        .json(&json!({
+            "github_url": "https://github.com/jarnura/rust-brain.git",
+            "name": name
+        }))
+        .send()
+        .await
+        .expect("POST /workspaces failed");
+
+    let ws_id = create_resp.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let fake_exec_id = "00000000-0000-0000-0000-000000000000";
+    let resp = client()
+        .get(format!(
+            "{BASE}/workspaces/{}/stream?execution_id={}",
+            ws_id, fake_exec_id
+        ))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stream failed");
+
+    assert_eq!(
+        resp.status(),
+        404,
+        "Non-existent execution should return 404"
+    );
+
+    cleanup_workspace(&ws_id).await;
+}

@@ -1,12 +1,14 @@
 //! Prometheus metrics for the audit service.
 //!
 //! Metric names must match exactly with configs/prometheus/alert_rules.yml.
+//! Two families: global aggregates (plain Gauge, backward-compatible) and
+//! per-workspace breakdowns (GaugeVec/IntCounterVec with `workspace` label).
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use lazy_static::lazy_static;
-use prometheus::{Encoder, Gauge, Opts, Registry, TextEncoder};
+use prometheus::{Encoder, Gauge, GaugeVec, IntCounterVec, Opts, Registry, TextEncoder};
 use std::sync::Arc;
 
 use crate::AppState;
@@ -68,6 +70,48 @@ lazy_static! {
         Opts::new("rustbrain_audit_scan_duration_seconds",
             "Duration of the last audit scan cycle in seconds")
     ).unwrap();
+
+    pub static ref WS_AUDIT_MULTI_LABEL_NODES: GaugeVec = GaugeVec::new(
+        Opts::new("rustbrain_workspace_audit_multi_label_nodes",
+            "Per-workspace count of nodes with multiple Workspace_ labels (counted once per workspace label carried)"),
+        &["workspace"]
+    ).unwrap();
+
+    pub static ref WS_AUDIT_CROSS_WORKSPACE_RELS: GaugeVec = GaugeVec::new(
+        Opts::new("rustbrain_workspace_audit_cross_workspace_relationships",
+            "Per-workspace count of relationships connecting nodes from different workspaces"),
+        &["workspace"]
+    ).unwrap();
+
+    pub static ref WS_AUDIT_LABEL_MISMATCHES: GaugeVec = GaugeVec::new(
+        Opts::new("rustbrain_workspace_audit_label_mismatches",
+            "Per-workspace count of nodes whose workspace label conflicts with their neighbors"),
+        &["workspace"]
+    ).unwrap();
+
+    pub static ref WS_AUDIT_LEAK_VOLUMES: GaugeVec = GaugeVec::new(
+        Opts::new("rustbrain_workspace_audit_leak_volumes_total",
+            "Per-workspace count of orphan Docker volumes (workspace=_unattributed if unknown)"),
+        &["workspace"]
+    ).unwrap();
+
+    pub static ref WS_AUDIT_LEAK_CONTAINERS: GaugeVec = GaugeVec::new(
+        Opts::new("rustbrain_workspace_audit_leak_containers_total",
+            "Per-workspace count of orphan Docker containers (workspace=_unattributed if unknown)"),
+        &["workspace"]
+    ).unwrap();
+
+    pub static ref WS_AUDIT_ORPHAN_NODES: GaugeVec = GaugeVec::new(
+        Opts::new("rustbrain_workspace_audit_orphan_nodes",
+            "Per-workspace count of Neo4j nodes with zero Workspace_ labels (workspace=_unlabeled)"),
+        &["workspace"]
+    ).unwrap();
+
+    pub static ref WS_AUDIT_OPERATIONS_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("rustbrain_workspace_audit_operations_total",
+            "Cumulative audit operations per workspace and type (leak_detected, leak_cleaned, cross_workspace_relationship, label_mismatch)"),
+        &["workspace", "operation"]
+    ).unwrap();
 }
 
 /// Register all metrics with the global registry.
@@ -100,6 +144,28 @@ pub fn init() {
         .unwrap();
     REGISTRY
         .register(Box::new(SCAN_DURATION_SECS.clone()))
+        .unwrap();
+
+    REGISTRY
+        .register(Box::new(WS_AUDIT_MULTI_LABEL_NODES.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(WS_AUDIT_CROSS_WORKSPACE_RELS.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(WS_AUDIT_LABEL_MISMATCHES.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(WS_AUDIT_LEAK_VOLUMES.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(WS_AUDIT_LEAK_CONTAINERS.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(WS_AUDIT_ORPHAN_NODES.clone()))
+        .unwrap();
+    REGISTRY
+        .register(Box::new(WS_AUDIT_OPERATIONS_TOTAL.clone()))
         .unwrap();
 
     BASELINE_ORPHAN_NODES.set(0.0);

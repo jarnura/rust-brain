@@ -27,7 +27,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <!-- Local styles -->
-  <link rel="stylesheet" href="css/playground.css?v=20260329-retro">
+  <link rel="stylesheet" href="css/playground.css?v=20260419-workspace">
 
   <style>
     /* ── Boot Sequence Overlay ── */
@@ -284,6 +284,14 @@
         </button>
       </nav>
 
+      <div class="sidebar__workspace" id="sidebar-workspace">
+        <label class="sidebar__workspace-label" for="workspace-select">Workspace</label>
+        <select class="sidebar__workspace-select" id="workspace-select" aria-label="Select workspace">
+          <option value="">Default</option>
+        </select>
+        <a class="sidebar__workspace-link" href="/playground/" target="_blank" rel="noopener">Manage →</a>
+      </div>
+
       <div class="sidebar__footer">
         <span id="sidebar-status" class="status-dot status-unknown"></span>
         <span class="sidebar__status-label" id="sidebar-status-label">BOOTING…</span>
@@ -344,6 +352,6 @@
   </div>
 
   <!-- Local JS (module) -->
-  <script type="module" src="js/playground.js?v=20260329-retro"></script>
+  <script type="module" src="js/playground.js?v=20260419-workspace"></script>
 </body>
 </html>

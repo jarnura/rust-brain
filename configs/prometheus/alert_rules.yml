@@ -145,3 +145,87 @@ groups:
             incorrect ingestion. Check the audit log for label_mismatch
             entries and the runbook for remediation steps.
           runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-relationship-and-label-mismatch-alert"
+
+  - name: rustbrain-workspace-audit
+    rules:
+      - alert: PerWorkspaceMultiLabelNodes
+        expr: rustbrain_workspace_audit_multi_label_nodes > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: workspace-isolation
+        annotations:
+          summary: "Per-workspace cross-workspace contamination detected"
+          description: |
+            Workspace {{ $labels.workspace }} has {{ $value }} node(s) with
+            multiple Workspace_ labels, indicating cross-workspace data
+            contamination. Immediate investigation required.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-leak-alert"
+
+      - alert: PerWorkspaceCrossWorkspaceRels
+        expr: rustbrain_workspace_audit_cross_workspace_relationships > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: workspace-isolation
+        annotations:
+          summary: "Per-workspace cross-workspace relationships detected"
+          description: |
+            Workspace {{ $labels.workspace }} has {{ $value }} relationship(s)
+            connecting nodes from different workspaces. This indicates a
+            workspace isolation breach.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-relationship-and-label-mismatch-alert"
+
+      - alert: PerWorkspaceLabelMismatches
+        expr: rustbrain_workspace_audit_label_mismatches > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: workspace-isolation
+        annotations:
+          summary: "Per-workspace label-context mismatches detected"
+          description: |
+            Workspace {{ $labels.workspace }} has {{ $value }} node(s) whose
+            workspace label conflicts with their neighbors. This can indicate
+            a mislabeled node from incorrect ingestion.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-relationship-and-label-mismatch-alert"
+
+      - alert: PerWorkspaceOrphanNodes
+        expr: rustbrain_workspace_audit_orphan_nodes > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: workspace-isolation
+        annotations:
+          summary: "Unlabeled orphan nodes detected in Neo4j"
+          description: |
+            {{ $value }} node(s) have zero Workspace_ labels (orphan nodes).
+            These may indicate a label-injection bug or pre-migration data
+            that was not labeled.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#cross-workspace-leak-alert"
+
+      - alert: PerWorkspaceLeakVolumes
+        expr: rustbrain_workspace_audit_leak_volumes_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: docker-resources
+        annotations:
+          summary: "Per-workspace orphaned Docker volumes detected"
+          description: |
+            Workspace {{ $labels.workspace }} has {{ $value }} orphaned
+            Docker volume(s) not tracked in Postgres.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"
+
+      - alert: PerWorkspaceLeakContainers
+        expr: rustbrain_workspace_audit_leak_containers_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: docker-resources
+        annotations:
+          summary: "Per-workspace orphaned Docker containers detected"
+          description: |
+            Workspace {{ $labels.workspace }} has {{ $value }} orphaned
+            Docker container(s) not tracked in Postgres.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"
