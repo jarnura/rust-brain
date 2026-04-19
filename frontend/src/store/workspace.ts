@@ -6,6 +6,7 @@ interface WorkspaceState {
   workspaces: Workspace[]
   setWorkspaces: (ws: Workspace[]) => void
   upsertWorkspace: (ws: Workspace) => void
+  removeWorkspace: (id: string) => void
 
   // active workspace
   activeWorkspaceId: string | null
@@ -48,6 +49,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       const updated = [...state.workspaces]
       updated[idx] = ws
       return { workspaces: updated }
+    }),
+  removeWorkspace: (id) =>
+    set((state) => {
+      const workspaces = state.workspaces.filter((w) => w.id !== id)
+      if (state.activeWorkspaceId !== id) return { workspaces }
+      return {
+        workspaces,
+        activeWorkspaceId: null,
+        files: [],
+        selectedFile: null,
+        activeExecutionId: null,
+        streamEvents: [],
+        streamDone: false,
+        diff: null,
+      }
     }),
 
   activeWorkspaceId: null,

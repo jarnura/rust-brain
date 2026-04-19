@@ -1,7 +1,13 @@
 import { useState } from 'react'
-import { API_BASE, createWorkspace, listWorkspaces } from '../api/client'
+import {
+  API_BASE,
+  createWorkspace,
+  deleteWorkspace,
+  listWorkspaces,
+} from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 import type { Workspace } from '../types'
+import { ConfirmDialog } from './ConfirmDialog'
 import { IndexingProgress } from './IndexingProgress'
 
 function statusBadge(status: Workspace['status']) {
@@ -17,13 +23,23 @@ function statusBadge(status: Workspace['status']) {
 }
 
 export function RepoManager() {
-  const { workspaces, setWorkspaces, upsertWorkspace, setActiveWorkspaceId, setFiles, clearStreamEvents } =
-    useWorkspaceStore()
+  const {
+    workspaces,
+    setWorkspaces,
+    upsertWorkspace,
+    removeWorkspace,
+    setActiveWorkspaceId,
+    setFiles,
+    clearStreamEvents,
+  } = useWorkspaceStore()
 
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<Workspace | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   // Poll workspace until it leaves the 'pending'/'cloning'/'indexing' state
   function pollWorkspace(id: string) {
@@ -102,6 +118,34 @@ export function RepoManager() {
     clearStreamEvents()
   }
 
+  function requestDelete(ws: Workspace, e: React.MouseEvent) {
+    e.stopPropagation()
+    e.preventDefault()
+    setDeleteError(null)
+    setPendingDelete(ws)
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await deleteWorkspace(pendingDelete.id)
+      removeWorkspace(pendingDelete.id)
+      setPendingDelete(null)
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Delete failed')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  function cancelDelete() {
+    if (deleting) return
+    setPendingDelete(null)
+    setDeleteError(null)
+  }
+
   return (
     <div className="space-y-4">
       {/* Clone form */}
@@ -156,26 +200,60 @@ export function RepoManager() {
               ws.status === 'cloning' ||
               ws.status === 'indexing' ||
               ws.status === 'error'
+            const selectable = ws.status === 'ready'
             return (
-              <li key={ws.id}>
-                <button
-                  onClick={() => handleSelect(ws)}
-                  disabled={ws.status !== 'ready'}
-                  className="w-full text-left px-3 py-2 rounded bg-dark-800 hover:bg-dark-700 disabled:opacity-80 disabled:cursor-default transition-colors group"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-dark-100 truncate group-hover:text-white transition-colors">
-                      {ws.name}
-                    </span>
+              <li
+                key={ws.id}
+                className={`relative px-3 py-2 rounded bg-dark-800 transition-colors group ${
+                  selectable ? 'hover:bg-dark-700 cursor-pointer' : 'opacity-80'
+                }`}
+                onClick={() => (selectable ? handleSelect(ws) : undefined)}
+                role={selectable ? 'button' : undefined}
+                tabIndex={selectable ? 0 : -1}
+                onKeyDown={(e) => {
+                  if (!selectable) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    handleSelect(ws)
+                  }
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-dark-100 truncate group-hover:text-white transition-colors">
+                    {ws.name}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
                     <span className={statusBadge(ws.status)}>{ws.status}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => requestDelete(ws, e)}
+                      title="Delete workspace"
+                      aria-label={`Delete workspace ${ws.name}`}
+                      className="text-dark-500 hover:text-red-400 text-xs px-1.5 py-0.5 rounded transition-colors"
+                    >
+                      ✕
+                    </button>
                   </div>
-                  <p className="text-xs text-dark-500 truncate mt-0.5">{ws.source_url}</p>
-                  {showProgress && <IndexingProgress workspace={ws} />}
-                </button>
+                </div>
+                <p className="text-xs text-dark-500 truncate mt-0.5">{ws.source_url}</p>
+                {showProgress && <IndexingProgress workspace={ws} />}
               </li>
             )
           })}
         </ul>
+      )}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Delete workspace"
+          message={`This archives "${pendingDelete.name}" and permanently removes its per-workspace schema, vector collection, Docker volume, and clone directory. Execution history is retained.`}
+          confirmPhrase={pendingDelete.name}
+          confirmLabel="Delete workspace"
+          busy={deleting}
+          error={deleteError}
+          onConfirm={confirmDelete}
+          onCancel={cancelDelete}
+        />
       )}
     </div>
   )

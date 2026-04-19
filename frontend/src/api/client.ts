@@ -44,6 +44,16 @@ function post<T>(path: string, body?: unknown): Promise<T> {
   })
 }
 
+async function del(path: string): Promise<void> {
+  const url = `${API_BASE}${path}`
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({}))
+    const msg = (body as { error?: string }).error ?? `HTTP ${res.status}`
+    throw new Error(msg)
+  }
+}
+
 // ─── Workspace API ────────────────────────────────────────────────────────────
 
 export function createWorkspace(
@@ -59,6 +69,20 @@ export function listWorkspaces(): Promise<Workspace[]> {
 
 export function getWorkspace(id: string): Promise<Workspace> {
   return get(`/workspaces/${id}`)
+}
+
+/**
+ * Archive and clean up a workspace.
+ *
+ * The backend's `DELETE /workspaces/:id` is a soft delete: it marks the
+ * workspace as `archived`, drops the per-workspace Postgres schema + Qdrant
+ * collections, removes the Docker volume, and cleans the clone directory.
+ * The workspace row itself is retained for audit history.
+ *
+ * Returns `204 No Content` on success, `404` if not found.
+ */
+export function deleteWorkspace(id: string): Promise<void> {
+  return del(`/workspaces/${id}`)
 }
 
 export async function listFiles(id: string): Promise<FileNode[]> {
