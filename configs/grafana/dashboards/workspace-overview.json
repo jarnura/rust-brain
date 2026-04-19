@@ -1,0 +1,653 @@
+{
+  "annotations": {"list": []},
+  "description": "Workspace lifecycle overview: status distribution, indexing progress, per-workspace stats, and recent activity.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "green", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COUNT(*) AS total FROM workspaces WHERE status != 'archived'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Active Workspaces",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "super-light-green", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COUNT(*) AS ready FROM workspaces WHERE status = 'ready'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Ready",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "blue", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COUNT(*) AS indexing FROM workspaces WHERE status = 'indexing'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Indexing",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "orange", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COUNT(*) AS cloning FROM workspaces WHERE status = 'cloning'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Cloning",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "red", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COUNT(*) AS errors FROM workspaces WHERE status = 'error'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Errors",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "purple", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "id": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COUNT(*) AS archived FROM workspaces WHERE status = 'archived'",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Archived",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "mappings": [
+            {"type": "value", "options": {"pending": {"text": "Pending", "color": "super-light-blue"}, "cloning": {"text": "Cloning", "color": "orange"}, "indexing": {"text": "Indexing", "color": "blue"}, "ready": {"text": "Ready", "color": "green"}, "error": {"text": "Error", "color": "red"}, "archived": {"text": "Archived", "color": "purple"}}}
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 4},
+      "id": 7,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "showUnfilled": true,
+        "namePlacement": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT status, COUNT(*) AS count FROM workspaces GROUP BY status ORDER BY count DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Status Distribution",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1800},
+              {"color": "red", "value": 7200}
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 4},
+      "id": 8,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM AVG(index_completed_at - index_started_at)), 0)::numeric AS avg_index_seconds FROM workspaces WHERE status = 'ready' AND index_started_at IS NOT NULL AND index_completed_at IS NOT NULL",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Avg Index Duration",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "green", "mode": "fixed"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 4},
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "sum(rate(rustbrain_api_requests_total[5m]))",
+          "legendFormat": "req/s",
+          "refId": "A"
+        }
+      ],
+      "title": "API Request Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [
+            {"type": "value", "options": {"pending": {"text": "⏳ Pending", "color": "super-light-blue"}, "cloning": {"text": "🔄 Cloning", "color": "orange"}, "indexing": {"text": "⚡ Indexing", "color": "blue"}, "ready": {"text": "✅ Ready", "color": "green"}, "error": {"text": "❌ Error", "color": "red"}, "archived": {"text": "📦 Archived", "color": "purple"}}}
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "text", "value": null}]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "name"},
+            "properties": [{"id": "custom.width", "value": 150}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "status"},
+            "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "source_url"},
+            "properties": [{"id": "custom.width", "value": 250}, {"id": "links", "value": [{"title": "Open Repo", "url": "${__data.fields.source_url}"}]}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "index_duration"},
+            "properties": [{"id": "unit", "value": "s"}, {"id": "custom.cellOptions", "value": {"type": "sparkline"}}]
+          }
+        ]
+      },
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 8},
+      "id": 10,
+      "options": {
+        "footer": {"enablePagination": true, "fields": ""},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "created_at"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT w.name, w.source_type, w.source_url, w.status, w.index_stage, w.index_error, EXTRACT(EPOCH FROM (w.index_completed_at - w.index_started_at))::numeric AS index_duration, w.created_at, w.updated_at FROM workspaces w ORDER BY w.created_at DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "All Workspaces",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": true
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "id": 11,
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT date_trunc('day', created_at) AS time, COUNT(*) AS workspaces_created FROM workspaces GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "title": "Workspace Creation Trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": true
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "id": 12,
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT date_trunc('day', index_completed_at) AS time, EXTRACT(EPOCH FROM AVG(index_completed_at - index_started_at))::numeric AS avg_duration_secs FROM workspaces WHERE status = 'ready' AND index_started_at IS NOT NULL AND index_completed_at IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "title": "Indexing Duration Trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [
+            {"type": "value", "options": {"create": {"color": "green"}, "clone_start": {"color": "blue"}, "clone_done": {"color": "green"}, "clone_failed": {"color": "red"}, "index_start": {"color": "blue"}, "index_done": {"color": "green"}, "index_failed": {"color": "red"}, "volume_create": {"color": "blue"}, "volume_remove": {"color": "purple"}, "volume_create_failed": {"color": "red"}, "volume_remove_failed": {"color": "red"}, "container_spawn": {"color": "blue"}, "container_stop": {"color": "purple"}, "container_remove_failed": {"color": "red"}, "archive": {"color": "purple"}, "cleanup_failed": {"color": "red"}, "leak_detected": {"color": "orange"}, "leak_cleaned": {"color": "green"}}}
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "text", "value": null}]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "operation"},
+            "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "workspace_name"},
+            "properties": [{"id": "custom.width", "value": 150}]
+          }
+        ]
+      },
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 28},
+      "id": 13,
+      "options": {
+        "footer": {"enablePagination": true, "fields": ""},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "created_at"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT w.name AS workspace_name, a.operation, a.actor, a.old_status, a.new_status, a.detail, a.created_at FROM workspace_audit_log a JOIN workspaces w ON w.id = a.workspace_id ORDER BY a.created_at DESC LIMIT 100",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Workspace Activity",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "filterable": true,
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "text", "value": null}]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "status"},
+            "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "mappings", "value": [{"type": "value", "options": {"pending": {"text": "Pending", "color": "super-light-blue"}, "cloning": {"text": "Cloning", "color": "orange"}, "indexing": {"text": "Indexing", "color": "blue"}, "ready": {"text": "Ready", "color": "green"}, "error": {"text": "Error", "color": "red"}, "archived": {"text": "Archived", "color": "purple"}}}]}]
+          }
+        ]
+      },
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 38},
+      "id": 14,
+      "options": {
+        "footer": {"enablePagination": true, "fields": "", "show": true},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "schema_name"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT w.name, w.status, w.schema_name, w.volume_name, CASE WHEN w.schema_name IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = w.schema_name AND table_name = 'extracted_items') THEN 'indexed' WHEN w.schema_name IS NOT NULL THEN 'schema_empty' ELSE 'no_schema' END AS data_status FROM workspaces w WHERE w.status NOT IN ('archived') ORDER BY w.created_at DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Per-Workspace Data Status",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 48},
+      "id": 15,
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull"]}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "sum by (endpoint) (rate(rustbrain_api_requests_total[5m]))",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ],
+      "title": "API Requests by Endpoint",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 48},
+      "id": 16,
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "histogram_quantile(0.5, sum by (le, endpoint) (rate(rustbrain_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{endpoint}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(rustbrain_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{endpoint}}",
+          "refId": "B"
+        }
+      ],
+      "title": "API Latency by Endpoint",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "/error.*/"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 56},
+      "id": 17,
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "sum by (endpoint, error_code) (rate(rustbrain_api_errors_total[5m]))",
+          "legendFormat": "{{endpoint}} {{error_code}}",
+          "refId": "A"
+        }
+      ],
+      "title": "API Error Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "text", "value": null}]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "status"},
+            "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "mappings", "value": [{"type": "value", "options": {"pending": {"text": "Pending", "color": "super-light-blue"}, "cloning": {"text": "Cloning", "color": "orange"}, "indexing": {"text": "Indexing", "color": "blue"}, "ready": {"text": "Ready", "color": "green"}, "error": {"text": "Error", "color": "red"}, "archived": {"text": "Archived", "color": "purple"}}}]}]
+          }
+        ]
+      },
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 64},
+      "id": 18,
+      "options": {
+        "footer": {"enablePagination": true, "fields": ""},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "created_at"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT w.name, w.status, w.index_error, w.index_stage, EXTRACT(EPOCH FROM (NOW() - w.updated_at))::int AS secs_since_update, w.updated_at FROM workspaces w WHERE w.status IN ('error', 'cloning', 'indexing') ORDER BY w.updated_at DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Workspaces Needing Attention (Error / Cloning / Indexing)",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": true
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "/.*failed.*/"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "/.*_done.*/"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "/.*leak.*/"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 74},
+      "id": 19,
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {
+          "datasource": {"type": "postgres", "uid": "postgres"},
+          "rawSql": "SELECT date_trunc('hour', created_at) AS time, operation, COUNT(*) AS count FROM workspace_audit_log WHERE created_at > NOW() - INTERVAL '7 days' GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit Event History (7d)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["rustbrain", "workspace", "overview"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Workspace Overview",
+  "uid": "rustbrain-workspace-overview",
+  "version": 1,
+  "weekStart": ""
+}

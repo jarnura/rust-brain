@@ -239,6 +239,28 @@ curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[].health'
 curl -s http://localhost:3000/api/health
 ```
 
+### Grafana Dashboards
+
+All dashboards are provisioned from `configs/grafana/dashboards/` and auto-loaded on Grafana startup.
+
+| Dashboard | UID | URL | Description |
+|-----------|-----|-----|-------------|
+| Infrastructure Overview | `rustbrain-infra` | `http://localhost:3000/d/rustbrain-infra` | Container CPU, memory, service status |
+| Database Health | `rustbrain-db` | `http://localhost:3000/d/rustbrain-db` | Postgres connections, transactions, DB size |
+| Ingestion Pipeline | `rustbrain-pipeline` | `http://localhost:3000/d/rustbrain-pipeline` | Ingestion runs, items extracted, phase durations |
+| Cross-Store Consistency | `rustbrain-consistency` | `http://localhost:3000/d/rustbrain-consistency` | Consistency probe status, per-crate item counts |
+| Workspace Leak Audit | `rustbrain-leak-audit` | `http://localhost:3000/d/rustbrain-leak-audit` | Orphan volumes/containers, cross-workspace contamination |
+| **Workspace Overview** | `rustbrain-workspace-overview` | `http://localhost:3000/d/rustbrain-workspace-overview` | Workspace lifecycle, status distribution, indexing progress, audit events |
+
+After modifying a dashboard JSON, restart Grafana to reload:
+
+```bash
+docker compose restart grafana
+# Or use the provisioning API for hot reload (no restart):
+curl -X POST http://localhost:3000/api/admin/provisioning/dashboards/reload \
+  -u admin:rustbrain
+```
+
 ## Common Failure Scenarios
 
 ### 1. Port Already in Use
