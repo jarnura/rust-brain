@@ -274,6 +274,10 @@ async fn main() -> anyhow::Result<()> {
             "/workspaces/:id/files",
             get(handlers::workspace::list_files),
         )
+        .route(
+            "/workspaces/:id/stats",
+            get(handlers::workspace_stats::get_workspace_stats),
+        )
         // Execution management
         .route(
             "/workspaces/:id/execute",

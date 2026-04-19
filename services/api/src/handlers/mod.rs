@@ -34,6 +34,7 @@ pub mod workspace_commit;
 pub mod workspace_diff;
 pub mod workspace_label;
 pub mod workspace_reset;
+pub mod workspace_stats;
 pub mod workspace_stream;
 
 use serde::{Deserialize, Serialize};
