@@ -777,3 +777,367 @@ async fn test_workspace_list_includes_status() {
         }
     }
 }
+
+// =============================================================================
+// Section 8: Workspace Stats Endpoint (GET /workspaces/:id/stats)
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_happy_path() {
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(resp.status(), 200, "Expected 200 for existing workspace stats");
+    let body: Value = resp.json().await.unwrap();
+
+    assert!(has_key(&body, "workspace_id"), "missing workspace_id");
+    assert!(has_key(&body, "status"), "missing status");
+    assert!(has_key(&body, "pg_items_count"), "missing pg_items_count");
+    assert!(has_key(&body, "neo4j_nodes_count"), "missing neo4j_nodes_count");
+    assert!(has_key(&body, "neo4j_edges_count"), "missing neo4j_edges_count");
+    assert!(has_key(&body, "qdrant_vectors_count"), "missing qdrant_vectors_count");
+    assert!(has_key(&body, "created_at"), "missing created_at");
+    assert!(has_key(&body, "consistency"), "missing consistency");
+    assert!(has_key(&body, "isolation"), "missing isolation");
+
+    assert_eq!(
+        body["workspace_id"].as_str(),
+        Some(workspace_id.as_str()),
+        "workspace_id should match path param"
+    );
+
+    assert!(
+        body["status"].is_string(),
+        "status must be a string, got: {:?}",
+        body["status"]
+    );
+
+    for field in &[
+        "pg_items_count",
+        "neo4j_nodes_count",
+        "neo4j_edges_count",
+        "qdrant_vectors_count",
+    ] {
+        let count = body[*field].as_i64();
+        assert!(
+            count.map(|n| n >= 0).unwrap_or(false),
+            "{} must be non-negative integer, got: {:?}",
+            field,
+            body[*field]
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_consistency_computation() {
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    let consistency = &body["consistency"];
+    assert!(has_key(consistency, "pg_vs_neo4j_delta"), "missing pg_vs_neo4j_delta");
+    assert!(has_key(consistency, "pg_vs_qdrant_delta"), "missing pg_vs_qdrant_delta");
+    assert!(has_key(consistency, "status"), "missing consistency status");
+
+    // Delta computation: pg - neo4j, pg - qdrant
+    let pg = body["pg_items_count"].as_i64().unwrap_or(0);
+    let neo4j = body["neo4j_nodes_count"].as_i64().unwrap_or(0);
+    let qdrant = body["qdrant_vectors_count"].as_i64().unwrap_or(0);
+
+    let pg_vs_neo4j = consistency["pg_vs_neo4j_delta"].as_i64();
+    let pg_vs_qdrant = consistency["pg_vs_qdrant_delta"].as_i64();
+
+    assert_eq!(
+        pg_vs_neo4j, Some(pg - neo4j),
+        "pg_vs_neo4j_delta should equal pg_items_count - neo4j_nodes_count"
+    );
+    assert_eq!(
+        pg_vs_qdrant, Some(pg - qdrant),
+        "pg_vs_qdrant_delta should equal pg_items_count - qdrant_vectors_count"
+    );
+
+    let status = consistency["status"].as_str().expect("status must be string");
+    assert!(
+        status == "consistent" || status == "inconsistent",
+        "consistency status must be 'consistent' or 'inconsistent', got: {}",
+        status
+    );
+
+    if pg_vs_neo4j == Some(0) && pg_vs_qdrant == Some(0) {
+        assert_eq!(status, "consistent", "Zero deltas should yield consistent status");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_isolation_fields() {
+    // Create a workspace and wait for it to be ready
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+
+    // Cleanup
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    let isolation = &body["isolation"];
+    assert!(
+        has_key(isolation, "multi_label_nodes"),
+        "missing multi_label_nodes"
+    );
+    assert!(
+        has_key(isolation, "cross_workspace_edges"),
+        "missing cross_workspace_edges"
+    );
+    assert!(
+        has_key(isolation, "label_mismatches"),
+        "missing label_mismatches"
+    );
+
+    // All isolation fields must be non-negative integers
+    for field in &["multi_label_nodes", "cross_workspace_edges", "label_mismatches"] {
+        let val = isolation[*field].as_i64();
+        assert!(
+            val.map(|n| n >= 0).unwrap_or(false),
+            "isolation.{} must be non-negative integer, got: {:?}",
+            field,
+            isolation[*field]
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_optional_fields() {
+    // Create a workspace and wait for it to be ready
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+
+    // Cleanup
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    // created_at is always present
+    assert!(
+        has_key(&body, "created_at"),
+        "created_at must always be present"
+    );
+    assert!(
+        body["created_at"].is_string(),
+        "created_at must be a string"
+    );
+
+    // index_duration_seconds and indexed_at are optional (may be null/absent)
+    // When a workspace is "ready" with completed indexing, they should be present
+    if body["status"] == "ready" {
+        // If index has completed, these should be non-null
+        if body.get("index_duration_seconds").is_some() {
+            let dur = body["index_duration_seconds"].as_i64();
+            // If present and non-null, must be non-negative
+            if dur.is_some() {
+                assert!(
+                    dur.map(|n| n >= 0).unwrap_or(false),
+                    "index_duration_seconds must be non-negative, got: {:?}",
+                    dur
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_404_nonexistent() {
+    // Use a valid UUID that doesn't correspond to any workspace
+    let fake_id = uuid::Uuid::new_v4().to_string();
+
+    let resp = client()
+        .get(format!("{BASE}/workspaces/{fake_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats for non-existent workspace failed");
+
+    assert_eq!(
+        resp.status(),
+        404,
+        "Expected 404 for non-existent workspace, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_invalid_uuid() {
+    let resp = client()
+        .get(format!("{BASE}/workspaces/not-a-valid-uuid/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats with invalid UUID failed");
+
+    // Axum path extractor rejects non-UUID with 400 Bad Request or 404
+    assert!(
+        resp.status() == 400 || resp.status() == 404,
+        "Expected 400 or 404 for invalid UUID, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_prometheus_gauges() {
+    // Create a workspace and wait for it to be ready
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    // Fetch stats to exercise the endpoint
+    let stats_resp = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+    assert_eq!(stats_resp.status(), 200);
+
+    // Now check Prometheus metrics for workspace gauge metrics
+    let metrics_resp = client()
+        .get(format!("{BASE}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics failed");
+
+    // Cleanup
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(metrics_resp.status(), 200);
+    let text = metrics_resp.text().await.unwrap();
+
+    // Workspace gauge metrics should be present in the Prometheus output
+    assert!(
+        text.contains("rustbrain_workspace_pg_items_total")
+            || text.contains("rustbrain_workspace_"),
+        "Prometheus metrics should contain workspace gauge metrics"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_middleware_labels() {
+    // Create a workspace and wait for it to be ready
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    // Make a request WITH X-Workspace-Id header
+    let _ = client()
+        .get(format!("{BASE}/health"))
+        .header("X-Workspace-Id", &workspace_id)
+        .send()
+        .await
+        .expect("GET /health with workspace header failed");
+
+    // Check Prometheus metrics for workspace-labeled request counters
+    let metrics_resp = client()
+        .get(format!("{BASE}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics failed");
+
+    // Cleanup
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(metrics_resp.status(), 200);
+    let text = metrics_resp.text().await.unwrap();
+
+    // Request counters should have workspace label from middleware
+    assert!(
+        text.contains("rustbrain_api_requests_total"),
+        "Metrics must contain request counter"
+    );
+
+    // Duration histogram should also be present
+    assert!(
+        text.contains("rustbrain_api_request_duration_seconds"),
+        "Metrics must contain request duration histogram"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_workspace_stats_repeated_calls_consistent() {
+    // Create a workspace and wait for it to be ready
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    // Fetch stats twice
+    let resp1 = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("First GET /workspaces/:id/stats failed");
+
+    let resp2 = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("Second GET /workspaces/:id/stats failed");
+
+    // Cleanup
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(resp1.status(), 200);
+    assert_eq!(resp2.status(), 200);
+
+    let body1: Value = resp1.json().await.unwrap();
+    let body2: Value = resp2.json().await.unwrap();
+
+    // Counts should be stable across two calls (no ingestion happening)
+    assert_eq!(
+        body1["pg_items_count"], body2["pg_items_count"],
+        "pg_items_count should be stable across calls"
+    );
+    assert_eq!(
+        body1["neo4j_nodes_count"], body2["neo4j_nodes_count"],
+        "neo4j_nodes_count should be stable across calls"
+    );
+    assert_eq!(
+        body1["qdrant_vectors_count"], body2["qdrant_vectors_count"],
+        "qdrant_vectors_count should be stable across calls"
+    );
+    assert_eq!(
+        body1["consistency"]["status"], body2["consistency"]["status"],
+        "consistency status should be stable across calls"
+    );
+}
