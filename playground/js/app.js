@@ -348,6 +348,14 @@ const API = {
             method: 'POST',
             body: JSON.stringify({ query, parameters, limit })
         });
+    },
+
+    async listWorkspaces() {
+        return fetchAPI('/workspaces');
+    },
+
+    async getWorkspaceStats(id) {
+        return fetchAPI(`/workspaces/${encodeURIComponent(id)}/stats`);
     }
 };
 

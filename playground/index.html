@@ -153,6 +153,17 @@
             </div>
         </div>
 
+        <div class="mb-8">
+            <div class="flex items-center space-x-4">
+                <label for="workspaceSelector" class="text-sm font-medium text-dark-300">Workspace:</label>
+                <select id="workspaceSelector" class="bg-dark-800 border border-dark-700 text-dark-100 text-sm rounded-md px-4 py-2 min-w-[200px]">
+                    <option value="">Global (default)</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="workspaceHealthSection" class="mb-8 hidden"></div>
+
         <!-- Quick Actions & Recent Activity -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <!-- Quick Actions -->
@@ -276,23 +287,32 @@
     </footer>
 
     <script src="js/app.js"></script>
+    <script src="js/workspace-dashboard.js"></script>
     <script>
-        // Dashboard-specific initialization
         document.addEventListener('DOMContentLoaded', () => {
-            // Set dynamic links using CONFIG
             document.getElementById('grafanaLink').href = CONFIG.grafanaBase;
+            initWorkspaceSelector();
             refreshAll();
-            // Auto-refresh every 30 seconds
             setInterval(refreshAll, 30000);
         });
 
         async function refreshAll() {
             updateTimestamp();
-            await Promise.all([
-                fetchServicesStatus(),
-                fetchStats(),
-                fetchRecentActivity()
-            ]);
+            const selectedWorkspace = document.getElementById('workspaceSelector')?.value;
+
+            if (selectedWorkspace) {
+                await Promise.all([
+                    fetchServicesStatus(),
+                    fetchRecentActivity()
+                ]);
+                await loadWorkspaceStats(selectedWorkspace);
+            } else {
+                await Promise.all([
+                    fetchServicesStatus(),
+                    fetchStats(),
+                    fetchRecentActivity()
+                ]);
+            }
         }
 
         async function fetchServicesStatus() {
