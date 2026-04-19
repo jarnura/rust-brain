@@ -10,6 +10,7 @@ pub mod extractors;
 mod gaps;
 pub mod github;
 pub mod handlers;
+pub mod metrics;
 pub mod middleware;
 pub mod neo4j;
 pub mod opencode;
@@ -127,6 +128,9 @@ async fn main() -> anyhow::Result<()> {
         docker,
         std::time::Duration::from_secs(30),
     );
+
+    // Start workspace gauge collector (periodic per-workspace resource metrics)
+    metrics::start_workspace_gauge_collector(state.clone());
 
     // Rate limiter: 10 req/s per IP, burst of 10 for embedding endpoints
     let embedding_governor_config = Arc::new(

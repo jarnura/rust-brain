@@ -6,6 +6,7 @@
 
 use crate::config::Config;
 use crate::docker::DockerClient;
+use crate::metrics::WorkspaceGauges;
 use crate::opencode::OpenCodeClient;
 use crate::workspace::WorkspaceManager;
 use neo4rs::Graph;
@@ -56,6 +57,8 @@ pub struct Metrics {
     pub request_duration: prometheus::HistogramVec,
     /// Total errors counter (labels: `endpoint`, `error_code`, `workspace`)
     pub errors_total: prometheus::CounterVec,
+    /// Per-workspace resource gauges (updated by background collector)
+    pub workspace_gauges: Arc<WorkspaceGauges>,
 }
 
 impl Default for Metrics {
@@ -106,11 +109,14 @@ impl Metrics {
             .register(Box::new(errors_total.clone()))
             .expect("Failed to register errors_total");
 
+        let workspace_gauges = WorkspaceGauges::new(&registry);
+
         Self {
             registry,
             requests_total,
             request_duration,
             errors_total,
+            workspace_gauges: Arc::new(workspace_gauges),
         }
     }
 
