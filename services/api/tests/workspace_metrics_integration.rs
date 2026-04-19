@@ -7,6 +7,8 @@
 //! - Ingestion pipeline progress
 //! - Workspace index progress and status
 //! - Named query templates for workspace statistics
+//! - Workspace stats endpoint (GET /workspaces/:id/stats)
+//! - Cardinality guard (endpoint label collapsing, workspace label fallback)
 //!
 //! Run with:
 //! ```
@@ -16,6 +18,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use uuid::Uuid;
 
 const BASE: &str = "http://localhost:8088";
 
@@ -796,15 +799,28 @@ async fn test_workspace_stats_happy_path() {
 
     cleanup_workspace(&workspace_id).await;
 
-    assert_eq!(resp.status(), 200, "Expected 200 for existing workspace stats");
+    assert_eq!(
+        resp.status(),
+        200,
+        "Expected 200 for existing workspace stats"
+    );
     let body: Value = resp.json().await.unwrap();
 
     assert!(has_key(&body, "workspace_id"), "missing workspace_id");
     assert!(has_key(&body, "status"), "missing status");
     assert!(has_key(&body, "pg_items_count"), "missing pg_items_count");
-    assert!(has_key(&body, "neo4j_nodes_count"), "missing neo4j_nodes_count");
-    assert!(has_key(&body, "neo4j_edges_count"), "missing neo4j_edges_count");
-    assert!(has_key(&body, "qdrant_vectors_count"), "missing qdrant_vectors_count");
+    assert!(
+        has_key(&body, "neo4j_nodes_count"),
+        "missing neo4j_nodes_count"
+    );
+    assert!(
+        has_key(&body, "neo4j_edges_count"),
+        "missing neo4j_edges_count"
+    );
+    assert!(
+        has_key(&body, "qdrant_vectors_count"),
+        "missing qdrant_vectors_count"
+    );
     assert!(has_key(&body, "created_at"), "missing created_at");
     assert!(has_key(&body, "consistency"), "missing consistency");
     assert!(has_key(&body, "isolation"), "missing isolation");
@@ -855,8 +871,14 @@ async fn test_workspace_stats_consistency_computation() {
     let body: Value = resp.json().await.unwrap();
 
     let consistency = &body["consistency"];
-    assert!(has_key(consistency, "pg_vs_neo4j_delta"), "missing pg_vs_neo4j_delta");
-    assert!(has_key(consistency, "pg_vs_qdrant_delta"), "missing pg_vs_qdrant_delta");
+    assert!(
+        has_key(consistency, "pg_vs_neo4j_delta"),
+        "missing pg_vs_neo4j_delta"
+    );
+    assert!(
+        has_key(consistency, "pg_vs_qdrant_delta"),
+        "missing pg_vs_qdrant_delta"
+    );
     assert!(has_key(consistency, "status"), "missing consistency status");
 
     // Delta computation: pg - neo4j, pg - qdrant
@@ -868,15 +890,19 @@ async fn test_workspace_stats_consistency_computation() {
     let pg_vs_qdrant = consistency["pg_vs_qdrant_delta"].as_i64();
 
     assert_eq!(
-        pg_vs_neo4j, Some(pg - neo4j),
+        pg_vs_neo4j,
+        Some(pg - neo4j),
         "pg_vs_neo4j_delta should equal pg_items_count - neo4j_nodes_count"
     );
     assert_eq!(
-        pg_vs_qdrant, Some(pg - qdrant),
+        pg_vs_qdrant,
+        Some(pg - qdrant),
         "pg_vs_qdrant_delta should equal pg_items_count - qdrant_vectors_count"
     );
 
-    let status = consistency["status"].as_str().expect("status must be string");
+    let status = consistency["status"]
+        .as_str()
+        .expect("status must be string");
     assert!(
         status == "consistent" || status == "inconsistent",
         "consistency status must be 'consistent' or 'inconsistent', got: {}",
@@ -884,7 +910,10 @@ async fn test_workspace_stats_consistency_computation() {
     );
 
     if pg_vs_neo4j == Some(0) && pg_vs_qdrant == Some(0) {
-        assert_eq!(status, "consistent", "Zero deltas should yield consistent status");
+        assert_eq!(
+            status, "consistent",
+            "Zero deltas should yield consistent status"
+        );
     }
 }
 
@@ -906,11 +935,24 @@ async fn test_workspace_stats_isolation_fields() {
     let body: Value = resp.json().await.unwrap();
 
     let isolation = &body["isolation"];
-    assert!(has_key(isolation, "multi_label_nodes"), "missing multi_label_nodes");
-    assert!(has_key(isolation, "cross_workspace_edges"), "missing cross_workspace_edges");
-    assert!(has_key(isolation, "label_mismatches"), "missing label_mismatches");
+    assert!(
+        has_key(isolation, "multi_label_nodes"),
+        "missing multi_label_nodes"
+    );
+    assert!(
+        has_key(isolation, "cross_workspace_edges"),
+        "missing cross_workspace_edges"
+    );
+    assert!(
+        has_key(isolation, "label_mismatches"),
+        "missing label_mismatches"
+    );
 
-    for field in &["multi_label_nodes", "cross_workspace_edges", "label_mismatches"] {
+    for field in &[
+        "multi_label_nodes",
+        "cross_workspace_edges",
+        "label_mismatches",
+    ] {
         let val = isolation[*field].as_i64();
         assert!(
             val.map(|n| n >= 0).unwrap_or(false),
@@ -938,13 +980,23 @@ async fn test_workspace_stats_optional_fields() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
 
-    assert!(has_key(&body, "created_at"), "created_at must always be present");
-    assert!(body["created_at"].is_string(), "created_at must be a string");
+    assert!(
+        has_key(&body, "created_at"),
+        "created_at must always be present"
+    );
+    assert!(
+        body["created_at"].is_string(),
+        "created_at must be a string"
+    );
 
     // index_duration_seconds and indexed_at use skip_serializing_if = "Option::is_none"
     if body["status"] == "ready" {
         if let Some(dur) = body.get("index_duration_seconds").and_then(|v| v.as_i64()) {
-            assert!(dur >= 0, "index_duration_seconds must be non-negative, got: {}", dur);
+            assert!(
+                dur >= 0,
+                "index_duration_seconds must be non-negative, got: {}",
+                dur
+            );
         }
     }
 }
@@ -952,7 +1004,7 @@ async fn test_workspace_stats_optional_fields() {
 #[tokio::test]
 #[ignore]
 async fn test_workspace_stats_404_nonexistent() {
-    let fake_id = uuid::Uuid::new_v4().to_string();
+    let fake_id = Uuid::new_v4().to_string();
 
     let resp = client()
         .get(format!("{BASE}/workspaces/{fake_id}/stats"))
@@ -961,7 +1013,8 @@ async fn test_workspace_stats_404_nonexistent() {
         .expect("GET /workspaces/:id/stats for non-existent workspace failed");
 
     assert_eq!(
-        resp.status(), 404,
+        resp.status(),
+        404,
         "Expected 404 for non-existent workspace, got {}",
         resp.status()
     );
@@ -1074,8 +1127,184 @@ async fn test_workspace_stats_repeated_calls_consistent() {
     let body1: Value = resp1.json().await.unwrap();
     let body2: Value = resp2.json().await.unwrap();
 
-    assert_eq!(body1["pg_items_count"], body2["pg_items_count"], "pg_items_count should be stable across calls");
-    assert_eq!(body1["neo4j_nodes_count"], body2["neo4j_nodes_count"], "neo4j_nodes_count should be stable across calls");
-    assert_eq!(body1["qdrant_vectors_count"], body2["qdrant_vectors_count"], "qdrant_vectors_count should be stable across calls");
-    assert_eq!(body1["consistency"]["status"], body2["consistency"]["status"], "consistency status should be stable across calls");
+    assert_eq!(
+        body1["pg_items_count"], body2["pg_items_count"],
+        "pg_items_count should be stable across calls"
+    );
+    assert_eq!(
+        body1["neo4j_nodes_count"], body2["neo4j_nodes_count"],
+        "neo4j_nodes_count should be stable across calls"
+    );
+    assert_eq!(
+        body1["qdrant_vectors_count"], body2["qdrant_vectors_count"],
+        "qdrant_vectors_count should be stable across calls"
+    );
+    assert_eq!(
+        body1["consistency"]["status"], body2["consistency"]["status"],
+        "consistency status should be stable across calls"
+    );
+}
+
+// =============================================================================
+// Section 9: Cardinality Guard (endpoint label collapsing & workspace label)
+// =============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn test_cardinality_endpoint_label_collapsing() {
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let _ = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
+        .send()
+        .await
+        .expect("GET /workspaces/:id/stats failed");
+
+    let metrics_resp = client()
+        .get(format!("{BASE}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics failed");
+
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(metrics_resp.status(), 200);
+    let text = metrics_resp.text().await.unwrap();
+
+    assert!(
+        text.contains("endpoint=\"/workspaces/:id/stats\""),
+        "Metrics should collapse workspace UUID to :id in endpoint label, got: {}",
+        text.lines()
+            .filter(|l| l.contains("rustbrain_api_requests_total") && l.contains("/workspaces/"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+
+    assert!(
+        !text.contains(&format!("endpoint=\"/workspaces/{}/stats\"", workspace_id)),
+        "Raw workspace UUID should NOT appear as an endpoint label value"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_cardinality_workspace_label_none_when_absent() {
+    let _ = client()
+        .get(format!("{BASE}/health"))
+        .send()
+        .await
+        .expect("GET /health failed");
+
+    let metrics_resp = client()
+        .get(format!("{BASE}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics failed");
+
+    assert_eq!(metrics_resp.status(), 200);
+    let text = metrics_resp.text().await.unwrap();
+
+    let health_with_none = text
+        .lines()
+        .filter(|l| {
+            l.contains("rustbrain_api_requests_total")
+                && l.contains("endpoint=\"/health\"")
+                && l.contains("workspace=\"none\"")
+        })
+        .count();
+
+    assert!(
+        health_with_none > 0,
+        "Requests without X-Workspace-Id header should use workspace=\"none\" label, got: {}",
+        text.lines()
+            .filter(|l| l.contains("rustbrain_api_requests_total")
+                && l.contains("endpoint=\"/health\""))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_cardinality_workspace_label_from_header() {
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let _ = client()
+        .get(format!("{BASE}/health"))
+        .header("X-Workspace-Id", &workspace_id)
+        .send()
+        .await
+        .expect("GET /health with workspace header failed");
+
+    let metrics_resp = client()
+        .get(format!("{BASE}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics failed");
+
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(metrics_resp.status(), 200);
+    let text = metrics_resp.text().await.unwrap();
+
+    let matching = text
+        .lines()
+        .filter(|l| {
+            l.contains("rustbrain_api_requests_total")
+                && l.contains("endpoint=\"/health\"")
+                && l.contains(&format!("workspace=\"{}\"", workspace_id))
+        })
+        .count();
+
+    assert!(
+        matching > 0,
+        "Requests with X-Workspace-Id header should carry that value as the workspace label"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_cardinality_no_raw_uuid_in_endpoint_labels() {
+    let workspace_id = create_test_workspace().await;
+    wait_for_workspace_status(&workspace_id, "ready", 90).await;
+
+    let _ = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/files"))
+        .send()
+        .await;
+
+    let _ = client()
+        .get(format!("{BASE}/workspaces/{workspace_id}/diff"))
+        .send()
+        .await;
+
+    let metrics_resp = client()
+        .get(format!("{BASE}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics failed");
+
+    cleanup_workspace(&workspace_id).await;
+
+    assert_eq!(metrics_resp.status(), 200);
+    let text = metrics_resp.text().await.unwrap();
+
+    for line in text
+        .lines()
+        .filter(|l| l.contains("rustbrain_api_requests_total"))
+    {
+        assert!(
+            !line.contains(&format!("/workspaces/{}/", workspace_id)),
+            "Raw UUID must not appear in endpoint labels. Found: {}",
+            line
+        );
+    }
+
+    assert!(
+        text.contains("endpoint=\"/workspaces/:id/files\"")
+            || text.contains("endpoint=\"/workspaces/:id/diff\""),
+        "Collapsed :id endpoint labels should be present for workspace-specific paths"
+    );
 }
