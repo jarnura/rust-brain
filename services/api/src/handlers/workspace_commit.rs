@@ -48,8 +48,6 @@ pub async fn workspace_commit(
     Path(workspace_id): Path<Uuid>,
     Json(req): Json<CommitRequest>,
 ) -> Result<Json<CommitResponse>, AppError> {
-    state.metrics.record_request("workspace_commit", "POST");
-
     if req.message.trim().is_empty() {
         return Err(AppError::BadRequest(
             "commit message must not be empty".to_string(),

@@ -172,7 +172,6 @@ pub async fn create_task(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(request): Json<CreateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
-    state.metrics.record_request("create_task", "POST");
     debug!("Creating task: {}", request.id);
 
     let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
@@ -216,7 +215,6 @@ pub async fn get_task(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Path(id): Path<String>,
 ) -> Result<Json<Task>, AppError> {
-    state.metrics.record_request("get_task", "GET");
     debug!("Getting task: {}", id);
 
     let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
@@ -242,7 +240,6 @@ pub async fn list_tasks(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<ListTasksQuery>,
 ) -> Result<Json<Vec<Task>>, AppError> {
-    state.metrics.record_request("list_tasks", "GET");
     debug!(
         "Listing tasks: status={:?}, agent={:?}, phase={:?}, class={:?}",
         query.status, query.agent, query.phase, query.class
@@ -286,7 +283,6 @@ pub async fn update_task(
     Path(id): Path<String>,
     Json(request): Json<UpdateTaskRequest>,
 ) -> Result<Json<Task>, AppError> {
-    state.metrics.record_request("update_task", "PUT");
     debug!("Updating task: {}", id);
 
     let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;

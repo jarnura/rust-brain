@@ -143,7 +143,6 @@ pub async fn pg_query(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(request): Json<PgQueryRequest>,
 ) -> Result<Json<PgQueryResponse>, AppError> {
-    state.metrics.record_request("pg_query", "POST");
     debug!("pg_query: {}", request.query);
 
     validate_query(&request.query)?;

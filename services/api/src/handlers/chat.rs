@@ -40,7 +40,6 @@ pub async fn chat_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, AppError> {
-    state.metrics.record_request("chat", "POST");
     debug!("Chat request: {:?}", req.message);
 
     // Check if OpenCode is reachable before attempting to create a session

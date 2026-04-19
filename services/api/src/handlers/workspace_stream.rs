@@ -83,8 +83,6 @@ pub async fn stream_workspace(
     Path(workspace_id): Path<Uuid>,
     Query(query): Query<StreamQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.metrics.record_request("stream_workspace", "GET");
-
     // Verify workspace exists
     db_get_workspace(&state.workspace_manager.pool, workspace_id)
         .await

@@ -10,6 +10,7 @@ pub mod extractors;
 mod gaps;
 pub mod github;
 pub mod handlers;
+pub mod middleware;
 pub mod neo4j;
 pub mod opencode;
 pub mod state;
@@ -317,6 +318,10 @@ async fn main() -> anyhow::Result<()> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::workspace_metrics,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

@@ -52,8 +52,6 @@ pub async fn ingestion_progress(
     State(state): State<AppState>,
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
 ) -> Result<Json<IngestionProgress>, AppError> {
-    state.metrics.record_request("ingestion_progress", "GET");
-
     let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
 
     let row = sqlx::query_as::<_, IngestionRow>(

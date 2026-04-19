@@ -125,7 +125,6 @@ pub async fn check_consistency(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<ConsistencyQuery>,
 ) -> Result<Json<ConsistencyReport>, AppError> {
-    state.metrics.record_request("check_consistency", "GET");
     let crate_name = query.crate_name.unwrap_or_else(|| "all".to_string());
     let detail_full = query.detail == "full";
 
@@ -266,7 +265,6 @@ pub async fn health_consistency(
     State(state): State<AppState>,
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
 ) -> Result<Response, AppError> {
-    state.metrics.record_request("health_consistency", "GET");
     debug!("Running aggregate consistency health check");
 
     // Get list of all crates from Postgres

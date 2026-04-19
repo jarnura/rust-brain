@@ -64,8 +64,6 @@ pub async fn execute_workspace(
     Path(workspace_id): Path<Uuid>,
     Json(req): Json<ExecuteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.metrics.record_request("execute_workspace", "POST");
-
     if req.prompt.trim().is_empty() {
         return Err(AppError::BadRequest("prompt must not be empty".into()));
     }
@@ -133,8 +131,6 @@ pub async fn list_executions(
     State(state): State<AppState>,
     Path(workspace_id): Path<Uuid>,
 ) -> Result<Json<Vec<crate::execution::Execution>>, AppError> {
-    state.metrics.record_request("list_executions", "GET");
-
     db_list_executions(&state.workspace_manager.pool, workspace_id)
         .await
         .map(Json)
@@ -146,8 +142,6 @@ pub async fn get_execution(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::execution::Execution>, AppError> {
-    state.metrics.record_request("get_execution", "GET");
-
     db_get_execution(&state.workspace_manager.pool, id)
         .await
         .map_err(|e| AppError::Database(format!("Failed to fetch execution: {e}")))?
@@ -165,10 +159,6 @@ pub async fn stream_events(
     Path(id): Path<Uuid>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, AppError>
 {
-    state
-        .metrics
-        .record_request("stream_execution_events", "GET");
-
     // Verify execution exists before starting the stream
     db_get_execution(&state.workspace_manager.pool, id)
         .await

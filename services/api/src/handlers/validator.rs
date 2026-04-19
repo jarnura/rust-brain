@@ -125,7 +125,6 @@ pub async fn list_runs(
     State(state): State<AppState>,
     Query(query): Query<ListRunsQuery>,
 ) -> Result<Json<Vec<RunSummary>>, AppError> {
-    state.metrics.record_request("list_validator_runs", "GET");
     debug!(repo = %query.repo, pr = query.pr, "Listing validator runs");
 
     let rows = sqlx::query_as::<_, SummaryRow>(
@@ -150,7 +149,6 @@ pub async fn get_run(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RunDetail>, AppError> {
-    state.metrics.record_request("get_validator_run", "GET");
     debug!(%id, "Getting validator run");
 
     let row = sqlx::query_as::<_, DetailRow>(

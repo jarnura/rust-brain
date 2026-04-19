@@ -127,8 +127,6 @@ pub async fn create_workspace(
     State(state): State<AppState>,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.metrics.record_request("create_workspace", "POST");
-
     validate_github_url(&req.github_url)?;
 
     let name = req
@@ -207,8 +205,6 @@ pub async fn create_workspace(
 pub async fn list_workspaces(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Workspace>>, AppError> {
-    state.metrics.record_request("list_workspaces", "GET");
-
     let workspaces = db_list_workspaces(&state.workspace_manager.pool)
         .await
         .map_err(|e| AppError::Database(format!("Failed to list workspaces: {}", e)))?;
@@ -221,8 +217,6 @@ pub async fn get_workspace(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Workspace>, AppError> {
-    state.metrics.record_request("get_workspace", "GET");
-
     let workspace = db_get_workspace(&state.workspace_manager.pool, id)
         .await
         .map_err(|e| AppError::Database(format!("Failed to fetch workspace: {}", e)))?
@@ -247,8 +241,6 @@ pub async fn delete_workspace(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    state.metrics.record_request("delete_workspace", "DELETE");
-
     let pool = &state.workspace_manager.pool;
 
     let workspace = db_get_workspace(pool, id)
@@ -407,8 +399,6 @@ pub async fn list_files(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<FileNode>, AppError> {
-    state.metrics.record_request("list_workspace_files", "GET");
-
     let workspace = db_get_workspace(&state.workspace_manager.pool, id)
         .await
         .map_err(|e| AppError::Database(format!("Failed to fetch workspace: {}", e)))?

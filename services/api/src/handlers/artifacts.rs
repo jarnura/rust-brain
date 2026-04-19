@@ -129,7 +129,6 @@ pub async fn create_artifact(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(request): Json<CreateArtifactRequest>,
 ) -> Result<Json<Artifact>, AppError> {
-    state.metrics.record_request("create_artifact", "POST");
     debug!("Creating artifact: {}", request.id);
 
     if !VALID_STATUSES.contains(&request.status.as_str()) {
@@ -179,7 +178,6 @@ pub async fn get_artifact(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Path(id): Path<String>,
 ) -> Result<Json<Artifact>, AppError> {
-    state.metrics.record_request("get_artifact", "GET");
     debug!("Getting artifact: {}", id);
 
     let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;
@@ -205,7 +203,6 @@ pub async fn list_artifacts(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<ListArtifactsQuery>,
 ) -> Result<Json<Vec<Artifact>>, AppError> {
-    state.metrics.record_request("list_artifacts", "GET");
     debug!(
         "Listing artifacts: task_id={:?}, type={:?}, status={:?}, producer={:?}",
         query.task_id, query.artifact_type, query.status, query.producer
@@ -246,7 +243,6 @@ pub async fn update_artifact(
     Path(id): Path<String>,
     Json(request): Json<UpdateArtifactRequest>,
 ) -> Result<Json<Artifact>, AppError> {
-    state.metrics.record_request("update_artifact", "PUT");
     debug!("Updating artifact: {}", id);
 
     if let Some(ref status) = request.status {

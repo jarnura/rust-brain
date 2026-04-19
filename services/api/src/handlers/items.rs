@@ -108,7 +108,6 @@ pub async fn get_function(
     WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetFunctionQuery>,
 ) -> Result<Json<FunctionDetail>, AppError> {
-    state.metrics.record_request("get_function", "GET");
     debug!("Get function: {}", query.fqn);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws.clone());
@@ -256,8 +255,6 @@ pub async fn get_callers(
     WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetCallersQuery>,
 ) -> Result<Json<CallersResponse>, AppError> {
-    state.metrics.record_request("get_callers", "GET");
-
     // Validate depth parameter: max 10
     if query.depth > 10 {
         return Err(AppError::BadRequest(

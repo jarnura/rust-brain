@@ -110,7 +110,6 @@ pub async fn find_calls_with_type(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<FindCallsWithTypeQuery>,
 ) -> Result<Json<CallsWithTypeResponse>, AppError> {
-    state.metrics.record_request("find_calls_with_type", "GET");
     debug!(
         "Find calls with type: {} (callee: {:?})",
         query.type_name, query.callee_name
@@ -206,9 +205,6 @@ pub async fn find_trait_impls_for_type(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Query(query): Query<FindTraitImplsForTypeQuery>,
 ) -> Result<Json<TraitImplsForTypeResponse>, AppError> {
-    state
-        .metrics
-        .record_request("find_trait_impls_for_type", "GET");
     debug!("Find trait impls for type: {}", query.type_name);
 
     let mut conn = acquire_conn(&state.pg_pool, ws.as_ref()).await?;

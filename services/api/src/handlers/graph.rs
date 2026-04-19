@@ -175,7 +175,6 @@ pub async fn get_trait_impls(
     WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetTraitImplsQuery>,
 ) -> Result<Json<TraitImplsResponse>, AppError> {
-    state.metrics.record_request("get_trait_impls", "GET");
     debug!("Get trait impls for: {}", query.trait_name);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
@@ -236,7 +235,6 @@ pub async fn find_usages_of_type(
     WorkspaceId(ws): WorkspaceId,
     Query(query): Query<FindUsagesOfTypeQuery>,
 ) -> Result<Json<UsagesResponse>, AppError> {
-    state.metrics.record_request("find_usages_of_type", "GET");
     debug!("Find usages of type: {}", query.type_name);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
@@ -286,7 +284,6 @@ pub async fn get_module_tree(
     WorkspaceId(ws): WorkspaceId,
     Query(query): Query<GetModuleTreeQuery>,
 ) -> Result<Json<ModuleTreeResponse>, AppError> {
-    state.metrics.record_request("get_module_tree", "GET");
     debug!("Get module tree for crate: {}", query.crate_name);
 
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
@@ -598,8 +595,6 @@ pub async fn query_graph(
     WorkspaceId(ws): WorkspaceId,
     Json(mut req): Json<QueryGraphRequest>,
 ) -> Result<Json<GraphQueryResponse>, AppError> {
-    state.metrics.record_request("query_graph", "POST");
-
     let client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws);
 
     // Defense-in-depth: strip any workspace-related parameters to prevent injection attempts

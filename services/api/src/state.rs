@@ -42,19 +42,19 @@ pub struct AppState {
 /// Prometheus metrics for API request tracking.
 ///
 /// Exposes three metric families:
-/// - `rustbrain_api_requests_total` — counter by endpoint and method
-/// - `rustbrain_api_request_duration_seconds` — histogram by endpoint
-/// - `rustbrain_api_errors_total` — counter by endpoint and error code
+/// - `rustbrain_api_requests_total` — counter by endpoint, method, and workspace
+/// - `rustbrain_api_request_duration_seconds` — histogram by endpoint and workspace
+/// - `rustbrain_api_errors_total` — counter by endpoint, error_code, and workspace
 ///
 /// Scraped via `GET /metrics` (see [`crate::handlers::health::metrics_handler`]).
 pub struct Metrics {
     /// Prometheus registry that owns all metric families
     pub registry: Registry,
-    /// Total requests counter (labels: `endpoint`, `method`)
+    /// Total requests counter (labels: `endpoint`, `method`, `workspace`)
     pub requests_total: prometheus::CounterVec,
-    /// Request duration histogram (label: `endpoint`)
+    /// Request duration histogram (labels: `endpoint`, `workspace`)
     pub request_duration: prometheus::HistogramVec,
-    /// Total errors counter (labels: `endpoint`, `error_code`)
+    /// Total errors counter (labels: `endpoint`, `error_code`, `workspace`)
     pub errors_total: prometheus::CounterVec,
 }
 
@@ -77,7 +77,7 @@ impl Metrics {
 
         let requests_total = prometheus::CounterVec::new(
             prometheus::Opts::new("rustbrain_api_requests_total", "Total API requests"),
-            &["endpoint", "method"],
+            &["endpoint", "method", "workspace"],
         )
         .expect("Failed to create requests_total metric");
 
@@ -86,13 +86,13 @@ impl Metrics {
                 "rustbrain_api_request_duration_seconds",
                 "Request duration",
             ),
-            &["endpoint"],
+            &["endpoint", "workspace"],
         )
         .expect("Failed to create request_duration metric");
 
         let errors_total = prometheus::CounterVec::new(
             prometheus::Opts::new("rustbrain_api_errors_total", "Total API errors"),
-            &["endpoint", "error_code"],
+            &["endpoint", "error_code", "workspace"],
         )
         .expect("Failed to create errors_total metric");
 
@@ -114,17 +114,24 @@ impl Metrics {
         }
     }
 
-    /// Increments the `requests_total` counter for the given endpoint and HTTP method.
-    pub fn record_request(&self, endpoint: &str, method: &str) {
+    /// Increments the `requests_total` counter for the given endpoint, method, and workspace.
+    pub fn record_request(&self, endpoint: &str, method: &str, workspace: &str) {
         self.requests_total
-            .with_label_values(&[endpoint, method])
+            .with_label_values(&[endpoint, method, workspace])
             .inc();
     }
 
-    /// Increments the `errors_total` counter for the given endpoint and error code.
-    pub fn record_error(&self, endpoint: &str, error_code: &str) {
+    /// Records a request duration observation for the given endpoint and workspace.
+    pub fn record_duration(&self, endpoint: &str, workspace: &str, duration: std::time::Duration) {
+        self.request_duration
+            .with_label_values(&[endpoint, workspace])
+            .observe(duration.as_secs_f64());
+    }
+
+    /// Increments the `errors_total` counter for the given endpoint, error code, and workspace.
+    pub fn record_error(&self, endpoint: &str, error_code: &str, workspace: &str) {
         self.errors_total
-            .with_label_values(&[endpoint, error_code])
+            .with_label_values(&[endpoint, error_code, workspace])
             .inc();
     }
 }
@@ -136,8 +143,13 @@ mod tests {
     #[test]
     fn test_metrics_creation() {
         let metrics = Metrics::new();
-        metrics.record_request("test_endpoint", "GET");
-        metrics.record_error("test_endpoint", "500");
+        metrics.record_request("test_endpoint", "GET", "none");
+        metrics.record_error("test_endpoint", "500", "none");
+        metrics.record_duration(
+            "test_endpoint",
+            "none",
+            std::time::Duration::from_millis(100),
+        );
         // No panic = success
     }
 }

@@ -195,9 +195,6 @@ fn case_result_from_row(r: CaseResultRow) -> CaseResultDetail {
 pub async fn list_suites(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SuiteSummary>>, AppError> {
-    state
-        .metrics
-        .record_request("list_benchmarker_suites", "GET");
     debug!("Listing eval suites");
 
     let rows = sqlx::query_as::<_, SuiteRow>(
@@ -222,7 +219,6 @@ pub async fn list_runs(
     State(state): State<AppState>,
     Query(query): Query<ListRunsQuery>,
 ) -> Result<Json<Vec<BenchRunSummary>>, AppError> {
-    state.metrics.record_request("list_benchmarker_runs", "GET");
     debug!(suite = ?query.suite, status = ?query.status, "Listing bench runs");
 
     let limit = query.limit.unwrap_or(50).min(200);
@@ -257,7 +253,6 @@ pub async fn get_run(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BenchRunDetail>, AppError> {
-    state.metrics.record_request("get_benchmarker_run", "GET");
     debug!(%id, "Getting bench run detail");
 
     let run = sqlx::query_as::<_, RunSummaryRow>(
@@ -324,10 +319,6 @@ pub async fn trigger_run(
     State(state): State<AppState>,
     Json(body): Json<TriggerRunRequest>,
 ) -> Result<(StatusCode, Json<TriggerRunResponse>), AppError> {
-    state
-        .metrics
-        .record_request("trigger_benchmarker_run", "POST");
-
     // Validate: suite must have registered cases
     let (case_count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM eval_cases WHERE suite_name = $1")

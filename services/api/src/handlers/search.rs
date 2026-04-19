@@ -233,7 +233,6 @@ pub async fn search_semantic(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(req): Json<SearchSemanticRequest>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
-    state.metrics.record_request("search_semantic", "POST");
     debug!("Semantic search for: {}", req.query);
 
     // Try semantic search via Ollama embedding → Qdrant vector search.
@@ -451,7 +450,6 @@ pub async fn search_docs(
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
     Json(req): Json<SearchDocsRequest>,
 ) -> Result<Json<SearchDocsResponse>, AppError> {
-    state.metrics.record_request("search_docs", "POST");
     debug!("Doc search for: {}", req.query);
 
     let embedding = get_embedding(&state, &req.query).await?;
@@ -517,7 +515,6 @@ pub async fn aggregate_search(
     WorkspaceId(ws): WorkspaceId,
     Json(req): Json<AggregateSearchRequest>,
 ) -> Result<Json<AggregateSearchResponse>, AppError> {
-    state.metrics.record_request("aggregate_search", "POST");
     debug!("Aggregate search for: {}", req.query);
 
     let graph_client = WorkspaceGraphClient::new(state.neo4j_graph.clone(), ws.clone());

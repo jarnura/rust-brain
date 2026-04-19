@@ -40,8 +40,6 @@ pub async fn workspace_diff(
     State(state): State<AppState>,
     Path(workspace_id): Path<Uuid>,
 ) -> Result<Json<DiffResponse>, AppError> {
-    state.metrics.record_request("workspace_diff", "GET");
-
     let workspace = db_get_workspace(&state.workspace_manager.pool, workspace_id)
         .await
         .map_err(|e| AppError::Database(format!("Failed to fetch workspace: {}", e)))?
