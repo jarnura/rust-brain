@@ -461,7 +461,17 @@ async fn run_execution_inner(
                         "reasoning",
                         json!({ "agent": &current_agent, "step_finish": reason }),
                     ),
-                    crate::opencode::MessagePart::Unknown => continue,
+                    crate::opencode::MessagePart::Unknown {
+                        ref raw_type,
+                        ref raw,
+                    } => {
+                        warn!(
+                            execution_id = %exec_id,
+                            raw_type = %raw_type,
+                            "Unknown MessagePart type encountered, persisting as opaque event"
+                        );
+                        ("unknown", json!({ "raw_type": raw_type, "raw": raw }))
+                    }
                 };
 
                 if let Err(e) = insert_agent_event(&pool, exec_id, event_type, content).await {
@@ -598,7 +608,17 @@ async fn bridge_new_parts(
                 "reasoning",
                 json!({ "agent": current_agent, "step_finish": reason }),
             ),
-            MessagePart::Unknown => continue,
+            MessagePart::Unknown {
+                ref raw_type,
+                ref raw,
+            } => {
+                warn!(
+                    execution_id = %execution_id,
+                    raw_type = %raw_type,
+                    "Unknown MessagePart type in bridge, persisting as opaque event"
+                );
+                ("unknown", json!({ "raw_type": raw_type, "raw": raw }))
+            }
         };
 
         if let Err(e) = insert_agent_event(pool, execution_id, event_type, content).await {

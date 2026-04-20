@@ -143,8 +143,13 @@ impl SendMessageResponse {
 ///
 /// Messages are composed of an ordered list of parts. The `type` field in
 /// JSON selects the variant (internally tagged, kebab-case).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+///
+/// Unrecognized `type` values are captured by [`MessagePart::Unknown`],
+/// which preserves the original `type` string and full JSON payload. This
+/// ensures that new part types introduced by OpenCode are never silently
+/// dropped (per RECONCILIATION.md R-4 P0 fix).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(from = "MessagePartHelper")]
 pub enum MessagePart {
     /// Plain text content
     Text { text: String },
@@ -172,9 +177,140 @@ pub enum MessagePart {
         #[serde(default)]
         reason: Option<String>,
     },
-    /// Catch-all for unrecognized part types
-    #[serde(other)]
-    Unknown,
+    /// Catch-all for unrecognized part types.
+    ///
+    /// Stores the original `type` string and the full JSON object so that
+    /// unknown events can be persisted as opaque agent_events rather than
+    /// silently dropped.
+    Unknown {
+        /// The unrecognized `type` value from the JSON payload.
+        raw_type: String,
+        /// The full JSON object, preserved for display / debugging.
+        raw: serde_json::Value,
+    },
+}
+
+impl Serialize for MessagePart {
+    /// Custom serialize: known variants via `KnownMessagePart` (tagged),
+    /// `Unknown` emits its `raw` field (which already contains `"type"`).
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            MessagePart::Text { text } => {
+                KnownMessagePart::Text { text: text.clone() }.serialize(serializer)
+            }
+            MessagePart::Reasoning { text } => {
+                KnownMessagePart::Reasoning { text: text.clone() }.serialize(serializer)
+            }
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+            } => KnownMessagePart::ToolInvocation {
+                tool_name: tool_name.clone(),
+                args: args.clone(),
+                result: result.clone(),
+            }
+            .serialize(serializer),
+            MessagePart::StepStart { id } => {
+                KnownMessagePart::StepStart { id: id.clone() }.serialize(serializer)
+            }
+            MessagePart::StepFinish { reason } => KnownMessagePart::StepFinish {
+                reason: reason.clone(),
+            }
+            .serialize(serializer),
+            MessagePart::Unknown { raw, .. } => raw.serialize(serializer),
+        }
+    }
+}
+
+/// Intermediate helper for deserializing [`MessagePart`] with catch-all.
+///
+/// serde's `#[serde(tag = "type")]` + `#[serde(other)]` produces a unit
+/// variant that cannot carry fields. We use a two-phase approach:
+///
+/// 1. Try the known tagged variants via [`KnownMessagePart`].
+/// 2. If the `type` value doesn't match any known variant, fall back to
+///    [`MessagePart::Unknown`] with the raw data.
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum KnownMessagePart {
+    Text {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    #[serde(rename = "tool-invocation")]
+    ToolInvocation {
+        #[serde(rename = "toolName", default)]
+        tool_name: Option<String>,
+        #[serde(default)]
+        args: Option<serde_json::Value>,
+        #[serde(default)]
+        result: Option<serde_json::Value>,
+    },
+    #[serde(rename = "step-start")]
+    StepStart {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    #[serde(rename = "step-finish")]
+    StepFinish {
+        #[serde(default)]
+        reason: Option<String>,
+    },
+}
+
+/// Helper struct that deserializes any JSON object into a [`MessagePart`].
+///
+/// If the `type` field matches a known variant, the corresponding
+/// [`MessagePart`] is produced. Otherwise, the entire object is captured
+/// as [`MessagePart::Unknown`].
+#[derive(Deserialize)]
+struct MessagePartHelper {
+    #[serde(rename = "type")]
+    part_type: String,
+    #[serde(flatten)]
+    rest: serde_json::Value,
+}
+
+impl From<MessagePartHelper> for MessagePart {
+    fn from(helper: MessagePartHelper) -> Self {
+        let mut full = match helper.rest.as_object() {
+            Some(obj) => obj.clone(),
+            None => serde_json::Map::new(),
+        };
+        full.insert(
+            "type".to_string(),
+            serde_json::Value::String(helper.part_type.clone()),
+        );
+        let full_value = serde_json::Value::Object(full);
+
+        match serde_json::from_value::<KnownMessagePart>(full_value.clone()) {
+            Ok(known) => match known {
+                KnownMessagePart::Text { text } => MessagePart::Text { text },
+                KnownMessagePart::Reasoning { text } => MessagePart::Reasoning { text },
+                KnownMessagePart::ToolInvocation {
+                    tool_name,
+                    args,
+                    result,
+                } => MessagePart::ToolInvocation {
+                    tool_name,
+                    args,
+                    result,
+                },
+                KnownMessagePart::StepStart { id } => MessagePart::StepStart { id },
+                KnownMessagePart::StepFinish { reason } => MessagePart::StepFinish { reason },
+            },
+            Err(_) => MessagePart::Unknown {
+                raw_type: helper.part_type,
+                raw: full_value,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -456,5 +592,129 @@ impl OpenCodeClient {
             .await
             .context("get_messages parse failed")?;
         Ok(entries.into_iter().map(Message::from).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_message_part_preserves_raw_type_and_json() {
+        let json = serde_json::json!({
+            "type": "image",
+            "url": "https://example.com/diagram.png",
+            "alt": "diagram"
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::Unknown { raw_type, raw } => {
+                assert_eq!(raw_type, "image");
+                assert_eq!(raw.get("type").and_then(|v| v.as_str()), Some("image"));
+                assert_eq!(
+                    raw.get("url").and_then(|v| v.as_str()),
+                    Some("https://example.com/diagram.png")
+                );
+                assert_eq!(raw.get("alt").and_then(|v| v.as_str()), Some("diagram"));
+            }
+            _ => panic!("Expected Unknown variant, got {part:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_message_part_captures_custom_widget_type() {
+        let json = serde_json::json!({
+            "type": "custom-widget",
+            "widget_name": "chart",
+            "data": { "values": [1, 2, 3] }
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::Unknown { raw_type, raw } => {
+                assert_eq!(raw_type, "custom-widget");
+                assert_eq!(
+                    raw.get("widget_name").and_then(|v| v.as_str()),
+                    Some("chart")
+                );
+                assert!(raw.get("data").is_some());
+            }
+            _ => panic!("Expected Unknown variant, got {part:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_message_part_roundtrip_serialization() {
+        let original = MessagePart::Unknown {
+            raw_type: "video".to_string(),
+            raw: serde_json::json!({
+                "type": "video",
+                "url": "https://example.com/video.mp4",
+                "duration": 120
+            }),
+        };
+
+        let serialized = serde_json::to_value(&original).expect("Failed to serialize");
+        let deserialized: MessagePart =
+            serde_json::from_value(serialized.clone()).expect("Failed to deserialize");
+
+        match deserialized {
+            MessagePart::Unknown { raw_type, raw } => {
+                assert_eq!(raw_type, "video");
+                assert_eq!(raw.get("type").and_then(|v| v.as_str()), Some("video"));
+                assert_eq!(
+                    raw.get("url").and_then(|v| v.as_str()),
+                    Some("https://example.com/video.mp4")
+                );
+                assert_eq!(raw.get("duration").and_then(|v| v.as_i64()), Some(120));
+            }
+            _ => panic!("Expected Unknown variant after roundtrip, got {deserialized:?}"),
+        }
+
+        assert_eq!(
+            serialized.get("type").and_then(|v| v.as_str()),
+            Some("video")
+        );
+        assert_eq!(
+            serialized.get("url").and_then(|v| v.as_str()),
+            Some("https://example.com/video.mp4")
+        );
+    }
+
+    #[test]
+    fn text_variant_still_deserializes_correctly() {
+        let json = serde_json::json!({
+            "type": "text",
+            "text": "Hello, world!"
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::Text { text } => {
+                assert_eq!(text, "Hello, world!");
+            }
+            _ => panic!("Expected Text variant, got {part:?}"),
+        }
+    }
+
+    #[test]
+    fn reasoning_variant_still_deserializes_correctly() {
+        let json = serde_json::json!({
+            "type": "reasoning",
+            "text": "Let me think about this..."
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::Reasoning { text } => {
+                assert_eq!(text, "Let me think about this...");
+            }
+            _ => panic!("Expected Reasoning variant, got {part:?}"),
+        }
     }
 }

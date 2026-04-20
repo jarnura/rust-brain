@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS agent_events (
     execution_id UUID NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     event_type TEXT NOT NULL
-        CHECK (event_type IN ('reasoning', 'tool_call', 'file_edit', 'error', 'phase_change', 'agent_dispatch', 'container_kept_alive')),
+        CHECK (event_type IN ('reasoning', 'tool_call', 'file_edit', 'error', 'phase_change', 'agent_dispatch', 'container_kept_alive', 'unknown')),
     content JSONB NOT NULL
 );
 

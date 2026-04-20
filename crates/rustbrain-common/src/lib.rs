@@ -6,9 +6,11 @@
 
 pub mod config;
 pub mod errors;
+pub mod events;
 pub mod logging;
 pub mod types;
 
 pub use config::*;
 pub use errors::*;
+pub use events::*;
 pub use types::*;
