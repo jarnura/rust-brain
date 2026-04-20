@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolCallContent } from '../types/events'
 import {
   INLINE_MAX_BYTES,
+  copyToClipboard,
   deriveToolCallStatus,
   formatValue,
   isErrorResult,
   summarizeArgs,
+  tokenizeJson,
   truncateText,
 } from './ToolCallCard'
 
@@ -140,5 +142,94 @@ describe('summarizeArgs', () => {
     const summary = summarizeArgs(big)
     expect(summary.endsWith('…')).toBe(true)
     expect(summary.length).toBeLessThanOrEqual(61)
+  })
+})
+
+describe('tokenizeJson', () => {
+  it('returns empty array for empty input', () => {
+    expect(tokenizeJson('')).toEqual([])
+  })
+
+  it('falls back to a single text token for non-JSON input', () => {
+    const tokens = tokenizeJson('not json at all')
+    expect(tokens).toEqual([{ type: 'text', value: 'not json at all' }])
+  })
+
+  it('tokenizes a simple JSON object distinguishing keys from string values', () => {
+    const tokens = tokenizeJson('{"name":"ada"}')
+    const significant = tokens.filter((t) => t.type !== 'whitespace')
+    expect(significant).toEqual([
+      { type: 'punct', value: '{' },
+      { type: 'key', value: '"name"' },
+      { type: 'punct', value: ':' },
+      { type: 'string', value: '"ada"' },
+      { type: 'punct', value: '}' },
+    ])
+  })
+
+  it('recognizes numbers, booleans, and null', () => {
+    const tokens = tokenizeJson('{"n":42,"f":true,"g":null}')
+    const types = tokens.filter((t) => t.type !== 'whitespace').map((t) => t.type)
+    expect(types).toContain('number')
+    expect(types).toContain('boolean')
+    expect(types).toContain('null')
+  })
+
+  it('preserves the complete input when concatenating token values', () => {
+    const pretty = JSON.stringify({ a: 1, b: [2, 3], c: 'x' }, null, 2)
+    const tokens = tokenizeJson(pretty)
+    expect(tokens.map((t) => t.value).join('')).toBe(pretty)
+  })
+
+  it('handles strings containing escaped quotes', () => {
+    const pretty = JSON.stringify({ msg: 'she said "hi"' })
+    const tokens = tokenizeJson(pretty)
+    expect(tokens.map((t) => t.value).join('')).toBe(pretty)
+    expect(tokens.some((t) => t.type === 'string' && t.value.includes('\\"hi\\"'))).toBe(true)
+  })
+})
+
+describe('copyToClipboard', () => {
+  const originalClipboard = navigator.clipboard
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: originalClipboard,
+    })
+  })
+
+  it('writes text via navigator.clipboard and returns true on success', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const result = await copyToClipboard('hello')
+    expect(writeText).toHaveBeenCalledWith('hello')
+    expect(result).toBe(true)
+  })
+
+  it('returns false when the clipboard API rejects', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const result = await copyToClipboard('hello')
+    expect(result).toBe(false)
+  })
+
+  it('returns false when the clipboard API is unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    })
+    const result = await copyToClipboard('hello')
+    expect(result).toBe(false)
   })
 })

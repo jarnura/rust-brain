@@ -1,7 +1,73 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { ToolCallContent, TypedAgentEvent } from '../types/events'
 
 // ─── Pure helpers (exported for tests) ───────────────────────────────────────
+
+export type JsonTokenType =
+  | 'key'
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'null'
+  | 'punct'
+  | 'whitespace'
+  | 'text'
+
+export interface JsonToken {
+  type: JsonTokenType
+  value: string
+}
+
+/** Tokenize pretty-printed JSON for syntax highlighting. If the input is not
+ *  valid JSON, returns a single `text` token so the caller can render it
+ *  verbatim without losing information. */
+export function tokenizeJson(text: string): JsonToken[] {
+  if (text.length === 0) return []
+  try {
+    JSON.parse(text)
+  } catch {
+    return [{ type: 'text', value: text }]
+  }
+
+  const tokens: JsonToken[] = []
+  const pattern =
+    /("(?:[^"\\]|\\.)*")(?=\s*:)|("(?:[^"\\]|\\.)*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false)\b|\b(null)\b|(\s+)|([{}[\]:,])/g
+
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) })
+    }
+    if (match[1] !== undefined) tokens.push({ type: 'key', value: match[1] })
+    else if (match[2] !== undefined) tokens.push({ type: 'string', value: match[2] })
+    else if (match[3] !== undefined) tokens.push({ type: 'number', value: match[3] })
+    else if (match[4] !== undefined) tokens.push({ type: 'boolean', value: match[4] })
+    else if (match[5] !== undefined) tokens.push({ type: 'null', value: match[5] })
+    else if (match[6] !== undefined) tokens.push({ type: 'whitespace', value: match[6] })
+    else if (match[7] !== undefined) tokens.push({ type: 'punct', value: match[7] })
+    lastIndex = pattern.lastIndex
+  }
+  if (lastIndex < text.length) {
+    tokens.push({ type: 'text', value: text.slice(lastIndex) })
+  }
+  return tokens
+}
+
+/** Copy text to the clipboard. Returns true on success. Async so callers can
+ *  await the permissioned clipboard API, but it swallows errors (e.g. denied
+ *  permission, insecure context) to keep the UI non-fatal. */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    return false
+  }
+  return false
+}
 
 /** Inline display cap for pretty-printed JSON args/result. */
 export const INLINE_MAX_BYTES = 2048
@@ -124,34 +190,89 @@ function StatusIndicator({ status }: { status: ToolCallStatus }) {
   )
 }
 
+const TOKEN_CLASS: Record<JsonTokenType, string> = {
+  key: 'text-brand-300',
+  string: 'text-green-300',
+  number: 'text-yellow-300',
+  boolean: 'text-purple-300',
+  null: 'text-purple-300',
+  punct: 'text-dark-400',
+  whitespace: '',
+  text: 'text-dark-200',
+}
+
+function HighlightedJson({ text }: { text: string }) {
+  const tokens = tokenizeJson(text)
+  if (tokens.length === 1 && tokens[0].type === 'text') {
+    return <>{tokens[0].value}</>
+  }
+  return (
+    <>
+      {tokens.map((token, i) => {
+        const className = TOKEN_CLASS[token.type]
+        return className ? (
+          <span key={i} className={className}>
+            {token.value}
+          </span>
+        ) : (
+          <span key={i}>{token.value}</span>
+        )
+      })}
+    </>
+  )
+}
+
 function TruncatedBlock({ raw, label }: { raw: string; label: string }) {
   const [showFull, setShowFull] = useState(false)
+  const [copied, setCopied] = useState(false)
   const truncated = truncateText(raw)
   const visible = showFull || !truncated.truncated ? raw : truncated.text
 
+  const handleCopy = useCallback(
+    async (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation()
+      const ok = await copyToClipboard(raw)
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }
+    },
+    [raw],
+  )
+
   return (
     <div className="mt-2">
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-1 gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-dark-400">
           {label}
         </span>
-        {truncated.truncated && (
+        <div className="flex items-center gap-3">
+          {truncated.truncated && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowFull((v) => !v)
+              }}
+              className="text-[10px] text-brand-400 hover:text-brand-300"
+            >
+              {showFull
+                ? 'show less'
+                : `show full (${truncated.originalLength.toLocaleString()} chars)`}
+            </button>
+          )}
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              setShowFull((v) => !v)
-            }}
-            className="text-[10px] text-brand-400 hover:text-brand-300"
+            onClick={handleCopy}
+            aria-label={`copy ${label}`}
+            className="text-[10px] text-dark-400 hover:text-dark-200"
           >
-            {showFull
-              ? 'show less'
-              : `show full (${truncated.originalLength.toLocaleString()} chars)`}
+            {copied ? 'copied' : 'copy'}
           </button>
-        )}
+        </div>
       </div>
       <pre className="whitespace-pre-wrap break-all bg-dark-900/60 text-dark-200 text-[11px] leading-snug p-2 rounded max-h-64 overflow-auto">
-        {visible}
+        <HighlightedJson text={visible} />
         {!showFull && truncated.truncated && '\n…'}
       </pre>
     </div>
