@@ -419,9 +419,8 @@ async fn parse_stage(
     let parser = Arc::new(DualParser::new()?);
 
     // Connect to DB for batch inserts
-    let _db_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(30)
-        .connect(&config.database_url)
+    let _db_pool = config
+        .create_pg_pool(30)
         .await
         .map_err(|e| anyhow!("Database connection failed in parse stage: {}", e))?;
 

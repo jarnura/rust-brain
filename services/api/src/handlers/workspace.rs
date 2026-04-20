@@ -420,15 +420,12 @@ pub async fn list_files(
         return Ok(Json(tree));
     }
 
-    let vol_name = workspace
-        .volume_name
-        .as_deref()
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "Clone path does not exist on disk and no Docker volume for workspace {}",
-                id
-            ))
-        })?;
+    let vol_name = workspace.volume_name.as_deref().ok_or_else(|| {
+        AppError::Internal(format!(
+            "Clone path does not exist on disk and no Docker volume for workspace {}",
+            id
+        ))
+    })?;
 
     let entries = state
         .docker

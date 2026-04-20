@@ -1652,9 +1652,9 @@ impl PipelineStage for ParseStage {
 
         info!("Starting parse stage (batch insert to database)");
 
-        let db_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(30)
-            .connect(&ctx.config.database_url)
+        let db_pool = ctx
+            .config
+            .create_pg_pool(30)
             .await
             .map_err(|e| anyhow!("Database connection failed: {}", e))?;
 
@@ -2171,7 +2171,6 @@ impl PipelineStage for TypecheckStage {
 
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
-        let database_url = &ctx.config.database_url;
 
         let state = ctx.state.read().await;
         let parsed_items: Vec<ParsedItemInfo> =
@@ -2185,9 +2184,9 @@ impl PipelineStage for TypecheckStage {
             return Ok(StageResult::skipped("typecheck"));
         }
 
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(database_url)
+        let pool = ctx
+            .config
+            .create_pg_pool(2)
             .await
             .context("Failed to connect to database for typecheck stage")?;
 
@@ -2348,8 +2347,6 @@ impl PipelineStage for ExtractStage {
             return Ok(StageResult::skipped("extract"));
         }
 
-        let database_url = &ctx.config.database_url;
-
         let state = ctx.state.read().await;
         let parsed_items: Vec<ParsedItemInfo> =
             state.parsed_items.values().flatten().cloned().collect();
@@ -2361,9 +2358,9 @@ impl PipelineStage for ExtractStage {
             return Ok(StageResult::skipped("extract"));
         }
 
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(5)
-            .connect(database_url)
+        let pool = ctx
+            .config
+            .create_pg_pool(5)
             .await
             .context("Failed to connect to database for extract stage")?;
 
@@ -2704,10 +2701,7 @@ impl PipelineStage for GraphStage {
         if parsed_items.is_empty() {
             info!("No parsed items in state, loading from database...");
             match self
-                .load_items_from_database(
-                    &ctx.config.database_url,
-                    ctx.config.crate_name.as_deref(),
-                )
+                .load_items_from_database(&ctx.config, ctx.config.crate_name.as_deref())
                 .await
             {
                 Ok(items) => {
@@ -3655,12 +3649,11 @@ impl GraphStage {
 
     async fn load_items_from_database(
         &self,
-        database_url: &str,
+        config: &crate::pipeline::PipelineConfig,
         crate_name: Option<&str>,
     ) -> Result<Vec<ParsedItemInfo>> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(database_url)
+        let pool = config
+            .create_pg_pool(2)
             .await
             .context("Failed to connect to database for loading items")?;
 
@@ -4566,12 +4559,11 @@ impl EmbedStage {
     /// Load items from the database when parsed_items is not available in state
     async fn load_items_from_database(
         &self,
-        database_url: &str,
+        config: &crate::pipeline::PipelineConfig,
         crate_name: Option<&str>,
     ) -> Result<Vec<ParsedItemInfo>> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(database_url)
+        let pool = config
+            .create_pg_pool(2)
             .await
             .context("Failed to connect to database for loading items")?;
 
@@ -4664,10 +4656,7 @@ impl PipelineStage for EmbedStage {
         if parsed_items.is_empty() {
             info!("No parsed items in state, loading from database...");
             match self
-                .load_items_from_database(
-                    &ctx.config.database_url,
-                    ctx.config.crate_name.as_deref(),
-                )
+                .load_items_from_database(&ctx.config, ctx.config.crate_name.as_deref())
                 .await
             {
                 Ok(items) => {
@@ -4697,16 +4686,31 @@ impl PipelineStage for EmbedStage {
         );
 
         // Create embedding service
-        let embedding_service =
-            match crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Ok(StageResult::failed(
-                        "embed",
-                        format!("Failed to create embedding service: {}", e),
-                    ));
-                }
-            };
+        let suffix = ctx.config.workspace_qdrant_suffix();
+        let embedding_service = match suffix {
+            Some(s) => {
+                crate::embedding::EmbeddingService::with_workspace_urls(ollama_url, qdrant_url, s)
+            }
+            None => crate::embedding::EmbeddingService::with_urls(ollama_url, qdrant_url),
+        };
+        let embedding_service = match embedding_service {
+            Ok(s) => s,
+            Err(e) => {
+                return Ok(StageResult::failed(
+                    "embed",
+                    format!("Failed to create embedding service: {}", e),
+                ));
+            }
+        };
+
+        if suffix.is_some() {
+            info!(
+                "Embedding service created in workspace mode (suffix: {:?})",
+                suffix
+            );
+        } else {
+            info!("Embedding service created in global mode");
+        }
 
         // Initialize (ensure collections exist, check model)
         if let Err(e) = embedding_service.initialize().await {

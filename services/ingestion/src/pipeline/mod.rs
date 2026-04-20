@@ -162,6 +162,75 @@ impl PipelineConfig {
 
         Ok(())
     }
+
+    /// Derive the Postgres schema name from the workspace_label.
+    ///
+    /// Follows ADR-005 convention: `Workspace_<12hex>` → `ws_<12hex>`.
+    /// Returns `None` if workspace_label is not set or has an unexpected format.
+    pub fn workspace_schema(&self) -> Option<String> {
+        self.workspace_label.as_ref().and_then(|label| {
+            const PREFIX: &str = "Workspace_";
+            if let Some(hex_part) = label.strip_prefix(PREFIX) {
+                if hex_part.len() == 12
+                    && hex_part
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+                {
+                    return Some(format!("ws_{}", hex_part));
+                }
+            }
+            None
+        })
+    }
+
+    /// Derive the Qdrant schema suffix from the workspace_label.
+    ///
+    /// Returns the 12-hex-char suffix (e.g. `"a1b2c3d4e5f6"`)
+    /// suitable for `QdrantConfig::for_workspace()`.
+    /// Returns `None` if workspace_label is not set or has an unexpected format.
+    pub fn workspace_qdrant_suffix(&self) -> Option<&str> {
+        const PREFIX: &str = "Workspace_";
+        self.workspace_label.as_ref().and_then(|label| {
+            if let Some(hex_part) = label.strip_prefix(PREFIX) {
+                if hex_part.len() == 12
+                    && hex_part
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+                {
+                    return Some(hex_part);
+                }
+            }
+            None
+        })
+    }
+
+    /// Create a Postgres connection pool with workspace-aware `search_path`.
+    ///
+    /// When `workspace_schema()` returns `Some`, the pool's `after_connect`
+    /// hook sets `search_path` to `<workspace_schema>, public` so that
+    /// unqualified table names resolve to the workspace schema first.
+    /// When no workspace is configured, the pool uses the default `public`
+    /// schema (no `after_connect` hook needed).
+    pub async fn create_pg_pool(&self, max_connections: u32) -> Result<sqlx::PgPool, sqlx::Error> {
+        let mut options = sqlx::postgres::PgPoolOptions::new().max_connections(max_connections);
+
+        if let Some(schema) = self.workspace_schema() {
+            let search_path = format!("SET search_path TO {}, public", schema);
+            tracing::info!(
+                schema = %schema,
+                "Creating PG pool with workspace search_path"
+            );
+            options = options.after_connect(move |conn, _meta| {
+                let sql = search_path.clone();
+                Box::pin(async move {
+                    sqlx::Executor::execute(conn, sql.as_str()).await?;
+                    Ok(())
+                })
+            });
+        }
+
+        options.connect(&self.database_url).await
+    }
 }
 
 /// Context shared across pipeline stages
@@ -600,6 +669,35 @@ mod tests {
 
         // Should validate successfully (graph stage will just skip)
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_workspace_schema_from_label() {
+        let mut config = test_config();
+        config.workspace_label = Some("Workspace_a1b2c3d4e5f6".to_string());
+        assert_eq!(
+            config.workspace_schema(),
+            Some("ws_a1b2c3d4e5f6".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workspace_schema_none_when_no_label() {
+        let config = test_config();
+        assert_eq!(config.workspace_schema(), None);
+    }
+
+    #[test]
+    fn test_workspace_qdrant_suffix_from_label() {
+        let mut config = test_config();
+        config.workspace_label = Some("Workspace_abcdef123456".to_string());
+        assert_eq!(config.workspace_qdrant_suffix(), Some("abcdef123456"));
+    }
+
+    #[test]
+    fn test_workspace_qdrant_suffix_none_when_no_label() {
+        let config = test_config();
+        assert_eq!(config.workspace_qdrant_suffix(), None);
     }
 
     #[test]

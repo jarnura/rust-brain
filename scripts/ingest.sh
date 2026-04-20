@@ -22,6 +22,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Default values
 MEMORY_BUDGET="${INGESTION_MEMORY_BUDGET:-16GB}"
+WORKSPACE_LABEL=""
 WORKSPACE_PATH="${1:-.}"
 shift || true
 
@@ -34,6 +35,7 @@ USAGE:
     ingest.sh <workspace-path> [OPTIONS]
 
 OPTIONS:
+    --workspace-label <LABEL>  Workspace label (e.g. Workspace_a1b2c3d4e5f6)
     --memory-budget <SIZE>   Memory budget (default: 16GB, max: 62GB)
     --dry-run                Parse only, no database writes
     --resume <run-id>        Resume from checkpoint
@@ -72,6 +74,11 @@ while [[ $# -gt 0 ]]; do
             MEMORY_BUDGET="$2"
             shift 2
             ;;
+        --workspace-label)
+            WORKSPACE_LABEL="$2"
+            EXTRA_ARGS+=("--workspace-label" "$2")
+            shift 2
+            ;;
         --verbose|-v)
             EXTRA_ARGS+=("--verbose")
             shift
@@ -104,6 +111,7 @@ echo "============================================================"
 echo "rustbrain-ingestion (containerized)"
 echo "============================================================"
 echo "Workspace:     $WORKSPACE_PATH"
+echo "Label:         ${WORKSPACE_LABEL:-global (default)}"
 echo "Memory budget: $MEMORY_BUDGET"
 echo "============================================================"
 

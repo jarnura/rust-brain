@@ -115,6 +115,40 @@ impl EmbeddingService {
         Self::new(config)
     }
 
+    /// Create service with workspace-scoped Qdrant collections.
+    ///
+    /// `qdrant_schema_suffix` is the 12-hex-char workspace identifier
+    /// (e.g. `"a1b2c3d4e5f6"`), used to derive collection names via ADR-005:
+    /// `ws_<suffix>_<collection_type>`.
+    pub fn with_workspace_urls(
+        ollama_url: String,
+        qdrant_url: String,
+        qdrant_schema_suffix: &str,
+    ) -> Result<Self> {
+        let mut qdrant_config = QdrantConfig::for_workspace(qdrant_schema_suffix);
+        qdrant_config.base_url = qdrant_url;
+
+        let mut ollama_config = crate::embedding::ollama_client::OllamaConfig {
+            base_url: ollama_url,
+            ..Default::default()
+        };
+
+        if let Ok(model) = std::env::var("EMBEDDING_MODEL") {
+            ollama_config.model = model;
+        }
+        if let Ok(dims) = std::env::var("EMBEDDING_DIMENSIONS") {
+            if let Ok(dims) = dims.parse::<usize>() {
+                qdrant_config.vector_size = dims;
+            }
+        }
+
+        Self::new(EmbeddingConfig {
+            ollama: ollama_config,
+            qdrant: qdrant_config,
+            max_doc_chunk_size: MAX_DOC_CHUNK_SIZE,
+        })
+    }
+
     /// Initialize the service (ensure collections exist, check model)
     pub async fn initialize(&self) -> Result<()> {
         info!("Initializing embedding service...");

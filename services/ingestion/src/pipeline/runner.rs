@@ -87,9 +87,10 @@ impl PipelineRunner {
 
     /// Connect to the database for run tracking and initialize resilience + monitoring.
     pub async fn connect(&mut self) -> Result<()> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&self.ctx.config.database_url)
+        let pool = self
+            .ctx
+            .config
+            .create_pg_pool(5)
             .await
             .context("Failed to connect to database")?;
 

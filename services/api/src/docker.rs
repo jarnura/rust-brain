@@ -533,12 +533,17 @@ impl DockerClient {
     /// prefix). Hidden entries (starting with `.`) are excluded.
     ///
     /// Uses a shell one-liner compatible with busybox `find` (no `-printf`).
-    pub async fn list_volume_paths(&self, volume_name: &str) -> anyhow::Result<Vec<(String, bool)>> {
+    pub async fn list_volume_paths(
+        &self,
+        volume_name: &str,
+    ) -> anyhow::Result<Vec<(String, bool)>> {
         let vol_mount = format!("{}:/mnt:ro", volume_name);
         let script = r#"cd /mnt && find . -not -path '*/.*' | while read p; do [ -d "$p" ] && printf 'd %s\n' "$p" || printf 'f %s\n' "$p"; done"#;
 
         let output = Command::new("docker")
-            .args(["run", "--rm", "-v", &vol_mount, "busybox", "sh", "-c", script])
+            .args([
+                "run", "--rm", "-v", &vol_mount, "busybox", "sh", "-c", script,
+            ])
             .output()
             .await
             .context("failed to spawn `docker run` for volume listing")?;
