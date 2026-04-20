@@ -516,6 +516,7 @@ async fn graph_stage(
     let start = Instant::now();
     let mut node_count = 0;
     let mut failed_count = 0;
+    let mut neo4j_configured_but_failed = false;
 
     let neo4j_url = config.neo4j_url.clone();
     let workspace_label = config.workspace_label.clone();
@@ -568,10 +569,11 @@ async fn graph_stage(
                                 }
                             }
                             Err(e) => {
-                                warn!(
+                                error!(
                                     "Failed to create GraphBuilder for workspace constraints: {}",
                                     e
                                 );
+                                neo4j_configured_but_failed = true;
                             }
                         }
 
@@ -582,7 +584,8 @@ async fn graph_stage(
                         Some((graph, batch_insert, label.clone()))
                     }
                     Err(e) => {
-                        warn!("Graph stage: failed to connect to Neo4j: {}", e);
+                        error!("Graph stage: failed to connect to Neo4j: {}", e);
+                        neo4j_configured_but_failed = true;
                         None
                     }
                 }
@@ -711,7 +714,12 @@ async fn graph_stage(
     drop(tx);
     let duration = start.elapsed();
 
-    if failed_count > 0 && node_count == 0 {
+    if neo4j_configured_but_failed && node_count == 0 {
+        Ok(StageResult::failed(
+            "graph",
+            "Neo4j was configured but connection failed — no graph data written",
+        ))
+    } else if failed_count > 0 && node_count == 0 {
         Ok(StageResult::failed("graph", "All graph writes failed"))
     } else if failed_count > 0 {
         Ok(StageResult::partial(

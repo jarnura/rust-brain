@@ -2645,6 +2645,10 @@ impl PipelineStage for GraphStage {
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
 
+        // Track non-fatal graph errors that should surface in the stage result
+        let mut graph_error_count: usize = 0;
+        let mut graph_error_messages: Vec<String> = Vec::new();
+
         info!("Starting graph stage");
 
         if ctx.config.dry_run {
@@ -2706,7 +2710,7 @@ impl PipelineStage for GraphStage {
             {
                 Ok(items) => {
                     if items.is_empty() {
-                        info!("No items found in database");
+                        info!("No items found in database for graph stage");
                         return Ok(StageResult::skipped("graph"));
                     }
                     // Group items by a dummy path since they came from DB
@@ -2717,8 +2721,11 @@ impl PipelineStage for GraphStage {
                     );
                 }
                 Err(e) => {
-                    warn!("Failed to load items from database: {}", e);
-                    return Ok(StageResult::skipped("graph"));
+                    error!("Failed to load items from database: {}", e);
+                    return Ok(StageResult::failed(
+                        "graph",
+                        format!("Failed to load items from database: {}", e),
+                    ));
                 }
             }
         }
@@ -2951,10 +2958,16 @@ impl PipelineStage for GraphStage {
             );
             match graph_builder.create_nodes_batch(external_trait_nodes).await {
                 Ok(_) => info!("Successfully inserted external trait nodes"),
-                Err(e) => warn!("Failed to insert external trait nodes: {}", e),
+                Err(e) => {
+                    error!("Failed to insert external trait nodes: {}", e);
+                    graph_error_count += 1;
+                    graph_error_messages.push(format!("external trait nodes: {}", e));
+                }
             }
             if let Err(e) = graph_builder.flush().await {
-                warn!("Failed to flush external trait nodes: {}", e);
+                error!("Failed to flush external trait nodes: {}", e);
+                graph_error_count += 1;
+                graph_error_messages.push(format!("external trait node flush: {}", e));
             }
         }
 
@@ -3342,14 +3355,17 @@ impl PipelineStage for GraphStage {
             {
                 Ok(_) => info!("Successfully inserted {} relationships", relationship_count),
                 Err(e) => {
-                    warn!("Failed to insert relationships batch: {}", e);
-                    // Continue anyway - nodes were inserted successfully
+                    error!("Failed to insert relationships batch: {}", e);
+                    graph_error_count += 1;
+                    graph_error_messages.push(format!("relationships batch: {}", e));
                 }
             }
 
             // Flush to ensure all relationships are committed
             if let Err(e) = graph_builder.flush().await {
-                warn!("Failed to flush graph batch: {}", e);
+                error!("Failed to flush graph batch: {}", e);
+                graph_error_count += 1;
+                graph_error_messages.push(format!("relationship flush: {}", e));
             }
         }
 
@@ -3371,12 +3387,35 @@ impl PipelineStage for GraphStage {
             duration.as_millis()
         );
 
-        Ok(StageResult::success(
-            "graph",
-            node_count + relationship_count,
-            0,
-            duration,
-        ))
+        if graph_error_count > 0 {
+            let error_summary = graph_error_messages.join("; ");
+            if node_count == 0 && relationship_count == 0 {
+                error!(
+                    "Graph stage failed completely: {} errors: {}",
+                    graph_error_count, error_summary
+                );
+                Ok(StageResult::failed("graph", error_summary))
+            } else {
+                warn!(
+                    "Graph stage completed with {} errors: {}",
+                    graph_error_count, error_summary
+                );
+                Ok(StageResult::partial(
+                    "graph",
+                    node_count + relationship_count,
+                    graph_error_count,
+                    duration,
+                    error_summary,
+                ))
+            }
+        } else {
+            Ok(StageResult::success(
+                "graph",
+                node_count + relationship_count,
+                0,
+                duration,
+            ))
+        }
     }
 }
 
@@ -6136,5 +6175,139 @@ mod tests {
             "tokio::runtime::Runtime",
             &crate_names
         ));
+    }
+
+    // =========================================================================
+    // RUSA-245 regression tests: silent graph stage failure during re-ingestion
+    // =========================================================================
+
+    #[test]
+    fn test_rusa245_db_load_failure_returns_failed_not_skipped() {
+        let result = StageResult::failed(
+            "graph",
+            "Failed to load items from database: connection refused",
+        );
+        assert_eq!(
+            result.status,
+            StageStatus::Failed,
+            "DB load failure must return Failed, not Skipped"
+        );
+        assert!(
+            result.error.is_some(),
+            "DB load failure must include error message"
+        );
+        assert!(
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("Failed to load items from database"),
+            "Error message must describe the DB load failure"
+        );
+    }
+
+    #[test]
+    fn test_rusa245_skipped_means_legitimate_skip() {
+        let result = StageResult::skipped("graph");
+        assert_eq!(result.status, StageStatus::Skipped);
+        assert!(
+            result.error.is_none(),
+            "Legitimate skips should have no error message"
+        );
+    }
+
+    #[test]
+    fn test_rusa245_external_trait_failure_returns_partial() {
+        let node_count = 50;
+        let rel_count = 30;
+        let error_count = 2;
+        let result = StageResult::partial(
+            "graph",
+            node_count + rel_count,
+            error_count,
+            Duration::from_millis(100),
+            "external trait nodes: connection timeout; external trait node flush: write error",
+        );
+        assert_eq!(
+            result.status,
+            StageStatus::Partial,
+            "Partial graph writes must return Partial, not Success"
+        );
+        assert_eq!(result.items_processed, 80);
+        assert_eq!(result.items_failed, 2);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_rusa245_relationship_failure_returns_partial() {
+        let node_count = 50;
+        let rel_count = 0;
+        let error_count = 1;
+        let result = StageResult::partial(
+            "graph",
+            node_count + rel_count,
+            error_count,
+            Duration::from_millis(200),
+            "relationships batch: MERGE failed",
+        );
+        assert_eq!(
+            result.status,
+            StageStatus::Partial,
+            "Nodes inserted but relationships failed must return Partial"
+        );
+        assert_eq!(result.items_processed, 50);
+        assert!(result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("relationships batch"));
+    }
+
+    #[test]
+    fn test_rusa245_total_graph_failure_returns_failed() {
+        let result = StageResult::failed(
+            "graph",
+            "external trait nodes: connection refused; relationships batch: connection refused",
+        );
+        assert_eq!(
+            result.status,
+            StageStatus::Failed,
+            "All graph writes failing must return Failed"
+        );
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_rusa245_neo4j_connection_failure_in_streaming() {
+        let result = StageResult::failed(
+            "graph",
+            "Neo4j was configured but connection failed — no graph data written",
+        );
+        assert_eq!(
+            result.status,
+            StageStatus::Failed,
+            "Neo4j connection failure must return Failed, not Success with 0 items"
+        );
+        assert!(
+            result.error.as_ref().unwrap().contains("connection failed"),
+            "Error must mention connection failure"
+        );
+    }
+
+    #[test]
+    fn test_rusa245_runner_treats_skipped_as_non_failure() {
+        let result = StageResult::skipped("graph");
+        assert_eq!(result.status, StageStatus::Skipped);
+        assert!(
+            result.error.is_none(),
+            "Skipped results must not have error — runner ignores Skipped status"
+        );
+    }
+
+    #[test]
+    fn test_rusa245_runner_stops_on_failed() {
+        let result = StageResult::failed("graph", "Failed to load items from database: timeout");
+        assert_eq!(result.status, StageStatus::Failed);
+        assert!(result.error.is_some());
     }
 }
