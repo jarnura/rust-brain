@@ -805,6 +805,7 @@ mod tests {
             max_concurrency: 4,
             workspace_id: None,
             workspace_label: None,
+            workspace_crate_names: Vec::new(),
         }
     }
 

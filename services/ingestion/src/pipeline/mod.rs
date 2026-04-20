@@ -32,7 +32,7 @@ pub use streaming_runner::StreamingPipelineRunner;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -90,6 +90,9 @@ pub struct PipelineConfig {
 
     /// Neo4j label in format `Workspace_<12hex>` matching Postgres `ws_<12hex>` schema
     pub workspace_label: Option<String>,
+
+    /// Names of all crates in the workspace
+    pub workspace_crate_names: Vec<String>,
 }
 
 impl Default for PipelineConfig {
@@ -108,6 +111,7 @@ impl Default for PipelineConfig {
             max_concurrency: 4,
             workspace_id: None,
             workspace_label: None,
+            workspace_crate_names: Vec::new(),
         }
     }
 }
@@ -329,6 +333,53 @@ pub fn read_crate_name_from_toml(crate_path: &std::path::Path) -> Option<String>
     None
 }
 
+pub fn discover_workspace_crate_names(workspace_path: &Path) -> anyhow::Result<Vec<String>> {
+    let workspace_cargo_toml = workspace_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&workspace_cargo_toml)?;
+    let doc: toml_edit::DocumentMut = content.parse()?;
+    let mut crate_names = Vec::new();
+
+    if let Some(toml_edit::Item::Table(workspace_table)) = doc.get("workspace") {
+        if let Some(toml_edit::Item::Value(toml_edit::Value::Array(members))) =
+            workspace_table.get("members")
+        {
+            for item in members.iter() {
+                if let toml_edit::Value::String(member_path) = item {
+                    let member_cargo_toml =
+                        workspace_path.join(member_path.value()).join("Cargo.toml");
+                    if let Ok(member_content) = std::fs::read_to_string(&member_cargo_toml) {
+                        if let Ok(member_doc) = member_content.parse::<toml_edit::DocumentMut>() {
+                            if let Some(toml_edit::Item::Value(toml_edit::Value::String(name))) =
+                                member_doc.get("package").and_then(|p| p.get("name"))
+                            {
+                                crate_names.push(name.value().to_string());
+                            } else if let Some(toml_edit::Item::Value(toml_edit::Value::String(
+                                name,
+                            ))) = member_doc.get("name")
+                            {
+                                crate_names.push(name.value().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if crate_names.is_empty() {
+        if let Some(toml_edit::Item::Value(toml_edit::Value::String(name))) =
+            doc.get("package").and_then(|p| p.get("name"))
+        {
+            crate_names.push(name.value().to_string());
+        } else if let Some(toml_edit::Item::Value(toml_edit::Value::String(name))) = doc.get("name")
+        {
+            crate_names.push(name.value().to_string());
+        }
+    }
+
+    Ok(crate_names)
+}
+
 /// Check if a stage should run based on config
 pub fn should_run_stage(config: &PipelineConfig, stage_name: &str) -> bool {
     match &config.stages {
@@ -356,6 +407,7 @@ mod tests {
             max_concurrency: 4,
             workspace_id: None,
             workspace_label: None,
+            workspace_crate_names: Vec::new(),
         }
     }
 
@@ -548,5 +600,70 @@ mod tests {
 
         // Should validate successfully (graph stage will just skip)
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_discover_workspace_crate_names_nonexistent_path() {
+        let result = discover_workspace_crate_names(Path::new("/nonexistent/path"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_discover_workspace_crate_names_single_crate() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let cargo_toml = tmpdir.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "my_crate"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let names = discover_workspace_crate_names(tmpdir.path()).unwrap();
+        assert_eq!(names, vec!["my_crate"]);
+    }
+
+    #[test]
+    fn test_discover_workspace_crate_names_workspace() {
+        let tmpdir = tempfile::tempdir().unwrap();
+
+        // Root Cargo.toml with workspace
+        let root_cargo = tmpdir.path().join("Cargo.toml");
+        std::fs::write(
+            &root_cargo,
+            r#"[workspace]
+members = ["crates/common", "crates/app"]
+"#,
+        )
+        .unwrap();
+
+        // Member crate 1
+        let common_dir = tmpdir.path().join("crates/common");
+        std::fs::create_dir_all(&common_dir).unwrap();
+        std::fs::write(
+            common_dir.join("Cargo.toml"),
+            r#"[package]
+name = "my_common"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        // Member crate 2
+        let app_dir = tmpdir.path().join("crates/app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("Cargo.toml"),
+            r#"[package]
+name = "my_app"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let names = discover_workspace_crate_names(tmpdir.path()).unwrap();
+        assert_eq!(names, vec!["my_common", "my_app"]);
     }
 }

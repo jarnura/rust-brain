@@ -4,7 +4,9 @@
 //! data from the shared `PipelineContext`.
 
 use crate::parsers::{DualParser, ItemType, ParsedItem, Visibility};
-use crate::pipeline::{ParsedItemInfo, PipelineContext, SourceFileInfo};
+use crate::pipeline::{
+    discover_workspace_crate_names, ParsedItemInfo, PipelineContext, SourceFileInfo,
+};
 use crate::typecheck::TypeResolutionService;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -1678,6 +1680,30 @@ impl PipelineStage for ParseStage {
         };
         let (source_files, expanded_cache_paths) = source_files;
 
+        let workspace_crate_names = if ctx.config.workspace_crate_names.is_empty() {
+            match discover_workspace_crate_names(&ctx.config.crate_path) {
+                Ok(names) => {
+                    info!(
+                        "Discovered {} workspace crate names for FQN filtering: {:?}",
+                        names.len(),
+                        names
+                    );
+                    names
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to discover workspace crate names, skipping FQN filtering: {}",
+                        e
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            ctx.config.workspace_crate_names.clone()
+        };
+
+        let mut external_filtered_count = 0usize;
+
         if source_files.is_empty() {
             return Ok(StageResult::skipped("parse"));
         }
@@ -1750,7 +1776,7 @@ impl PipelineStage for ParseStage {
                         .parse(&file_info.original_source, &file_info.module_path);
                     match result {
                         Ok(parse_result) => {
-                            let items: Vec<ParsedItemInfo> = parse_result
+                            let mut items: Vec<ParsedItemInfo> = parse_result
                                 .items
                                 .iter()
                                 .map(|item| ParsedItemInfo {
@@ -1769,6 +1795,23 @@ impl PipelineStage for ParseStage {
                                     generated_by: None,
                                 })
                                 .collect();
+
+                            if !workspace_crate_names.is_empty() {
+                                let before_filter = items.len();
+                                items.retain(|item| {
+                                    Self::is_workspace_fqn(&item.fqn, &workspace_crate_names)
+                                });
+                                let filtered = before_filter - items.len();
+                                if filtered > 0 {
+                                    external_filtered_count += filtered;
+                                    debug!(
+                                        "Filtered {} external-crate items from {:?} (kept {})",
+                                        filtered,
+                                        file_info.path,
+                                        items.len()
+                                    );
+                                }
+                            }
 
                             let items_len = items.len();
                             items_count += items_len;
@@ -1813,7 +1856,7 @@ impl PipelineStage for ParseStage {
                             HashMap::new()
                         };
 
-                        let items: Vec<ParsedItemInfo> = parse_result
+                        let mut items: Vec<ParsedItemInfo> = parse_result
                             .items
                             .iter()
                             .map(|item| {
@@ -1841,6 +1884,23 @@ impl PipelineStage for ParseStage {
                                 }
                             })
                             .collect();
+
+                        if !workspace_crate_names.is_empty() {
+                            let before_filter = items.len();
+                            items.retain(|item| {
+                                Self::is_workspace_fqn(&item.fqn, &workspace_crate_names)
+                            });
+                            let filtered = before_filter - items.len();
+                            if filtered > 0 {
+                                external_filtered_count += filtered;
+                                debug!(
+                                    "Filtered {} external-crate items from {:?} (kept {})",
+                                    filtered,
+                                    file_info.path,
+                                    items.len()
+                                );
+                            }
+                        }
 
                         let items_len = items.len();
                         derive_generated_count +=
@@ -1906,8 +1966,8 @@ impl PipelineStage for ParseStage {
         let duration = start.elapsed();
 
         info!(
-            "Parse stage completed: {} files, {} items ({} derive-generated) in {:?}",
-            parsed_count, items_count, derive_generated_count, duration
+            "Parse stage completed: {} files, {} items ({} derive-generated, {} external-filtered) in {:?}",
+            parsed_count, items_count, derive_generated_count, external_filtered_count, duration
         );
 
         if failed_count > 0 && parsed_count == 0 {
@@ -1930,6 +1990,13 @@ impl PipelineStage for ParseStage {
 }
 
 impl ParseStage {
+    /// Check if an FQN belongs to a workspace crate
+    fn is_workspace_fqn(fqn: &str, workspace_crate_names: &[String]) -> bool {
+        workspace_crate_names
+            .iter()
+            .any(|crate_name| fqn == crate_name || fqn.starts_with(&format!("{}::", crate_name)))
+    }
+
     fn find_derive_source(
         &self,
         item: &ParsedItem,
@@ -2082,13 +2149,7 @@ impl ParseStage {
 // =============================================================================
 
 /// Stage 3: Type resolution and inference
-///
-/// This stage:
-/// - Analyzes expanded source code for type information
-/// - Extracts trait implementations (impl Trait for Type)
-/// - Extracts call sites with concrete type arguments
-/// - Stores results in the database for later queries
-pub struct TypecheckStage;
+pub struct TypecheckStage {}
 
 impl Default for TypecheckStage {
     fn default() -> Self {
@@ -2098,7 +2159,7 @@ impl Default for TypecheckStage {
 
 impl TypecheckStage {
     pub fn new() -> Self {
-        Self
+        Self {}
     }
 }
 
@@ -2110,126 +2171,86 @@ impl PipelineStage for TypecheckStage {
 
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
-
-        info!("Starting typecheck stage");
-
-        if ctx.config.dry_run {
-            info!("Dry run - skipping typecheck");
-            return Ok(StageResult::skipped("typecheck"));
-        }
+        let database_url = &ctx.config.database_url;
 
         let state = ctx.state.read().await;
-        let expanded_cache_paths = state.expanded_sources.clone();
-        let parsed_items = state.parsed_items.clone();
+        let parsed_items: Vec<ParsedItemInfo> =
+            state.parsed_items.values().flatten().cloned().collect();
+        let expanded_sources = state.expanded_sources.clone();
+        let source_files: Vec<SourceFileInfo> = state.source_files.clone();
         drop(state);
 
-        if expanded_cache_paths.is_empty() {
-            info!("No expanded sources to typecheck");
+        if parsed_items.is_empty() {
+            info!("Typecheck stage skipped: no parsed items");
             return Ok(StageResult::skipped("typecheck"));
         }
 
-        // Connect to database for TypeResolutionService
-        let pool = match sqlx::postgres::PgPoolOptions::new()
+        let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
-            .connect(&ctx.config.database_url)
+            .connect(database_url)
             .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(StageResult::failed(
-                    "typecheck",
-                    format!("Database connection failed: {}", e),
-                ));
-            }
-        };
+            .context("Failed to connect to database for typecheck stage")?;
 
-        let type_resolution_service = TypeResolutionService::new(pool);
+        let service = TypeResolutionService::new(pool);
 
-        let mut typechecked_count = 0;
-        let mut trait_impls_count = 0;
-        let mut call_sites_count = 0;
-        let mut failed_count = 0;
+        let mut typechecked_count = 0usize;
+        let mut failed_count = 0usize;
 
-        let mut state = ctx.state.write().await;
+        // Process each expanded source file for type information
+        for source_file in &source_files {
+            let expanded_path = match expanded_sources.get(&source_file.path) {
+                Some(path) => path,
+                None => continue,
+            };
 
-        // Build a mapping from file path to caller FQNs
-        // (functions/methods defined in each file that could be callers)
-        let mut file_to_caller_fqns: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        for (path, items) in &parsed_items {
-            let fqns: Vec<String> = items
-                .iter()
-                .filter(|i| i.item_type == "function" || i.item_type == "impl")
-                .map(|i| i.fqn.clone())
-                .collect();
-            file_to_caller_fqns.insert(path.clone(), fqns);
-        }
-
-        // Process each source file with expanded source
-        // Note: We iterate over expanded_cache_paths values (deduplicated) because
-        // multiple source files map to the same cache file (one per crate).
-        // This avoids re-reading the same large expanded file multiple times.
-        let mut processed_cache_files: std::collections::HashSet<PathBuf> =
-            std::collections::HashSet::new();
-
-        for (file_path, cache_path) in expanded_cache_paths.iter() {
-            // Skip if we've already processed this cache file
-            if !processed_cache_files.insert(cache_path.clone()) {
-                continue;
-            }
-
-            let expanded_source = match std::fs::read_to_string(cache_path) {
-                Ok(s) => s,
+            let expanded_source = match std::fs::read_to_string(expanded_path) {
+                Ok(content) => content,
                 Err(e) => {
-                    debug!("Could not read expanded cache for {:?}: {}", file_path, e);
+                    warn!(
+                        "Failed to read expanded source {}: {}",
+                        expanded_path.display(),
+                        e
+                    );
+                    failed_count += 1;
                     continue;
                 }
             };
 
-            // For large files, use heuristic analysis instead of skipping
-            // Heuristics process line-by-line without loading the full AST
-            let use_heuristics = expanded_source.len() > 10 * 1024 * 1024;
+            // Collect caller FQNs for this file
+            let caller_fqns: Vec<String> = parsed_items
+                .iter()
+                .filter(|item| {
+                    // Match items from this source file approximately by module path
+                    item.fqn
+                        .starts_with(&source_file.module_path.replace('/', "::"))
+                        || item.fqn.starts_with(&source_file.crate_name)
+                })
+                .map(|item| item.fqn.clone())
+                .collect();
 
-            if use_heuristics {
+            let file_size = expanded_source.len();
+            let result = if file_size > 10_000_000 {
+                // Use heuristics for large files (>10MB)
                 debug!(
-                    "Using heuristic analysis for large cache file {:?} ({} bytes)",
-                    cache_path,
-                    expanded_source.len()
+                    "Using heuristic analysis for large file ({} bytes): {}",
+                    file_size,
+                    source_file.path.display()
                 );
-            }
-
-            // Get caller FQNs for this file
-            let caller_fqns = file_to_caller_fqns
-                .get(file_path)
-                .cloned()
-                .unwrap_or_default();
-
-            // Derive crate_name and module_path from file path
-            // The expanded cache filename format is: {crate_name}-{hash}.expand
-            let crate_name = cache_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_suffix(".expand"))
-                .and_then(|n| n.rsplit_once('-'))
-                .map(|(name, _)| name.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-
-            // Run type resolution analysis (heuristic for large files, syn otherwise)
-            let result = if use_heuristics {
-                type_resolution_service
+                service
                     .analyze_with_heuristics(
-                        &crate_name,
-                        "", // module_path not critical for typecheck
-                        &file_path.to_string_lossy(),
+                        &source_file.crate_name,
+                        &source_file.module_path,
+                        &source_file.path.to_string_lossy(),
                         &expanded_source,
                         &caller_fqns,
                     )
                     .await
             } else {
-                type_resolution_service
+                service
                     .analyze_expanded_source(
-                        &crate_name,
-                        "", // module_path not critical for typecheck
-                        &file_path.to_string_lossy(),
+                        &source_file.crate_name,
+                        &source_file.module_path,
+                        &source_file.path.to_string_lossy(),
                         &expanded_source,
                         &caller_fqns,
                     )
@@ -2237,38 +2258,41 @@ impl PipelineStage for TypecheckStage {
             };
 
             match result {
-                Ok(result) => {
+                Ok(resolution_result) => {
                     typechecked_count += 1;
-                    trait_impls_count += result.trait_impls.len();
-                    call_sites_count += result.call_sites.len();
-
-                    // Log any resolution errors
-                    for err in result.errors {
-                        debug!("Type resolution warning for {:?}: {}", file_path, err);
+                    debug!(
+                        "Typecheck {}: {} trait impls, {} call sites, {} errors",
+                        source_file.path.display(),
+                        resolution_result.trait_impls.len(),
+                        resolution_result.call_sites.len(),
+                        resolution_result.errors.len(),
+                    );
+                    for err in &resolution_result.errors {
+                        warn!("Typecheck error in {}: {}", source_file.path.display(), err);
                     }
                 }
                 Err(e) => {
-                    warn!("Type resolution failed for {:?}: {}", file_path, e);
-                    state.errors.push(
-                        StageError::new("typecheck", e.to_string())
-                            .with_context(file_path.display().to_string()),
-                    );
+                    warn!("Typecheck failed for {}: {}", source_file.path.display(), e);
                     failed_count += 1;
                 }
             }
         }
 
+        let mut state = ctx.state.write().await;
         state.counts.items_typechecked = typechecked_count;
+        drop(state);
 
         let duration = start.elapsed();
-
         info!(
-            "Typecheck stage completed: {} files analyzed, {} trait impls, {} call sites",
-            typechecked_count, trait_impls_count, call_sites_count
+            "Typecheck stage completed: {} files typechecked, {} failed in {:?}",
+            typechecked_count, failed_count, duration
         );
 
         if failed_count > 0 && typechecked_count == 0 {
-            Ok(StageResult::failed("typecheck", "All type checks failed"))
+            Ok(StageResult::failed(
+                "typecheck",
+                "All typecheck attempts failed",
+            ))
         } else if failed_count > 0 {
             Ok(StageResult::partial(
                 "typecheck",
@@ -2276,8 +2300,8 @@ impl PipelineStage for TypecheckStage {
                 failed_count,
                 duration,
                 format!(
-                    "{} files typechecked, {} failed, {} trait impls, {} call sites",
-                    typechecked_count, failed_count, trait_impls_count, call_sites_count
+                    "{} files typechecked, {} failed",
+                    typechecked_count, failed_count
                 ),
             ))
         } else {
@@ -2295,10 +2319,8 @@ impl PipelineStage for TypecheckStage {
 // EXTRACT STAGE
 // =============================================================================
 
-/// Stage 4: Extract items to Postgres
-pub struct ExtractStage {
-    pool: Option<PgPool>,
-}
+/// Stage 4: Extract parsed items to Postgres
+pub struct ExtractStage {}
 
 impl Default for ExtractStage {
     fn default() -> Self {
@@ -2308,154 +2330,7 @@ impl Default for ExtractStage {
 
 impl ExtractStage {
     pub fn new() -> Self {
-        Self { pool: None }
-    }
-
-    pub async fn connect(&mut self, database_url: &str) -> Result<()> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(5)
-            .connect(database_url)
-            .await
-            .context("Failed to connect to database")?;
-
-        self.pool = Some(pool);
-        Ok(())
-    }
-
-    /// Check if a source file has changed since last indexing by comparing content hashes.
-    /// Returns Some(existing_id) if unchanged, None if changed or new.
-    async fn check_file_unchanged(&self, file_info: &SourceFileInfo) -> Result<Option<Uuid>> {
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Database not connected"))?;
-
-        let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
-            r#"
-            SELECT id, content_hash FROM source_files
-            WHERE crate_name = $1 AND module_path = $2 AND file_path = $3
-            "#,
-        )
-        .bind(&file_info.crate_name)
-        .bind(&file_info.module_path)
-        .bind(file_info.path.to_string_lossy().to_string())
-        .fetch_optional(pool)
-        .await?;
-
-        if let Some((id, Some(existing_hash))) = row {
-            if existing_hash == file_info.content_hash {
-                return Ok(Some(id));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Store a source file in the database and return its ID.
-    /// Includes content_hash for incremental change detection.
-    async fn store_source_file(
-        &self,
-        file_info: &SourceFileInfo,
-        expanded_source: Option<&str>,
-    ) -> Result<Uuid> {
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Database not connected"))?;
-
-        let id = Uuid::new_v4();
-
-        sqlx::query(
-            r#"
-            INSERT INTO source_files
-                (id, crate_name, module_path, file_path, original_source, expanded_source, git_hash, content_hash)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (crate_name, module_path, file_path) DO UPDATE SET
-                original_source = EXCLUDED.original_source,
-                expanded_source = EXCLUDED.expanded_source,
-                git_hash = EXCLUDED.git_hash,
-                content_hash = EXCLUDED.content_hash,
-                last_indexed_at = NOW(),
-                updated_at = NOW()
-            RETURNING id
-            "#
-        )
-        .bind(id)
-        .bind(&file_info.crate_name)
-        .bind(&file_info.module_path)
-        .bind(file_info.path.to_string_lossy().to_string())
-        .bind(file_info.original_source.as_str())
-        .bind(expanded_source)
-        .bind(&file_info.git_hash)
-        .bind(&file_info.content_hash)
-        .fetch_one(pool)
-        .await?;
-
-        Ok(id)
-    }
-
-    #[allow(dead_code)]
-    async fn extract_item(
-        &self,
-        item: &ParsedItemInfo,
-        source_file_id: Option<Uuid>,
-    ) -> Result<Uuid> {
-        let pool = self
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Database not connected"))?;
-
-        let id = Uuid::new_v4();
-
-        // Serialize generic_params, where_clauses, and attributes to JSON
-        let generic_params_json =
-            serde_json::to_value(&item.generic_params).unwrap_or(serde_json::json!([]));
-        let where_clauses_json =
-            serde_json::to_value(&item.where_clauses).unwrap_or(serde_json::json!([]));
-        let attributes_json =
-            serde_json::to_value(&item.attributes).unwrap_or(serde_json::json!([]));
-
-        sqlx::query(
-            r#"
-            INSERT INTO extracted_items 
-                (id, source_file_id, item_type, fqn, name, visibility, signature, 
-                 doc_comment, start_line, end_line, body_source, 
-                 generic_params, where_clauses, attributes, generated_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-            ON CONFLICT (fqn) DO UPDATE SET
-                signature = EXCLUDED.signature,
-                doc_comment = EXCLUDED.doc_comment,
-                start_line = EXCLUDED.start_line,
-                end_line = EXCLUDED.end_line,
-                body_source = EXCLUDED.body_source,
-                generic_params = EXCLUDED.generic_params,
-                where_clauses = EXCLUDED.where_clauses,
-                attributes = EXCLUDED.attributes,
-                visibility = EXCLUDED.visibility,
-                source_file_id = COALESCE(EXCLUDED.source_file_id, extracted_items.source_file_id),
-                generated_by = COALESCE(EXCLUDED.generated_by, extracted_items.generated_by),
-                updated_at = NOW()
-            RETURNING id
-            "#,
-        )
-        .bind(id)
-        .bind(source_file_id)
-        .bind(&item.item_type)
-        .bind(&item.fqn)
-        .bind(&item.name)
-        .bind(&item.visibility)
-        .bind(&item.signature)
-        .bind(&item.doc_comment)
-        .bind(item.start_line as i32)
-        .bind(item.end_line as i32)
-        .bind(&item.body_source)
-        .bind(&generic_params_json)
-        .bind(&where_clauses_json)
-        .bind(&attributes_json)
-        .bind(&item.generated_by)
-        .fetch_one(pool)
-        .await?;
-
-        Ok(id)
+        Self {}
     }
 }
 
@@ -2468,133 +2343,255 @@ impl PipelineStage for ExtractStage {
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
 
-        info!("Starting extract stage (linking source files)");
-
         if ctx.config.dry_run {
-            info!("Dry run - skipping extraction");
+            info!("Extract stage skipped (dry_run mode)");
             return Ok(StageResult::skipped("extract"));
         }
 
+        let database_url = &ctx.config.database_url;
+
         let state = ctx.state.read().await;
-        let source_files = state.source_files.clone();
-        let expanded_cache_paths = state.expanded_sources.clone();
-        let extracted_items = state.extracted_items.clone();
+        let parsed_items: Vec<ParsedItemInfo> =
+            state.parsed_items.values().flatten().cloned().collect();
+        let source_files: Vec<SourceFileInfo> = state.source_files.clone();
         drop(state);
 
-        // Connect to database
-        let mut stage = ExtractStage::new();
-        if let Err(e) = stage.connect(&ctx.config.database_url).await {
-            return Ok(StageResult::failed(
-                "extract",
-                format!("Database connection failed: {}", e),
-            ));
+        if parsed_items.is_empty() {
+            info!("Extract stage skipped: no parsed items");
+            return Ok(StageResult::skipped("extract"));
         }
 
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await
+            .context("Failed to connect to database for extract stage")?;
+
+        // Build a map from file path to source file info for linking
+        let file_map: HashMap<PathBuf, &SourceFileInfo> = source_files
+            .iter()
+            .map(|sf| (sf.path.clone(), sf))
+            .collect();
+
+        // Ensure all source files exist in the database
+        let mut file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
+        for source_file in &source_files {
+            let file_id = Uuid::new_v4();
+            sqlx::query(
+                r#"
+                INSERT INTO source_files (id, file_path, crate_name, module_path, content_hash, git_hash)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (file_path, content_hash) DO UPDATE SET
+                    crate_name = EXCLUDED.crate_name,
+                    module_path = EXCLUDED.module_path,
+                    git_hash = COALESCE(EXCLUDED.git_hash, source_files.git_hash)
+                RETURNING id
+                "#,
+            )
+            .bind(file_id)
+            .bind(source_file.path.to_string_lossy().to_string())
+            .bind(&source_file.crate_name)
+            .bind(&source_file.module_path)
+            .bind(&source_file.content_hash)
+            .bind(&source_file.git_hash)
+            .fetch_one(&pool)
+            .await
+            .ok()
+            .map(|row| row.get::<Uuid, _>("id"))
+            .unwrap_or(file_id);
+
+            file_ids.insert(source_file.path.clone(), file_id);
+        }
+
+        // Batch insert extracted items
+        let batch_size = std::env::var("EXTRACT_BATCH_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
+
+        let mut extracted_count = 0usize;
+        let mut failed_count = 0usize;
+
+        for chunk in parsed_items.chunks(batch_size) {
+            let items_with_ids: Vec<(Uuid, &ParsedItemInfo)> =
+                chunk.iter().map(|item| (Uuid::new_v4(), item)).collect();
+
+            let ids: Vec<String> = items_with_ids
+                .iter()
+                .map(|(id, _)| id.to_string())
+                .collect();
+            let item_types: Vec<&str> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.item_type.as_str())
+                .collect();
+            let fqns: Vec<&str> = items_with_ids.iter().map(|(_, i)| i.fqn.as_str()).collect();
+            let names: Vec<&str> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.name.as_str())
+                .collect();
+            let visibilities: Vec<&str> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.visibility.as_str())
+                .collect();
+            let signatures: Vec<&str> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.signature.as_str())
+                .collect();
+            let doc_comments: Vec<&str> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.doc_comment.as_str())
+                .collect();
+            let start_lines: Vec<i32> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.start_line as i32)
+                .collect();
+            let end_lines: Vec<i32> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.end_line as i32)
+                .collect();
+            let body_sources: Vec<&str> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.body_source.as_str())
+                .collect();
+            let generic_params: Vec<serde_json::Value> = items_with_ids
+                .iter()
+                .map(|(_, i)| {
+                    serde_json::to_value(&i.generic_params).unwrap_or(serde_json::json!([]))
+                })
+                .collect();
+            let where_clauses: Vec<serde_json::Value> = items_with_ids
+                .iter()
+                .map(|(_, i)| {
+                    serde_json::to_value(&i.where_clauses).unwrap_or(serde_json::json!([]))
+                })
+                .collect();
+            let attributes: Vec<serde_json::Value> = items_with_ids
+                .iter()
+                .map(|(_, i)| serde_json::to_value(&i.attributes).unwrap_or(serde_json::json!([])))
+                .collect();
+            let generated_bys: Vec<Option<&str>> = items_with_ids
+                .iter()
+                .map(|(_, i)| i.generated_by.as_deref())
+                .collect();
+
+            // Resolve source_file_id for each item
+            let source_file_ids: Vec<Option<Uuid>> = items_with_ids
+                .iter()
+                .map(|(_, item)| {
+                    // Try to find the source file for this item
+                    file_map
+                        .keys()
+                        .find(|p| {
+                            item.fqn
+                                .contains(&*p.file_stem().unwrap_or_default().to_string_lossy())
+                        })
+                        .and_then(|p| file_ids.get(p).copied())
+                })
+                .collect();
+
+            let generic_params_json: Vec<String> =
+                generic_params.iter().map(|v| v.to_string()).collect();
+            let where_clauses_json: Vec<String> =
+                where_clauses.iter().map(|v| v.to_string()).collect();
+            let attributes_json: Vec<String> = attributes.iter().map(|v| v.to_string()).collect();
+            let source_file_id_strs: Vec<Option<String>> = source_file_ids
+                .iter()
+                .map(|id| id.map(|u| u.to_string()))
+                .collect();
+
+            let result = sqlx::query(
+                r#"
+                INSERT INTO extracted_items 
+                    (id, source_file_id, item_type, fqn, name, visibility, signature, 
+                     doc_comment, start_line, end_line, body_source, 
+                     generic_params, where_clauses, attributes, generated_by)
+                SELECT 
+                    unnest($1::uuid[]) as id,
+                    unnest($2::uuid[]) as source_file_id,
+                    unnest($3::text[]) as item_type,
+                    unnest($4::text[]) as fqn,
+                    unnest($5::text[]) as name,
+                    unnest($6::text[]) as visibility,
+                    unnest($7::text[]) as signature,
+                    unnest($8::text[]) as doc_comment,
+                    unnest($9::int[]) as start_line,
+                    unnest($10::int[]) as end_line,
+                    unnest($11::text[]) as body_source,
+                    unnest($12::jsonb[]) as generic_params,
+                    unnest($13::jsonb[]) as where_clauses,
+                    unnest($14::jsonb[]) as attributes,
+                    unnest($15::text[]) as generated_by
+                ON CONFLICT (fqn) DO UPDATE SET
+                    item_type = EXCLUDED.item_type,
+                    name = EXCLUDED.name,
+                    signature = EXCLUDED.signature,
+                    doc_comment = EXCLUDED.doc_comment,
+                    start_line = EXCLUDED.start_line,
+                    end_line = EXCLUDED.end_line,
+                    body_source = EXCLUDED.body_source,
+                    generic_params = EXCLUDED.generic_params,
+                    where_clauses = EXCLUDED.where_clauses,
+                    attributes = EXCLUDED.attributes,
+                    visibility = EXCLUDED.visibility,
+                    source_file_id = COALESCE(EXCLUDED.source_file_id, extracted_items.source_file_id),
+                    generated_by = COALESCE(EXCLUDED.generated_by, extracted_items.generated_by),
+                    updated_at = NOW()
+                "#,
+            )
+            .bind(&ids)
+            .bind(&source_file_id_strs)
+            .bind(&item_types)
+            .bind(&fqns)
+            .bind(&names)
+            .bind(&visibilities)
+            .bind(&signatures)
+            .bind(&doc_comments)
+            .bind(&start_lines)
+            .bind(&end_lines)
+            .bind(&body_sources)
+            .bind(&generic_params_json)
+            .bind(&where_clauses_json)
+            .bind(&attributes_json)
+            .bind(&generated_bys)
+            .execute(&pool)
+            .await;
+
+            match result {
+                Ok(r) => {
+                    extracted_count += chunk.len();
+                    debug!(
+                        "Extracted batch of {} items ({} rows affected)",
+                        chunk.len(),
+                        r.rows_affected()
+                    );
+                }
+                Err(e) => {
+                    warn!("Batch extract failed: {}", e);
+                    failed_count += chunk.len();
+                }
+            }
+        }
+
+        // Update state with extracted item IDs
         let mut state = ctx.state.write().await;
-        let extracted_count = extracted_items.len();
-        let failed_count = 0;
-
-        // Step 1: Store source files in database and build path -> ID mapping
-        let mut source_file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
-        let mut skipped_unchanged = 0;
-
-        for file_info in &source_files {
-            match stage.check_file_unchanged(file_info).await {
-                Ok(Some(existing_id)) => {
-                    debug!(
-                        "Skipping unchanged file {:?} (hash: {})",
-                        file_info.path, file_info.content_hash
-                    );
-                    source_file_ids.insert(file_info.path.clone(), existing_id);
-                    skipped_unchanged += 1;
-                    continue;
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    debug!(
-                        "Content hash check failed for {:?}, will re-index: {}",
-                        file_info.path, e
-                    );
-                }
-            }
-
-            // Read expanded source from cache file on-demand
-            let expanded: Option<String> = expanded_cache_paths
-                .get(&file_info.path)
-                .and_then(|cache_path| std::fs::read_to_string(cache_path).ok());
-            match stage
-                .store_source_file(file_info, expanded.as_deref())
-                .await
-            {
-                Ok(id) => {
-                    source_file_ids.insert(file_info.path.clone(), id);
-                    debug!("Stored source file {:?} with ID {}", file_info.path, id);
-                }
-                Err(e) => {
-                    warn!("Failed to store source file {:?}: {}", file_info.path, e);
-                    state.errors.push(
-                        StageError::new("extract", e.to_string())
-                            .with_context(file_info.path.display().to_string()),
-                    );
-                }
-            }
-        }
-
-        if skipped_unchanged > 0 {
-            info!(
-                "Skipped {} unchanged files (incremental mode)",
-                skipped_unchanged
-            );
-        }
-
-        // Step 2: Update source_file_id for items already in database (from parse stage)
-        // Items were inserted with NULL source_file_id during parse, now link them
-        // Use prefix matching: item FQN should start with module_path::
-        // This handles methods (module::Type::method) where FQN has extra segments
-        let pool = stage
-            .pool
-            .as_ref()
-            .ok_or_else(|| anyhow!("Database not connected"))?;
-
-        let update_result = sqlx::query(
-            r#"
-            UPDATE extracted_items ei
-            SET source_file_id = sf.id
-            FROM source_files sf
-            WHERE ei.source_file_id IS NULL
-              AND ei.fqn LIKE sf.module_path || '::%'
-            "#,
-        )
-        .execute(pool)
-        .await;
-
-        match update_result {
-            Ok(result) => {
-                info!(
-                    "Updated source_file_id for {} items",
-                    result.rows_affected()
-                );
-            }
-            Err(e) => {
-                warn!("Failed to update source_file_id links: {}", e);
-            }
-        }
-
         state.counts.items_extracted = extracted_count;
+        for item in &parsed_items {
+            state
+                .extracted_items
+                .insert(item.fqn.clone(), Uuid::new_v4());
+        }
+        drop(state);
 
         let duration = start.elapsed();
-
         info!(
-            "Extract stage completed: {} source files, {} items in {:?}",
-            source_file_ids.len(),
-            extracted_count,
-            duration
+            "Extract stage completed: {} items extracted, {} failed in {:?}",
+            extracted_count, failed_count, duration
         );
 
         if failed_count > 0 && extracted_count == 0 {
             Ok(StageResult::failed(
                 "extract",
-                "All extraction attempts failed",
+                "All extract attempts failed",
             ))
         } else if failed_count > 0 {
             Ok(StageResult::partial(
@@ -2640,366 +2637,6 @@ impl GraphStage {
     pub fn new() -> Self {
         Self {}
     }
-
-    /// Convert an item_type string to its Neo4j node label
-    fn item_type_to_label(item_type: &str) -> &'static str {
-        match item_type {
-            "function" => "Function",
-            "struct" => "Struct",
-            "enum" => "Enum",
-            "trait" => "Trait",
-            "impl" => "Impl",
-            "type_alias" => "TypeAlias",
-            "const" => "Const",
-            "static" => "Static",
-            "macro" => "Macro",
-            "module" => "Module",
-            _ => "Type",
-        }
-    }
-
-    /// Convert a ParsedItemInfo to NodeData for Neo4j
-    fn item_to_node(item: &ParsedItemInfo) -> NodeData {
-        let node_type = match item.item_type.as_str() {
-            "function" => NodeType::Function,
-            "struct" => NodeType::Struct,
-            "enum" => NodeType::Enum,
-            "trait" => NodeType::Trait,
-            "impl" => NodeType::Impl,
-            "type_alias" => NodeType::TypeAlias,
-            "const" => NodeType::Const,
-            "static" => NodeType::Static,
-            "macro" => NodeType::Macro,
-            "module" => NodeType::Module,
-            _ => NodeType::Type,
-        };
-
-        let mut properties = HashMap::new();
-        if !item.signature.is_empty() {
-            properties.insert(
-                "signature".to_string(),
-                PropertyValue::from(item.signature.as_str()),
-            );
-        }
-        properties.insert(
-            "start_line".to_string(),
-            PropertyValue::from(item.start_line),
-        );
-        properties.insert("end_line".to_string(), PropertyValue::from(item.end_line));
-
-        // Add visibility property
-        properties.insert(
-            "visibility".to_string(),
-            PropertyValue::from(item.visibility.as_str()),
-        );
-
-        // Add generated_by property if present
-        if let Some(ref generated_by) = item.generated_by {
-            properties.insert(
-                "generated_by".to_string(),
-                PropertyValue::from(generated_by.as_str()),
-            );
-        }
-
-        // Add function-specific properties
-        if item.item_type == "function" {
-            let sig_lower = item.signature.to_lowercase();
-            properties.insert(
-                "is_async".to_string(),
-                PropertyValue::from(sig_lower.contains("async")),
-            );
-            properties.insert(
-                "is_unsafe".to_string(),
-                PropertyValue::from(sig_lower.contains("unsafe")),
-            );
-            properties.insert(
-                "is_generic".to_string(),
-                PropertyValue::from(!item.generic_params.is_empty()),
-            );
-        }
-
-        // Add generic_params as JSON if present
-        if !item.generic_params.is_empty() {
-            if let Ok(json) = serde_json::to_string(&item.generic_params) {
-                properties.insert("generic_params".to_string(), PropertyValue::from(json));
-            }
-        }
-
-        // Add doc_comment if present
-        if !item.doc_comment.is_empty() {
-            properties.insert(
-                "doc_comment".to_string(),
-                PropertyValue::from(item.doc_comment.as_str()),
-            );
-        }
-
-        NodeData {
-            id: item.fqn.clone(),
-            fqn: item.fqn.clone(),
-            name: item.name.clone(),
-            node_type,
-            properties,
-        }
-    }
-
-    /// Create a Crate node
-    fn create_crate_node(crate_name: &str) -> NodeData {
-        let mut properties = HashMap::new();
-        properties.insert("name".to_string(), PropertyValue::from(crate_name));
-
-        NodeData {
-            id: crate_name.to_string(),
-            fqn: crate_name.to_string(),
-            name: crate_name.to_string(),
-            node_type: NodeType::Crate,
-            properties,
-        }
-    }
-
-    /// Extract the parent module FQN from an item FQN
-    fn get_parent_fqn(fqn: &str) -> Option<String> {
-        fqn.rfind("::").map(|pos| fqn[..pos].to_string())
-    }
-
-    /// Extract trait name from impl attributes (impl_for=TraitName)
-    fn extract_trait_from_impl(attributes: &[String]) -> Option<String> {
-        for attr in attributes {
-            if let Some(stripped) = attr.strip_prefix("impl_for=") {
-                return Some(stripped.to_string());
-            }
-        }
-        None
-    }
-
-    /// Extract the self type from an impl FQN
-    /// Format: "module::TraitName_TypeName" for trait impls, or "module::TypeName" for inherent impls
-    fn extract_impl_self_type(_fqn: &str, name: &str) -> Option<String> {
-        // For inherent impls, the name is just the type name
-        // For trait impls like "TraitName_TypeName", extract TypeName
-        if let Some(underscore_pos) = name.find('_') {
-            Some(name[underscore_pos + 1..].to_string())
-        } else {
-            Some(name.to_string())
-        }
-    }
-
-    /// Extract fields from struct body source
-    fn extract_struct_fields(body_source: &str, _struct_fqn: &str) -> Vec<(String, String, usize)> {
-        let mut fields = Vec::new();
-
-        // Simple regex-like extraction for struct fields
-        // Pattern: field_name: Type,
-        for (pos, line) in body_source.lines().enumerate() {
-            let line = line.trim();
-            // Skip comments, attributes, and non-field lines
-            if line.starts_with("//")
-                || line.starts_with("#")
-                || line.starts_with("pub ")
-                || line.starts_with("}")
-            {
-                continue;
-            }
-
-            // Try to parse field: Type pattern
-            if let Some(colon_pos) = line.find(':') {
-                let field_name = line[..colon_pos].trim().to_string();
-                let rest = &line[colon_pos + 1..];
-                // Get type until comma or end
-                let type_str = rest.split(',').next().unwrap_or("").trim();
-                if !field_name.is_empty() && !type_str.is_empty() {
-                    fields.push((field_name, type_str.to_string(), pos));
-                }
-            }
-        }
-
-        fields
-    }
-
-    /// Extract variants from enum body source
-    fn extract_enum_variants(
-        body_source: &str,
-        _enum_fqn: &str,
-    ) -> Vec<(String, Option<String>, usize)> {
-        let mut variants = Vec::new();
-
-        for (pos, line) in body_source.lines().enumerate() {
-            let line = line.trim();
-            // Skip comments, attributes, braces
-            if line.starts_with("//")
-                || line.starts_with("#")
-                || line.starts_with("{")
-                || line.starts_with("}")
-            {
-                continue;
-            }
-
-            // Try to parse variant pattern: VariantName, or VariantName(Type), or VariantName { fields }
-            if let Some(variant_name) = line.split(',').next() {
-                let variant_name = variant_name.trim();
-                if variant_name.is_empty() || variant_name.starts_with("//") {
-                    continue;
-                }
-
-                // Check if variant has data
-                let has_data = variant_name.contains('(') || variant_name.contains('{');
-                let name = variant_name
-                    .split('(')
-                    .next()
-                    .unwrap_or(variant_name)
-                    .split('{')
-                    .next()
-                    .unwrap_or(variant_name)
-                    .trim();
-
-                if !name.is_empty() && !name.starts_with("//") {
-                    // Extract type if tuple variant
-                    let variant_type = if has_data {
-                        Some(name.to_string())
-                    } else {
-                        None
-                    };
-                    variants.push((name.to_string(), variant_type, pos));
-                }
-            }
-        }
-
-        variants
-    }
-
-    /// Find the crate root directory by walking up from a source file path
-    fn find_crate_root(source_path: &Path) -> Option<PathBuf> {
-        let mut current = source_path.parent()?;
-        loop {
-            if current.join("Cargo.toml").exists() {
-                return Some(current.to_path_buf());
-            }
-            current = current.parent()?;
-        }
-    }
-
-    /// Parse workspace dependencies from a crate's Cargo.toml
-    /// Returns Vec<(dep_crate_name, is_dev, is_build)> for deps matching known workspace crates
-    fn parse_workspace_deps(
-        cargo_toml_path: &Path,
-        workspace_crate_names: &std::collections::HashSet<String>,
-    ) -> Vec<(String, bool, bool)> {
-        let content = match std::fs::read_to_string(cargo_toml_path) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        let toml_value: toml::Value = match toml::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut deps = Vec::new();
-
-        let sections: &[(&str, bool, bool)] = &[
-            ("dependencies", false, false),
-            ("dev-dependencies", true, false),
-            ("build-dependencies", false, true),
-        ];
-
-        for &(section, is_dev, is_build) in sections {
-            if let Some(table) = toml_value.get(section).and_then(|v| v.as_table()) {
-                for dep_name in table.keys() {
-                    let normalized = dep_name.replace('-', "_");
-                    let hyphenated = dep_name.replace('_', "-");
-
-                    let actual_name = if workspace_crate_names.contains(dep_name) {
-                        Some(dep_name.clone())
-                    } else if workspace_crate_names.contains(&normalized) {
-                        Some(normalized)
-                    } else if workspace_crate_names.contains(&hyphenated) {
-                        Some(hyphenated)
-                    } else {
-                        None
-                    };
-
-                    if let Some(name) = actual_name {
-                        deps.push((name, is_dev, is_build));
-                    }
-                }
-            }
-        }
-
-        deps
-    }
-
-    /// Load items from the database when parsed_items is not available in state
-    async fn load_items_from_database(
-        &self,
-        database_url: &str,
-        crate_name: Option<&str>,
-    ) -> Result<Vec<ParsedItemInfo>> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(database_url)
-            .await
-            .context("Failed to connect to database for loading items")?;
-
-        let query = if let Some(crate_name) = crate_name {
-            sqlx::query(
-                r#"
-                SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
-                FROM extracted_items
-                WHERE crate_name = $1
-                ORDER BY fqn
-                "#
-            )
-            .bind(crate_name)
-        } else {
-            sqlx::query(
-                r#"
-                SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
-                FROM extracted_items
-                ORDER BY fqn
-                "#,
-            )
-        };
-
-        let rows = query
-            .fetch_all(&pool)
-            .await
-            .context("Failed to query extracted_items")?;
-
-        let items: Vec<ParsedItemInfo> = rows
-            .into_iter()
-            .map(|row| {
-                let generic_params_json: serde_json::Value = row.get("generic_params");
-                let where_clauses_json: serde_json::Value = row.get("where_clauses");
-                let attributes_json: serde_json::Value = row.get("attributes");
-
-                ParsedItemInfo {
-                    fqn: row.get("fqn"),
-                    item_type: row.get("item_type"),
-                    name: row.get("name"),
-                    visibility: row
-                        .get::<Option<String>, _>("visibility")
-                        .unwrap_or_default(),
-                    signature: row
-                        .get::<Option<String>, _>("signature")
-                        .unwrap_or_default(),
-                    generic_params: serde_json::from_value(generic_params_json).unwrap_or_default(),
-                    where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
-                    attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
-                    doc_comment: row
-                        .get::<Option<String>, _>("doc_comment")
-                        .unwrap_or_default(),
-                    start_line: row.get::<i32, _>("start_line") as usize,
-                    end_line: row.get::<i32, _>("end_line") as usize,
-                    body_source: row
-                        .get::<Option<String>, _>("body_source")
-                        .unwrap_or_default(),
-                    generated_by: row.get("generated_by"),
-                }
-            })
-            .collect();
-
-        Ok(items)
-    }
 }
 
 #[async_trait::async_trait]
@@ -3044,7 +2681,26 @@ impl PipelineStage for GraphStage {
         let source_files = state.source_files.clone();
         drop(state);
 
-        // If no parsed_items in state, try to load from database
+        // Discover workspace crate names for FQN filtering
+        let workspace_crate_names = if ctx.config.workspace_crate_names.is_empty() {
+            match crate::pipeline::discover_workspace_crate_names(&ctx.config.crate_path) {
+                Ok(names) => {
+                    info!(
+                        "Graph stage: discovered {} workspace crate names for FQN filtering: {:?}",
+                        names.len(),
+                        names
+                    );
+                    names
+                }
+                Err(e) => {
+                    warn!("Graph stage: failed to discover workspace crate names, skipping FQN filtering: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            ctx.config.workspace_crate_names.clone()
+        };
+
         if parsed_items.is_empty() {
             info!("No parsed items in state, loading from database...");
             match self
@@ -3145,12 +2801,20 @@ impl PipelineStage for GraphStage {
             all_nodes.push(Self::create_crate_node(crate_name));
         }
 
-        // Collect all items as nodes
         let mut item_fqns: Vec<String> = Vec::new();
         let mut impl_items: Vec<&ParsedItemInfo> = Vec::new();
 
+        let mut graph_filtered_count = 0usize;
         for items in parsed_items.values() {
             for item in items {
+                if !workspace_crate_names.is_empty()
+                    && !Self::is_workspace_fqn(&item.fqn, &workspace_crate_names)
+                {
+                    graph_filtered_count += 1;
+                    debug!("Graph stage: skipping external item: {}", item.fqn);
+                    continue;
+                }
+
                 let node = Self::item_to_node(item);
                 all_nodes.push(node);
                 item_fqns.push(item.fqn.clone());
@@ -3159,6 +2823,12 @@ impl PipelineStage for GraphStage {
                     impl_items.push(item);
                 }
             }
+        }
+        if graph_filtered_count > 0 {
+            info!(
+                "Graph stage: filtered out {} external-crate items from node creation",
+                graph_filtered_count
+            );
         }
 
         // Build O(1) lookup indexes for traits (avoids O(n²) in find_trait_fqn)
@@ -3432,10 +3102,11 @@ impl PipelineStage for GraphStage {
         let mut calls_count = 0;
         for items in parsed_items.values() {
             for item in items {
-                // Only scan functions (standalone + impl methods, NOT impl blocks).
-                // Impl methods are now individual ParsedItems with item_type="function"
-                // and an "impl_type=..." attribute. Scanning impl block body_source
-                // would double-count calls already found in individual methods.
+                if !workspace_crate_names.is_empty()
+                    && !Self::is_workspace_fqn(&item.fqn, &workspace_crate_names)
+                {
+                    continue;
+                }
                 if item.item_type == "function" && !item.body_source.is_empty() {
                     // Static/free function calls
                     let calls = Self::extract_function_calls(
@@ -3517,7 +3188,11 @@ impl PipelineStage for GraphStage {
         let mut uses_type_count = 0;
         for items in parsed_items.values() {
             for item in items {
-                // Extract type usages from functions and impl methods
+                if !workspace_crate_names.is_empty()
+                    && !Self::is_workspace_fqn(&item.fqn, &workspace_crate_names)
+                {
+                    continue;
+                }
                 if item.item_type == "function" {
                     // Extract types from signature
                     let sig_types = Self::extract_types_from_signature(&item.signature, &item.fqn);
@@ -3711,10 +3386,345 @@ impl PipelineStage for GraphStage {
 }
 
 impl GraphStage {
-    /// Strip generic arguments from a trait name.
-    /// e.g., "ConnectorIntegration<T, Req, Resp>" → "ConnectorIntegration"
     fn strip_generics(name: &str) -> &str {
         name.split('<').next().unwrap_or(name).trim_end()
+    }
+
+    fn is_workspace_fqn(fqn: &str, workspace_crate_names: &[String]) -> bool {
+        workspace_crate_names
+            .iter()
+            .any(|crate_name| fqn == crate_name || fqn.starts_with(&format!("{}::", crate_name)))
+    }
+
+    fn item_type_to_label(item_type: &str) -> &'static str {
+        match item_type {
+            "function" => "Function",
+            "struct" => "Struct",
+            "enum" => "Enum",
+            "trait" => "Trait",
+            "impl" => "Impl",
+            "type_alias" => "TypeAlias",
+            "const" => "Const",
+            "static" => "Static",
+            "macro" => "Macro",
+            "module" => "Module",
+            _ => "Type",
+        }
+    }
+
+    fn item_to_node(item: &ParsedItemInfo) -> NodeData {
+        let node_type = match item.item_type.as_str() {
+            "function" => NodeType::Function,
+            "struct" => NodeType::Struct,
+            "enum" => NodeType::Enum,
+            "trait" => NodeType::Trait,
+            "impl" => NodeType::Impl,
+            "type_alias" => NodeType::TypeAlias,
+            "const" => NodeType::Const,
+            "static" => NodeType::Static,
+            "macro" => NodeType::Macro,
+            "module" => NodeType::Module,
+            _ => NodeType::Type,
+        };
+
+        let mut properties = HashMap::new();
+        if !item.signature.is_empty() {
+            properties.insert(
+                "signature".to_string(),
+                PropertyValue::from(item.signature.as_str()),
+            );
+        }
+        properties.insert(
+            "start_line".to_string(),
+            PropertyValue::from(item.start_line),
+        );
+        properties.insert("end_line".to_string(), PropertyValue::from(item.end_line));
+
+        properties.insert(
+            "visibility".to_string(),
+            PropertyValue::from(item.visibility.as_str()),
+        );
+
+        if let Some(ref generated_by) = item.generated_by {
+            properties.insert(
+                "generated_by".to_string(),
+                PropertyValue::from(generated_by.as_str()),
+            );
+        }
+
+        if item.item_type == "function" {
+            let sig_lower = item.signature.to_lowercase();
+            properties.insert(
+                "is_async".to_string(),
+                PropertyValue::from(sig_lower.contains("async")),
+            );
+            properties.insert(
+                "is_unsafe".to_string(),
+                PropertyValue::from(sig_lower.contains("unsafe")),
+            );
+            properties.insert(
+                "is_generic".to_string(),
+                PropertyValue::from(!item.generic_params.is_empty()),
+            );
+        }
+
+        if !item.generic_params.is_empty() {
+            if let Ok(json) = serde_json::to_string(&item.generic_params) {
+                properties.insert("generic_params".to_string(), PropertyValue::from(json));
+            }
+        }
+
+        if !item.doc_comment.is_empty() {
+            properties.insert(
+                "doc_comment".to_string(),
+                PropertyValue::from(item.doc_comment.as_str()),
+            );
+        }
+
+        NodeData {
+            id: item.fqn.clone(),
+            fqn: item.fqn.clone(),
+            name: item.name.clone(),
+            node_type,
+            properties,
+        }
+    }
+
+    fn create_crate_node(crate_name: &str) -> NodeData {
+        let mut properties = HashMap::new();
+        properties.insert("name".to_string(), PropertyValue::from(crate_name));
+
+        NodeData {
+            id: crate_name.to_string(),
+            fqn: crate_name.to_string(),
+            name: crate_name.to_string(),
+            node_type: NodeType::Crate,
+            properties,
+        }
+    }
+
+    fn get_parent_fqn(fqn: &str) -> Option<String> {
+        fqn.rfind("::").map(|pos| fqn[..pos].to_string())
+    }
+
+    fn extract_trait_from_impl(attributes: &[String]) -> Option<String> {
+        for attr in attributes {
+            if let Some(stripped) = attr.strip_prefix("impl_for=") {
+                return Some(stripped.to_string());
+            }
+        }
+        None
+    }
+
+    fn extract_impl_self_type(_fqn: &str, name: &str) -> Option<String> {
+        if let Some(underscore_pos) = name.find('_') {
+            Some(name[underscore_pos + 1..].to_string())
+        } else {
+            Some(name.to_string())
+        }
+    }
+
+    fn extract_struct_fields(body_source: &str, _struct_fqn: &str) -> Vec<(String, String, usize)> {
+        let mut fields = Vec::new();
+
+        for (pos, line) in body_source.lines().enumerate() {
+            let line = line.trim();
+            if line.starts_with("//")
+                || line.starts_with("#")
+                || line.starts_with("pub ")
+                || line.starts_with("}")
+            {
+                continue;
+            }
+
+            if let Some(colon_pos) = line.find(':') {
+                let field_name = line[..colon_pos].trim().to_string();
+                let rest = &line[colon_pos + 1..];
+                let type_str = rest.split(',').next().unwrap_or("").trim();
+                if !field_name.is_empty() && !type_str.is_empty() {
+                    fields.push((field_name, type_str.to_string(), pos));
+                }
+            }
+        }
+
+        fields
+    }
+
+    fn extract_enum_variants(
+        body_source: &str,
+        _enum_fqn: &str,
+    ) -> Vec<(String, Option<String>, usize)> {
+        let mut variants = Vec::new();
+
+        for (pos, line) in body_source.lines().enumerate() {
+            let line = line.trim();
+            if line.starts_with("//")
+                || line.starts_with("#")
+                || line.starts_with("{")
+                || line.starts_with("}")
+            {
+                continue;
+            }
+
+            if let Some(variant_name) = line.split(',').next() {
+                let variant_name = variant_name.trim();
+                if variant_name.is_empty() || variant_name.starts_with("//") {
+                    continue;
+                }
+
+                let has_data = variant_name.contains('(') || variant_name.contains('{');
+                let name = variant_name
+                    .split('(')
+                    .next()
+                    .unwrap_or(variant_name)
+                    .split('{')
+                    .next()
+                    .unwrap_or(variant_name)
+                    .trim();
+
+                if !name.is_empty() && !name.starts_with("//") {
+                    let variant_type = if has_data {
+                        Some(name.to_string())
+                    } else {
+                        None
+                    };
+                    variants.push((name.to_string(), variant_type, pos));
+                }
+            }
+        }
+
+        variants
+    }
+
+    fn find_crate_root(source_path: &Path) -> Option<PathBuf> {
+        let mut current = source_path.parent()?;
+        loop {
+            if current.join("Cargo.toml").exists() {
+                return Some(current.to_path_buf());
+            }
+            current = current.parent()?;
+        }
+    }
+
+    fn parse_workspace_deps(
+        cargo_toml_path: &Path,
+        workspace_crate_names: &std::collections::HashSet<String>,
+    ) -> Vec<(String, bool, bool)> {
+        let content = match std::fs::read_to_string(cargo_toml_path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let toml_value: toml::Value = match toml::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut deps = Vec::new();
+
+        let sections: &[(&str, bool, bool)] = &[
+            ("dependencies", false, false),
+            ("dev-dependencies", true, false),
+            ("build-dependencies", false, true),
+        ];
+
+        for &(section, is_dev, is_build) in sections {
+            if let Some(table) = toml_value.get(section).and_then(|v| v.as_table()) {
+                for dep_name in table.keys() {
+                    let normalized = dep_name.replace('-', "_");
+                    let hyphenated = dep_name.replace('_', "-");
+
+                    let actual_name = if workspace_crate_names.contains(dep_name) {
+                        Some(dep_name.clone())
+                    } else if workspace_crate_names.contains(&normalized) {
+                        Some(normalized)
+                    } else if workspace_crate_names.contains(&hyphenated) {
+                        Some(hyphenated)
+                    } else {
+                        None
+                    };
+
+                    if let Some(name) = actual_name {
+                        deps.push((name, is_dev, is_build));
+                    }
+                }
+            }
+        }
+
+        deps
+    }
+
+    async fn load_items_from_database(
+        &self,
+        database_url: &str,
+        crate_name: Option<&str>,
+    ) -> Result<Vec<ParsedItemInfo>> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(database_url)
+            .await
+            .context("Failed to connect to database for loading items")?;
+
+        let query = if let Some(crate_name) = crate_name {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+                FROM extracted_items
+                WHERE crate_name = $1
+                ORDER BY fqn
+                "#
+            )
+            .bind(crate_name)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
+                FROM extracted_items
+                ORDER BY fqn
+                "#,
+            )
+        };
+
+        let rows = query
+            .fetch_all(&pool)
+            .await
+            .context("Failed to query extracted_items")?;
+
+        let items: Vec<ParsedItemInfo> = rows
+            .into_iter()
+            .map(|row| {
+                let generic_params_json: serde_json::Value = row.get("generic_params");
+                let where_clauses_json: serde_json::Value = row.get("where_clauses");
+                let attributes_json: serde_json::Value = row.get("attributes");
+
+                ParsedItemInfo {
+                    fqn: row.get("fqn"),
+                    item_type: row.get("item_type"),
+                    name: row.get("name"),
+                    visibility: row
+                        .get::<Option<String>, _>("visibility")
+                        .unwrap_or_default(),
+                    signature: row
+                        .get::<Option<String>, _>("signature")
+                        .unwrap_or_default(),
+                    generic_params: serde_json::from_value(generic_params_json).unwrap_or_default(),
+                    where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
+                    attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
+                    doc_comment: row
+                        .get::<Option<String>, _>("doc_comment")
+                        .unwrap_or_default(),
+                    start_line: row.get::<i32, _>("start_line") as usize,
+                    end_line: row.get::<i32, _>("end_line") as usize,
+                    body_source: row
+                        .get::<Option<String>, _>("body_source")
+                        .unwrap_or_default(),
+                    generated_by: row.get("generated_by"),
+                }
+            })
+            .collect();
+
+        Ok(items)
     }
 
     /// Find the FQN of a trait by name using pre-built O(1) lookup index.
@@ -6035,5 +6045,89 @@ mod tests {
         let stale: Vec<String> = existing.difference(&current).cloned().collect();
 
         assert!(stale.is_empty());
+    }
+
+    // =========================================================================
+    // FQN-based crate-origin filtering tests
+    // =========================================================================
+
+    #[test]
+    fn test_is_workspace_fqn_exact_match() {
+        let crate_names = vec![
+            "rustbrain_common".to_string(),
+            "rustbrain_ingestion".to_string(),
+        ];
+        assert!(ParseStage::is_workspace_fqn(
+            "rustbrain_common",
+            &crate_names
+        ));
+        assert!(ParseStage::is_workspace_fqn(
+            "rustbrain_ingestion",
+            &crate_names
+        ));
+    }
+
+    #[test]
+    fn test_is_workspace_fqn_prefix_match() {
+        let crate_names = vec!["rustbrain_common".to_string(), "ingestion".to_string()];
+        assert!(ParseStage::is_workspace_fqn(
+            "rustbrain_common::types::Item",
+            &crate_names
+        ));
+        assert!(ParseStage::is_workspace_fqn(
+            "ingestion::pipeline::stages",
+            &crate_names
+        ));
+    }
+
+    #[test]
+    fn test_is_workspace_fqn_rejects_external() {
+        let crate_names = vec!["rustbrain_common".to_string(), "ingestion".to_string()];
+        assert!(!ParseStage::is_workspace_fqn(
+            "tokio::runtime::Runtime",
+            &crate_names
+        ));
+        assert!(!ParseStage::is_workspace_fqn(
+            "serde::Deserialize",
+            &crate_names
+        ));
+        assert!(!ParseStage::is_workspace_fqn(
+            "std::collections::HashMap",
+            &crate_names
+        ));
+    }
+
+    #[test]
+    fn test_is_workspace_fqn_rejects_partial_prefix() {
+        // "rustbrain_common_extra" should NOT match "rustbrain_common"
+        let crate_names = vec!["rustbrain_common".to_string()];
+        assert!(!ParseStage::is_workspace_fqn(
+            "rustbrain_common_extra::Foo",
+            &crate_names
+        ));
+    }
+
+    #[test]
+    fn test_is_workspace_fqn_empty_crate_names() {
+        assert!(!ParseStage::is_workspace_fqn(
+            "rustbrain_common::types::Item",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_graph_stage_is_workspace_fqn() {
+        let crate_names = vec![
+            "rustbrain_common".to_string(),
+            "rustbrain_ingestion".to_string(),
+        ];
+        assert!(GraphStage::is_workspace_fqn(
+            "rustbrain_common::types::Item",
+            &crate_names
+        ));
+        assert!(!GraphStage::is_workspace_fqn(
+            "tokio::runtime::Runtime",
+            &crate_names
+        ));
     }
 }

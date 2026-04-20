@@ -71,3 +71,6 @@ indicatif = "0.17"
 # Health check HTTP server
 axum = "0.7"
 tower = "0.5"
+
+[dev-dependencies]
+tempfile = "3"

@@ -164,6 +164,7 @@ async fn main() -> Result<()> {
         max_concurrency: args.max_concurrency,
         workspace_id: args.workspace_id.and_then(|s| Uuid::parse_str(&s).ok()),
         workspace_label: args.workspace_label,
+        workspace_crate_names: Vec::new(),
     };
 
     config.validate().context("Invalid configuration")?;
