@@ -17,6 +17,13 @@ async function initWorkspaceSelector() {
                 option.textContent = ws.name || ws.id;
                 selector.appendChild(option);
             });
+
+            const first = workspaces[0];
+            selector.value = first.id;
+            selectedWorkspaceId = first.id;
+            if (typeof setActiveWorkspace === 'function') {
+                setActiveWorkspace(first.id);
+            }
         }
     } catch {
         selector.innerHTML = '<option value="">Global (default)</option>';
@@ -27,6 +34,10 @@ async function initWorkspaceSelector() {
 
 function handleWorkspaceChange(event) {
     const workspaceId = event.target.value;
+
+    if (typeof setActiveWorkspace === 'function') {
+        setActiveWorkspace(workspaceId || null);
+    }
 
     if (!workspaceId) {
         selectedWorkspaceId = null;

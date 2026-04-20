@@ -416,12 +416,20 @@ async function initWorkspaceDropdown() {
     const workspaces = Array.isArray(result) ? result : (result?.workspaces ?? []);
     state.setWorkspaces(workspaces);
 
+    let firstActiveId = null;
     for (const ws of workspaces) {
       if (ws.status === 'archived') continue;
       const opt = document.createElement('option');
       opt.value = ws.id;
       opt.textContent = `${ws.name || ws.id.slice(0, 8)} (${ws.status})`;
       select.appendChild(opt);
+      if (!firstActiveId) firstActiveId = ws.id;
+    }
+
+    if (firstActiveId) {
+      select.value = firstActiveId;
+      apiClient.setWorkspace(firstActiveId);
+      state.setCurrentWorkspaceId(firstActiveId);
     }
   } catch {
   }

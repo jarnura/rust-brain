@@ -190,8 +190,14 @@
         let queryHistory = [];
 
         // Initialize on page load
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
             updateParameterFields();
+            try {
+                const workspaces = await API.listWorkspaces();
+                if (Array.isArray(workspaces) && workspaces.length > 0) {
+                    setActiveWorkspace(workspaces[0].id);
+                }
+            } catch {}
         });
 
         function updateParameterFields() {

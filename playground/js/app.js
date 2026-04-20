@@ -14,18 +14,32 @@ const CONFIG = {
     timeout: 30000
 };
 
+/** @type {string|null} Active workspace ID for multi-tenancy */
+let _activeWorkspaceId = null;
+
+function setActiveWorkspace(id) {
+    _activeWorkspaceId = id || null;
+}
+
+function getActiveWorkspaceId() {
+    return _activeWorkspaceId;
+}
+
 /**
  * Fetch wrapper with error handling
  */
 async function fetchAPI(endpoint, options = {}) {
     const url = endpoint.startsWith('http') ? endpoint : CONFIG.apiBase + endpoint;
-    
-    const defaultOptions = {
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        }
+
+    const headers = {
+        'Content-Type': 'application/json',
+        ...options.headers
     };
+    if (_activeWorkspaceId) {
+        headers['X-Workspace-Id'] = _activeWorkspaceId;
+    }
+
+    const defaultOptions = { headers };
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CONFIG.timeout);
@@ -412,6 +426,8 @@ if (typeof module !== 'undefined' && module.exports) {
         getNestedValue,
         generateId,
         storage,
-        API
+        API,
+        setActiveWorkspace,
+        getActiveWorkspaceId
     };
 }
