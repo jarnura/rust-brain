@@ -40,12 +40,7 @@ impl ApiClient {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         debug!("GET {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(McpError::Http)?;
+        let response = self.client.get(&url).send().await.map_err(McpError::Http)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -169,12 +164,7 @@ impl ApiClient {
         let url = format!("{}/health", self.base_url.trim_end_matches('/'));
         debug!("Health check GET {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(McpError::Http)?;
+        let response = self.client.get(&url).send().await.map_err(McpError::Http)?;
 
         let healthy = response.status().is_success();
         if healthy {
@@ -275,11 +265,14 @@ mod tests {
             transport: crate::config::Transport::Stdio,
             api_base_url: base_url.to_string(),
             http_timeout: 5,
+            #[cfg(feature = "sse")]
+            port: 3001,
             max_search_results: 50,
             default_search_limit: 10,
             opencode_host: "http://localhost:4096".to_string(),
             opencode_auth_user: None,
             opencode_auth_pass: None,
+            workspace_id: None,
         }
     }
 
@@ -330,7 +323,7 @@ mod tests {
 
         let result = client.get::<serde_json::Value>("/notfound").await;
         assert!(result.is_err());
-        
+
         let err = result.unwrap_err();
         assert!(matches!(err, McpError::Api(_)));
         assert!(err.to_string().contains("404"));
@@ -353,7 +346,7 @@ mod tests {
 
         let result = client.get::<serde_json::Value>("/error").await;
         assert!(result.is_err());
-        
+
         let err = result.unwrap_err();
         assert!(matches!(err, McpError::Api(_)));
 
@@ -368,7 +361,9 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"id": 1, "name": "test"}"#)
-            .match_body(mockito::Matcher::JsonString(serde_json::json!({"name": "test"}).to_string()))
+            .match_body(mockito::Matcher::JsonString(
+                serde_json::json!({"name": "test"}).to_string(),
+            ))
             .create_async()
             .await;
 
@@ -387,10 +382,15 @@ mod tests {
         }
 
         let result: CreateResponse = client
-            .post("/create", &CreateRequest { name: "test".to_string() })
+            .post(
+                "/create",
+                &CreateRequest {
+                    name: "test".to_string(),
+                },
+            )
             .await
             .unwrap();
-        
+
         assert_eq!(result.id, 1);
         assert_eq!(result.name, "test");
 
@@ -413,7 +413,7 @@ mod tests {
         let result = client
             .post::<serde_json::Value, serde_json::Value>("/create", &serde_json::json!({}))
             .await;
-        
+
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, McpError::Api(_)));
@@ -462,7 +462,7 @@ mod tests {
         let config = test_config("http://localhost:8088");
         let client = ApiClient::new(&config).unwrap();
         let cloned = client.clone();
-        
+
         // Both should work
         assert_eq!(client.base_url, cloned.base_url);
     }

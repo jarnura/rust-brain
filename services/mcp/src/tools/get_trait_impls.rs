@@ -46,7 +46,8 @@ pub struct TraitImplsResponse {
 /// Execute the get_trait_impls tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: GetTraitImplsRequest) -> Result<String> {
-    let encoded_trait = url::form_urlencoded::byte_serialize(request.trait_name.as_bytes()).collect::<String>();
+    let encoded_trait =
+        url::form_urlencoded::byte_serialize(request.trait_name.as_bytes()).collect::<String>();
     let response: TraitImplsResponse = client
         .get(&format!(
             "/tools/get_trait_impls?trait_name={}&limit={}",
@@ -69,14 +70,8 @@ pub async fn execute(client: &ApiClient, request: GetTraitImplsRequest) -> Resul
     );
 
     for impl_info in &response.implementations {
-        output.push_str(&format!(
-            "- **`{}`**\n",
-            impl_info.type_name
-        ));
-        output.push_str(&format!(
-            "  - FQN: `{}`\n",
-            impl_info.impl_fqn
-        ));
+        output.push_str(&format!("- **`{}`**\n", impl_info.type_name));
+        output.push_str(&format!("  - FQN: `{}`\n", impl_info.impl_fqn));
         output.push_str(&format!(
             "  - Location: `{}:{}`\n\n",
             impl_info.file_path, impl_info.start_line
@@ -118,7 +113,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "get_trait_impls");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -127,11 +122,11 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["trait_name"].is_object());
         assert!(schema["properties"]["limit"].is_object());
-        
+
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("trait_name")));
     }
@@ -140,7 +135,7 @@ mod tests {
     fn test_get_trait_impls_request_deserialization() {
         let json = r#"{"trait_name": "Clone", "limit": 50}"#;
         let request: GetTraitImplsRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.trait_name, "Clone");
         assert_eq!(request.limit, 50);
     }
@@ -149,7 +144,7 @@ mod tests {
     fn test_get_trait_impls_request_default_limit() {
         let json = r#"{"trait_name": "Serialize"}"#;
         let request: GetTraitImplsRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.trait_name, "Serialize");
         assert_eq!(request.limit, 20); // default
     }
@@ -167,9 +162,9 @@ mod tests {
             "file_path": "src/my_struct.rs",
             "start_line": 10
         }"#;
-        
+
         let impl_info: TraitImpl = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(impl_info.impl_fqn, "crate::MyStruct");
         assert_eq!(impl_info.type_name, "MyStruct");
         assert_eq!(impl_info.file_path, "src/my_struct.rs");
@@ -195,9 +190,9 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let response: TraitImplsResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.trait_name, "Clone");
         assert_eq!(response.implementations.len(), 2);
         assert_eq!(response.implementations[0].type_name, "MyStruct");
@@ -210,9 +205,9 @@ mod tests {
             "trait_name": "NonExistentTrait",
             "implementations": []
         }"#;
-        
+
         let response: TraitImplsResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.trait_name, "NonExistentTrait");
         assert!(response.implementations.is_empty());
     }
@@ -225,7 +220,7 @@ mod tests {
             file_path: "src/lib.rs".to_string(),
             start_line: 5,
         };
-        
+
         let json = serde_json::to_string(&impl_info).unwrap();
         assert!(json.contains("\"impl_fqn\":\"crate::MyStruct\""));
         assert!(json.contains("\"start_line\":5"));
@@ -242,7 +237,7 @@ mod tests {
                 start_line: 5,
             }],
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"trait_name\":\"Clone\""));
         assert!(json.contains("\"implementations\""));

@@ -75,7 +75,11 @@ pub async fn execute(client: &ApiClient, request: SearchCodeRequest) -> Result<S
     });
 
     let response: SearchCodeResponse = client
-        .post_with_workspace("/tools/search_semantic", &api_request, request.workspace_id.as_deref())
+        .post_with_workspace(
+            "/tools/search_semantic",
+            &api_request,
+            request.workspace_id.as_deref(),
+        )
         .await?;
 
     if response.results.is_empty() {
@@ -166,7 +170,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "search_code");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -240,9 +244,9 @@ mod tests {
             "snippet": "fn function() {}",
             "docstring": "A function"
         }"#;
-        
+
         let result: SearchResult = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(result.fqn, "crate::module::function");
         assert_eq!(result.name, "function");
         assert_eq!(result.kind, "function");
@@ -265,9 +269,9 @@ mod tests {
             "end_line": 5,
             "score": 0.5
         }"#;
-        
+
         let result: SearchResult = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(result.fqn, "crate::func");
         assert_eq!(result.snippet, None);
         assert_eq!(result.docstring, None);
@@ -290,9 +294,9 @@ mod tests {
             "query": "test",
             "total": 1
         }"#;
-        
+
         let response: SearchCodeResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.results.len(), 1);
         assert_eq!(response.query, "test");
         assert_eq!(response.total, 1);
@@ -305,9 +309,9 @@ mod tests {
             "query": "nonexistent",
             "total": 0
         }"#;
-        
+
         let response: SearchCodeResponse = serde_json::from_str(json).unwrap();
-        
+
         assert!(response.results.is_empty());
         assert_eq!(response.total, 0);
     }
@@ -325,7 +329,7 @@ mod tests {
             snippet: None,
             docstring: None,
         };
-        
+
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"fqn\":\"crate::func\""));
         assert!(json.contains("\"score\":0.9"));

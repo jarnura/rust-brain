@@ -23,8 +23,7 @@ pub struct StatusCheckRequest {
 pub async fn execute(client: &ApiClient, request: StatusCheckRequest) -> Result<String> {
     if let Some(task_id) = &request.task_id {
         // Get specific task
-        let result: serde_json::Value =
-            client.get(&format!("/api/tasks/{}", task_id)).await?;
+        let result: serde_json::Value = client.get(&format!("/api/tasks/{}", task_id)).await?;
         Ok(format!(
             "# Task: {}\n\n- **Phase:** {}\n- **Class:** {}\n- **Agent:** {}\n- **Status:** {}\n- **Retry Count:** {}\n- **Error:** {}\n- **Updated:** {}",
             result["id"].as_str().unwrap_or("?"),

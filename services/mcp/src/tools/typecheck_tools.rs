@@ -52,7 +52,8 @@ pub async fn execute_find_calls_with_type(
     client: &ApiClient,
     request: FindCallsWithTypeRequest,
 ) -> Result<String> {
-    let encoded_type = url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
+    let encoded_type =
+        url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
     let mut url = format!(
         "/tools/find_calls_with_type?type_name={}&limit={}",
         encoded_type,
@@ -60,7 +61,8 @@ pub async fn execute_find_calls_with_type(
     );
 
     if let Some(callee_name) = &request.callee_name {
-        let encoded_callee = url::form_urlencoded::byte_serialize(callee_name.as_bytes()).collect::<String>();
+        let encoded_callee =
+            url::form_urlencoded::byte_serialize(callee_name.as_bytes()).collect::<String>();
         url.push_str(&format!("&callee_name={}", encoded_callee));
     }
 
@@ -103,10 +105,7 @@ pub async fn execute_find_calls_with_type(
                 "- **`{}`** at `{}:{}`\n",
                 call.caller_fqn, call.file_path, call.line_number
             ));
-            output.push_str(&format!(
-                "  - Type args: `{}`\n",
-                type_args
-            ));
+            output.push_str(&format!("  - Type args: `{}`\n", type_args));
             output.push_str(&format!(
                 "  - Monomorphized: {}, Quality: {}\n\n",
                 call.is_monomorphized, call.quality
@@ -185,7 +184,8 @@ pub async fn execute_find_trait_impls_for_type(
     client: &ApiClient,
     request: FindTraitImplsForTypeRequest,
 ) -> Result<String> {
-    let encoded_type = url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
+    let encoded_type =
+        url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
     let response: TraitImplsForTypeResponse = client
         .get(&format!(
             "/tools/find_trait_impls_for_type?type_name={}&limit={}",
@@ -212,13 +212,10 @@ pub async fn execute_find_trait_impls_for_type(
             "- **`{}`** for `{}`\n",
             impl_info.trait_fqn, impl_info.self_type
         ));
-        output.push_str(&format!(
-            "  - Impl FQN: `{}`\n",
-            impl_info.impl_fqn
-        ));
+        output.push_str(&format!("  - Impl FQN: `{}`\n", impl_info.impl_fqn));
         output.push_str(&format!(
             "  - Location: `{}:{}`\n",
-          impl_info.file_path, impl_info.line_number
+            impl_info.file_path, impl_info.line_number
         ));
         if !impl_info.generic_params.is_empty() {
             output.push_str(&format!(
@@ -226,10 +223,7 @@ pub async fn execute_find_trait_impls_for_type(
                 impl_info.generic_params.join(", ")
             ));
         }
-        output.push_str(&format!(
-            "  - Quality: {}\n\n",
-            impl_info.quality
-        ));
+        output.push_str(&format!("  - Quality: {}\n\n", impl_info.quality));
     }
 
     Ok(output)

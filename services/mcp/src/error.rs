@@ -60,10 +60,7 @@ impl McpError {
 
     /// Check if this error is retryable
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            McpError::Http(_) | McpError::Internal(_)
-        )
+        matches!(self, McpError::Http(_) | McpError::Internal(_))
     }
 }
 
@@ -144,7 +141,7 @@ mod tests {
         let json_str = r#"{"invalid": json}"#;
         let result: std::result::Result<serde_json::Value, _> = serde_json::from_str(json_str);
         assert!(result.is_err());
-        
+
         // The error should be convertible to McpError
         let mcp_err: McpError = result.unwrap_err().into();
         assert!(matches!(mcp_err, McpError::Json(_)));

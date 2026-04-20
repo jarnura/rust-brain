@@ -52,8 +52,7 @@ pub async fn execute(client: &ApiClient, request: ContextStoreRequest) -> Result
             let id = request.artifact_id.ok_or_else(|| {
                 McpError::InvalidRequest("'artifact_id' required for get operation".to_string())
             })?;
-            let result: serde_json::Value =
-                client.get(&format!("/api/artifacts/{}", id)).await?;
+            let result: serde_json::Value = client.get(&format!("/api/artifacts/{}", id)).await?;
             Ok(format!(
                 "# Artifact: {}\n\n- **Type:** {}\n- **Producer:** {}\n- **Status:** {}\n- **Task:** {}\n- **Confidence:** {}\n\n## Summary\n\n```json\n{}\n```\n\n## Payload\n\n```json\n{}\n```",
                 result["id"].as_str().unwrap_or("unknown"),
@@ -68,7 +67,9 @@ pub async fn execute(client: &ApiClient, request: ContextStoreRequest) -> Result
         }
         "list_by_task" => {
             let task_id = request.task_id.ok_or_else(|| {
-                McpError::InvalidRequest("'task_id' required for list_by_task operation".to_string())
+                McpError::InvalidRequest(
+                    "'task_id' required for list_by_task operation".to_string(),
+                )
             })?;
             let result: Vec<serde_json::Value> = client
                 .get(&format!(

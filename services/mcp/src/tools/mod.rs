@@ -49,11 +49,7 @@ pub fn all_definitions() -> Vec<Value> {
 
 /// Execute a tool by name
 #[instrument(skip(client), fields(tool = %name))]
-pub async fn execute_tool(
-    client: &ApiClient,
-    name: &str,
-    arguments: Value,
-) -> Result<String> {
+pub async fn execute_tool(client: &ApiClient, name: &str, arguments: Value) -> Result<String> {
     info!("Executing tool: {}", name);
     match name {
         "search_code" => {
@@ -77,7 +73,8 @@ pub async fn execute_tool(
             get_trait_impls::execute(client, request).await
         }
         "find_type_usages" => {
-            let request: find_type_usages::FindTypeUsagesRequest = serde_json::from_value(arguments)?;
+            let request: find_type_usages::FindTypeUsagesRequest =
+                serde_json::from_value(arguments)?;
             find_type_usages::execute(client, request).await
         }
         "get_module_tree" => {
@@ -89,11 +86,13 @@ pub async fn execute_tool(
             query_graph::execute(client, request).await
         }
         "find_calls_with_type" => {
-            let request: typecheck_tools::FindCallsWithTypeRequest = serde_json::from_value(arguments)?;
+            let request: typecheck_tools::FindCallsWithTypeRequest =
+                serde_json::from_value(arguments)?;
             typecheck_tools::execute_find_calls_with_type(client, request).await
         }
         "find_trait_impls_for_type" => {
-            let request: typecheck_tools::FindTraitImplsForTypeRequest = serde_json::from_value(arguments)?;
+            let request: typecheck_tools::FindTraitImplsForTypeRequest =
+                serde_json::from_value(arguments)?;
             typecheck_tools::execute_find_trait_impls_for_type(client, request).await
         }
         "pg_query" => {
@@ -113,11 +112,13 @@ pub async fn execute_tool(
             task_update::execute(client, request).await
         }
         "aggregate_search" => {
-            let request: aggregate_search::AggregateSearchRequest = serde_json::from_value(arguments)?;
+            let request: aggregate_search::AggregateSearchRequest =
+                serde_json::from_value(arguments)?;
             aggregate_search::execute(client, request).await
         }
         "consistency_check" => {
-            let request: consistency_check::ConsistencyCheckRequest = serde_json::from_value(arguments)?;
+            let request: consistency_check::ConsistencyCheckRequest =
+                serde_json::from_value(arguments)?;
             consistency_check::execute(client, request).await
         }
         unknown => {
@@ -143,7 +144,7 @@ mod tests {
     #[test]
     fn test_all_definitions_have_name() {
         let definitions = all_definitions();
-        
+
         for def in &definitions {
             assert!(def.get("name").is_some());
             assert!(!def["name"].as_str().unwrap().is_empty());
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn test_all_definitions_have_description() {
         let definitions = all_definitions();
-        
+
         for def in &definitions {
             assert!(def.get("description").is_some());
             assert!(!def["description"].as_str().unwrap().is_empty());
@@ -163,7 +164,7 @@ mod tests {
     #[test]
     fn test_all_definitions_have_input_schema() {
         let definitions = all_definitions();
-        
+
         for def in &definitions {
             assert!(def.get("inputSchema").is_some());
             assert!(def["inputSchema"].is_object());
@@ -177,7 +178,7 @@ mod tests {
             .iter()
             .map(|d| d["name"].as_str().unwrap())
             .collect();
-        
+
         assert!(names.contains(&"search_code"));
         assert!(names.contains(&"search_docs"));
         assert!(names.contains(&"get_function"));
@@ -199,7 +200,7 @@ mod tests {
     #[test]
     fn test_all_definitions_have_required_fields() {
         let definitions = all_definitions();
-        
+
         for def in &definitions {
             let schema = &def["inputSchema"];
             assert!(schema.get("type").is_some());

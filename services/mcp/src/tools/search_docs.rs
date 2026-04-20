@@ -59,7 +59,11 @@ pub async fn execute(client: &ApiClient, request: SearchDocsRequest) -> Result<S
     });
 
     let response: SearchDocsResponse = client
-        .post_with_workspace("/tools/search_docs", &api_request, request.workspace_id.as_deref())
+        .post_with_workspace(
+            "/tools/search_docs",
+            &api_request,
+            request.workspace_id.as_deref(),
+        )
         .await?;
 
     if response.results.is_empty() {
@@ -188,7 +192,10 @@ mod tests {
         let result: DocResult = serde_json::from_str(json).unwrap();
 
         assert_eq!(result.source_file, "docs/api/authentication.md");
-        assert_eq!(result.content_preview, "Authentication is handled via JWT tokens...");
+        assert_eq!(
+            result.content_preview,
+            "Authentication is handled via JWT tokens..."
+        );
         assert!((result.score - 0.95).abs() < 0.001);
     }
 

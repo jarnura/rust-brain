@@ -47,16 +47,36 @@ impl QueryGraphRequest {
     /// Flat params take precedence over nested ones.
     pub fn merged_parameters(&self) -> HashMap<String, serde_json::Value> {
         let mut params = self.parameters.clone();
-        if let Some(ref v) = self.name { params.insert("name".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.fqn { params.insert("fqn".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.crate_name { params.insert("crate_name".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.label { params.insert("label".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.path { params.insert("path".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.trait_name { params.insert("trait_name".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.type_name { params.insert("type_name".into(), serde_json::json!(v)); }
-        if let Some(ref v) = self.prefix { params.insert("prefix".into(), serde_json::json!(v)); }
-        if let Some(v) = self.limit { params.insert("limit".into(), serde_json::json!(v)); }
-        if let Some(v) = self.depth { params.insert("depth".into(), serde_json::json!(v)); }
+        if let Some(ref v) = self.name {
+            params.insert("name".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.fqn {
+            params.insert("fqn".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.crate_name {
+            params.insert("crate_name".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.label {
+            params.insert("label".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.path {
+            params.insert("path".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.trait_name {
+            params.insert("trait_name".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.type_name {
+            params.insert("type_name".into(), serde_json::json!(v));
+        }
+        if let Some(ref v) = self.prefix {
+            params.insert("prefix".into(), serde_json::json!(v));
+        }
+        if let Some(v) = self.limit {
+            params.insert("limit".into(), serde_json::json!(v));
+        }
+        if let Some(v) = self.depth {
+            params.insert("depth".into(), serde_json::json!(v));
+        }
         params
     }
 }
@@ -77,20 +97,20 @@ pub struct GraphQueryResponse {
 pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<String> {
     let params = request.merged_parameters();
     let response: GraphQueryResponse = client
-        .post("/tools/query_graph", &serde_json::json!({
-            "query_name": request.query_name,
-            "parameters": params,
-        }))
+        .post(
+            "/tools/query_graph",
+            &serde_json::json!({
+                "query_name": request.query_name,
+                "parameters": params,
+            }),
+        )
         .await?;
 
     if response.results.is_empty() {
         return Ok("Query returned no results.".to_string());
     }
 
-    let mut output = format!(
-        "# Graph Query Results ({} rows)\n\n",
-        response.row_count
-    );
+    let mut output = format!("# Graph Query Results ({} rows)\n\n", response.row_count);
 
     output.push_str(&format!("**Query:** `{}`\n\n", response.query));
 
@@ -98,7 +118,7 @@ pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<S
 
     for (i, row) in response.results.iter().enumerate() {
         output.push_str(&format!("### Row {}\n", i + 1));
-        
+
         // Format the JSON value nicely
         match row {
             serde_json::Value::Object(map) => {
@@ -108,7 +128,10 @@ pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<S
                 }
             }
             _ => {
-                output.push_str(&format!("{}\n", serde_json::to_string_pretty(row).unwrap_or_default()));
+                output.push_str(&format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(row).unwrap_or_default()
+                ));
             }
         }
         output.push('\n');
@@ -129,10 +152,7 @@ fn format_value(value: &serde_json::Value) -> String {
             } else if arr.len() <= 5 {
                 format!(
                     "[{}]",
-                    arr.iter()
-                        .map(format_value)
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    arr.iter().map(format_value).collect::<Vec<_>>().join(", ")
                 )
             } else {
                 format!("[{} items]", arr.len())
@@ -249,7 +269,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "query_graph");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -347,9 +367,9 @@ mod tests {
             "query": "MATCH (f:Function) RETURN f.name",
             "row_count": 2
         }"#;
-        
+
         let response: GraphQueryResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.results.len(), 2);
         assert_eq!(response.query, "MATCH (f:Function) RETURN f.name");
         assert_eq!(response.row_count, 2);
@@ -362,9 +382,9 @@ mod tests {
             "query": "MATCH (n:NonExistent) RETURN n",
             "row_count": 0
         }"#;
-        
+
         let response: GraphQueryResponse = serde_json::from_str(json).unwrap();
-        
+
         assert!(response.results.is_empty());
         assert_eq!(response.row_count, 0);
     }
@@ -372,13 +392,11 @@ mod tests {
     #[test]
     fn test_graph_query_response_serialization() {
         let response = GraphQueryResponse {
-            results: vec![
-                serde_json::json!({"name": "func"}),
-            ],
+            results: vec![serde_json::json!({"name": "func"})],
             query: "MATCH (f:Function) RETURN f.name".to_string(),
             row_count: 1,
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"query\":\"MATCH (f:Function) RETURN f.name\""));
         assert!(json.contains("\"row_count\":1"));
@@ -465,9 +483,16 @@ mod tests {
         let request = QueryGraphRequest {
             query_name: "find_functions_by_name".to_string(),
             parameters: params,
-            name: None, fqn: None, crate_name: None, label: None,
-            path: None, trait_name: None, type_name: None, prefix: None,
-            limit: None, depth: None,
+            name: None,
+            fqn: None,
+            crate_name: None,
+            label: None,
+            path: None,
+            trait_name: None,
+            type_name: None,
+            prefix: None,
+            limit: None,
+            depth: None,
         };
 
         assert_eq!(request.query_name, "find_functions_by_name");

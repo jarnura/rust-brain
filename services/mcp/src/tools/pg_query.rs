@@ -54,7 +54,10 @@ pub async fn execute(client: &ApiClient, request: PgQueryRequest) -> Result<Stri
         if let Some(obj) = first.as_object() {
             obj.keys().cloned().collect()
         } else {
-            return Ok(format!("{} rows returned (non-object format)", response.row_count));
+            return Ok(format!(
+                "{} rows returned (non-object format)",
+                response.row_count
+            ));
         }
     } else {
         return Ok("No rows returned.".to_string());
@@ -67,7 +70,13 @@ pub async fn execute(client: &ApiClient, request: PgQueryRequest) -> Result<Stri
 
     // Separator
     output.push_str("| ");
-    output.push_str(&columns.iter().map(|_| "---").collect::<Vec<_>>().join(" | "));
+    output.push_str(
+        &columns
+            .iter()
+            .map(|_| "---")
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
     output.push_str(" |\n");
 
     // Data rows (max 20)

@@ -70,16 +70,13 @@ pub struct FunctionDetail {
 /// Execute the get_function tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: GetFunctionRequest) -> Result<String> {
-    let encoded_fqn = url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
+    let encoded_fqn =
+        url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
     let response: FunctionDetail = client
         .get(&format!("/tools/get_function?fqn={}", encoded_fqn))
         .await?;
 
-    let mut output = format!(
-        "# {} `{}`\n\n",
-        response.kind.to_uppercase(),
-        response.fqn
-    );
+    let mut output = format!("# {} `{}`\n\n", response.kind.to_uppercase(), response.fqn);
 
     // Basic info
     output.push_str(&format!(
@@ -106,19 +103,13 @@ pub async fn execute(client: &ApiClient, request: GetFunctionRequest) -> Result<
     // Documentation
     if let Some(ref docstring) = response.docstring {
         if !docstring.is_empty() {
-            output.push_str(&format!(
-                "\n## Documentation\n\n{}\n",
-                docstring
-            ));
+            output.push_str(&format!("\n## Documentation\n\n{}\n", docstring));
         }
     }
 
     // Callers
     if !response.callers.is_empty() {
-        output.push_str(&format!(
-            "\n## Callers ({})\n\n",
-            response.callers.len()
-        ));
+        output.push_str(&format!("\n## Callers ({})\n\n", response.callers.len()));
         for caller in &response.callers {
             output.push_str(&format!(
                 "- `{}` at `{}:{}`\n",
@@ -129,10 +120,7 @@ pub async fn execute(client: &ApiClient, request: GetFunctionRequest) -> Result<
 
     // Callees
     if !response.callees.is_empty() {
-        output.push_str(&format!(
-            "\n## Callees ({})\n\n",
-            response.callees.len()
-        ));
+        output.push_str(&format!("\n## Callees ({})\n\n", response.callees.len()));
         for callee in &response.callees {
             output.push_str(&format!("- `{}`\n", callee.fqn));
         }
@@ -166,7 +154,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "get_function");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -175,10 +163,10 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["fqn"].is_object());
-        
+
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("fqn")));
     }
@@ -187,7 +175,7 @@ mod tests {
     fn test_get_function_request_deserialization() {
         let json = r#"{"fqn": "crate::module::function"}"#;
         let request: GetFunctionRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.fqn, "crate::module::function");
     }
 
@@ -199,9 +187,9 @@ mod tests {
             "file_path": "src/caller.rs",
             "line": 42
         }"#;
-        
+
         let caller: CallerInfo = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(caller.fqn, "crate::caller::func");
         assert_eq!(caller.name, "func");
         assert_eq!(caller.file_path, "src/caller.rs");
@@ -214,9 +202,9 @@ mod tests {
             "fqn": "crate::callee::func",
             "name": "func"
         }"#;
-        
+
         let callee: CalleeInfo = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(callee.fqn, "crate::callee::func");
         assert_eq!(callee.name, "func");
     }
@@ -238,14 +226,17 @@ mod tests {
             "callers": [],
             "callees": []
         }"#;
-        
+
         let detail: FunctionDetail = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(detail.fqn, "crate::module::function");
         assert_eq!(detail.name, "function");
         assert_eq!(detail.kind, "function");
         assert_eq!(detail.visibility, Some("pub".to_string()));
-        assert_eq!(detail.signature, Some("pub fn function(x: i32) -> String".to_string()));
+        assert_eq!(
+            detail.signature,
+            Some("pub fn function(x: i32) -> String".to_string())
+        );
         assert_eq!(detail.docstring, Some("A function".to_string()));
         assert_eq!(detail.file_path, "src/module.rs");
         assert_eq!(detail.start_line, 10);
@@ -280,12 +271,12 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let detail: FunctionDetail = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(detail.callers.len(), 1);
         assert_eq!(detail.callers[0].fqn, "crate::other::caller");
-        
+
         assert_eq!(detail.callees.len(), 1);
         assert_eq!(detail.callees[0].fqn, "crate::util::helper");
     }
@@ -302,9 +293,9 @@ mod tests {
             "callers": [],
             "callees": []
         }"#;
-        
+
         let detail: FunctionDetail = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(detail.visibility, None);
         assert_eq!(detail.signature, None);
         assert_eq!(detail.docstring, None);
@@ -329,7 +320,7 @@ mod tests {
             callers: vec![],
             callees: vec![],
         };
-        
+
         let json = serde_json::to_string(&detail).unwrap();
         assert!(json.contains("\"fqn\":\"crate::func\""));
         assert!(json.contains("\"kind\":\"function\""));
@@ -343,7 +334,7 @@ mod tests {
             file_path: "src/lib.rs".to_string(),
             line: 10,
         };
-        
+
         let json = serde_json::to_string(&caller).unwrap();
         assert!(json.contains("\"fqn\":\"crate::caller\""));
         assert!(json.contains("\"line\":10"));
@@ -355,7 +346,7 @@ mod tests {
             fqn: "crate::callee".to_string(),
             name: "callee".to_string(),
         };
-        
+
         let json = serde_json::to_string(&callee).unwrap();
         assert!(json.contains("\"fqn\":\"crate::callee\""));
         assert!(json.contains("\"name\":\"callee\""));

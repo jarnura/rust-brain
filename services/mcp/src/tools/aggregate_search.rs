@@ -61,14 +61,15 @@ pub async fn execute(client: &ApiClient, request: AggregateSearchRequest) -> Res
     };
 
     let response: AggregateSearchResponse = client
-        .post_with_workspace("/tools/aggregate_search", &api_request, request.workspace_id.as_deref())
+        .post_with_workspace(
+            "/tools/aggregate_search",
+            &api_request,
+            request.workspace_id.as_deref(),
+        )
         .await?;
 
     if response.results.is_empty() {
-        return Ok(format!(
-            "No results found for query: \"{}\"",
-            request.query
-        ));
+        return Ok(format!("No results found for query: \"{}\"", request.query));
     }
 
     let mut output = format!(
@@ -100,9 +101,9 @@ pub async fn execute(client: &ApiClient, request: AggregateSearchRequest) -> Res
         }
         if let Some(callers) = &result.callers {
             if !callers.is_empty() {
-                let caller_names: Vec<&str> = callers.iter()
-                    .filter_map(|c| c.get("fqn").and_then(|v| v.as_str())
-                        .or_else(|| c.as_str()))
+                let caller_names: Vec<&str> = callers
+                    .iter()
+                    .filter_map(|c| c.get("fqn").and_then(|v| v.as_str()).or_else(|| c.as_str()))
                     .collect();
                 if !caller_names.is_empty() {
                     output.push_str(&format!("\n**Callers:** {}\n", caller_names.join(", ")));
@@ -111,9 +112,9 @@ pub async fn execute(client: &ApiClient, request: AggregateSearchRequest) -> Res
         }
         if let Some(callees) = &result.callees {
             if !callees.is_empty() {
-                let callee_names: Vec<&str> = callees.iter()
-                    .filter_map(|c| c.get("fqn").and_then(|v| v.as_str())
-                        .or_else(|| c.as_str()))
+                let callee_names: Vec<&str> = callees
+                    .iter()
+                    .filter_map(|c| c.get("fqn").and_then(|v| v.as_str()).or_else(|| c.as_str()))
                     .collect();
                 if !callee_names.is_empty() {
                     output.push_str(&format!("**Callees:** {}\n", callee_names.join(", ")));

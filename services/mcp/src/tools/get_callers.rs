@@ -51,13 +51,13 @@ pub struct CallersResponse {
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: GetCallersRequest) -> Result<String> {
     let depth = request.depth.min(5).max(1);
-    let encoded_fqn = url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
-    
+    let encoded_fqn =
+        url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
+
     let response: CallersResponse = client
         .get(&format!(
             "/tools/get_callers?fqn={}&depth={}",
-            encoded_fqn,
-            depth
+            encoded_fqn, depth
         ))
         .await?;
 
@@ -77,11 +77,7 @@ pub async fn execute(client: &ApiClient, request: GetCallersRequest) -> Result<S
     let max_depth = response.callers.iter().map(|c| c.depth).max().unwrap_or(1);
 
     for d in 1..=max_depth {
-        let callers_at_depth: Vec<_> = response
-            .callers
-            .iter()
-            .filter(|c| c.depth == d)
-            .collect();
+        let callers_at_depth: Vec<_> = response.callers.iter().filter(|c| c.depth == d).collect();
 
         if !callers_at_depth.is_empty() {
             output.push_str(&format!("## Depth {} ({})\n\n", d, callers_at_depth.len()));
@@ -135,7 +131,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "get_callers");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -144,11 +140,11 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["fqn"].is_object());
         assert!(schema["properties"]["depth"].is_object());
-        
+
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("fqn")));
     }
@@ -157,7 +153,7 @@ mod tests {
     fn test_get_callers_request_deserialization() {
         let json = r#"{"fqn": "crate::module::function", "depth": 3}"#;
         let request: GetCallersRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.fqn, "crate::module::function");
         assert_eq!(request.depth, 3);
     }
@@ -166,7 +162,7 @@ mod tests {
     fn test_get_callers_request_default_depth() {
         let json = r#"{"fqn": "crate::module::function"}"#;
         let request: GetCallersRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.fqn, "crate::module::function");
         assert_eq!(request.depth, 1); // default
     }
@@ -185,9 +181,9 @@ mod tests {
             "line": 42,
             "depth": 1
         }"#;
-        
+
         let node: CallerNode = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(node.fqn, "crate::caller::func");
         assert_eq!(node.name, "func");
         assert_eq!(node.file_path, "src/caller.rs");
@@ -217,9 +213,9 @@ mod tests {
             ],
             "depth": 2
         }"#;
-        
+
         let response: CallersResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.fqn, "crate::module::function");
         assert_eq!(response.callers.len(), 2);
         assert_eq!(response.depth, 2);
@@ -232,9 +228,9 @@ mod tests {
             "callers": [],
             "depth": 1
         }"#;
-        
+
         let response: CallersResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.fqn, "crate::module::function");
         assert!(response.callers.is_empty());
     }
@@ -248,7 +244,7 @@ mod tests {
             line: 10,
             depth: 1,
         };
-        
+
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("\"fqn\":\"crate::caller\""));
         assert!(json.contains("\"depth\":1"));
@@ -267,7 +263,7 @@ mod tests {
             }],
             depth: 1,
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"fqn\":\"crate::func\""));
         assert!(json.contains("\"depth\":1"));

@@ -50,7 +50,8 @@ pub struct ModuleTreeResponse {
 /// Execute the get_module_tree tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: GetModuleTreeRequest) -> Result<String> {
-    let encoded_crate = url::form_urlencoded::byte_serialize(request.crate_name.as_bytes()).collect::<String>();
+    let encoded_crate =
+        url::form_urlencoded::byte_serialize(request.crate_name.as_bytes()).collect::<String>();
     let response: ModuleTreeResponse = client
         .get(&format!(
             "/tools/get_module_tree?crate_name={}",
@@ -62,7 +63,7 @@ pub async fn execute(client: &ApiClient, request: GetModuleTreeRequest) -> Resul
 
     fn render_module(node: &ModuleNode, output: &mut String, depth: usize) {
         let indent = "  ".repeat(depth);
-        
+
         // Module header
         output.push_str(&format!(
             "{}## `{}`\n{}Path: `{}`\n\n",
@@ -72,7 +73,7 @@ pub async fn execute(client: &ApiClient, request: GetModuleTreeRequest) -> Resul
         // Items in this module
         if !node.items.is_empty() {
             output.push_str(&format!("{}Items:\n", indent));
-            
+
             // Group items by kind
             let mut by_kind: std::collections::BTreeMap<String, Vec<&ModuleItem>> =
                 std::collections::BTreeMap::new();
@@ -87,10 +88,7 @@ pub async fn execute(client: &ApiClient, request: GetModuleTreeRequest) -> Resul
                         "public" | "pub" => "+",
                         _ => "-",
                     };
-                    output.push_str(&format!(
-                        "{}    {} `{}`\n",
-                        indent, vis_marker, item.name
-                    ));
+                    output.push_str(&format!("{}    {} `{}`\n", indent, vis_marker, item.name));
                 }
             }
             output.push('\n');
@@ -153,7 +151,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "get_module_tree");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -162,10 +160,10 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["crate_name"].is_object());
-        
+
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("crate_name")));
     }
@@ -174,7 +172,7 @@ mod tests {
     fn test_get_module_tree_request_deserialization() {
         let json = r#"{"crate_name": "my_crate"}"#;
         let request: GetModuleTreeRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.crate_name, "my_crate");
     }
 
@@ -185,9 +183,9 @@ mod tests {
             "kind": "function",
             "visibility": "pub"
         }"#;
-        
+
         let item: ModuleItem = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(item.name, "my_function");
         assert_eq!(item.kind, "function");
         assert_eq!(item.visibility, "pub");
@@ -200,7 +198,7 @@ mod tests {
             kind: "function".to_string(),
             visibility: "pub".to_string(),
         };
-        
+
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"name\":\"func\""));
         assert!(json.contains("\"kind\":\"function\""));
@@ -221,9 +219,9 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let node: ModuleNode = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(node.name, "models");
         assert_eq!(node.path, "crate::models");
         assert!(node.children.is_empty());
@@ -246,9 +244,9 @@ mod tests {
             ],
             "items": []
         }"#;
-        
+
         let node: ModuleNode = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(node.children.len(), 1);
         assert_eq!(node.children[0].name, "models");
     }
@@ -264,9 +262,9 @@ mod tests {
                 "items": []
             }
         }"#;
-        
+
         let response: ModuleTreeResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.crate_name, "my_crate");
         assert_eq!(response.root.name, "crate");
     }
@@ -283,7 +281,7 @@ mod tests {
                 visibility: "pub".to_string(),
             }],
         };
-        
+
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("\"name\":\"models\""));
         assert!(json.contains("\"path\":\"crate::models\""));
@@ -301,7 +299,7 @@ mod tests {
                 items: vec![],
             },
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"crate_name\":\"my_crate\""));
         assert!(json.contains("\"root\""));
@@ -314,7 +312,7 @@ mod tests {
             kind: "function".to_string(),
             visibility: "pub".to_string(),
         };
-        
+
         let cloned = item.clone();
         assert_eq!(item.name, cloned.name);
         assert_eq!(item.kind, cloned.kind);

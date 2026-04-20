@@ -37,7 +37,9 @@ pub async fn execute(client: &ApiClient, request: ConsistencyCheckRequest) -> Re
     let crate_name = result["crate_name"].as_str().unwrap_or("unknown");
     let status = result["status"].as_str().unwrap_or("unknown");
     let counts = &result["store_counts"];
-    let recommendation = result["recommendation"].as_str().unwrap_or("No recommendation");
+    let recommendation = result["recommendation"]
+        .as_str()
+        .unwrap_or("No recommendation");
 
     let mut output = format!(
         "# Consistency Report: {}\n\n**Status:** {}\n\n",
@@ -83,20 +85,36 @@ pub async fn execute(client: &ApiClient, request: ConsistencyCheckRequest) -> Re
             .map(|a| a.len())
             .unwrap_or(0);
 
-        if in_pg_not_neo4j > 0 || in_pg_not_qdrant > 0 || in_neo4j_not_pg > 0 || in_qdrant_not_pg > 0 {
+        if in_pg_not_neo4j > 0
+            || in_pg_not_qdrant > 0
+            || in_neo4j_not_pg > 0
+            || in_qdrant_not_pg > 0
+        {
             output.push_str("| Discrepancy Type | Count |\n");
             output.push_str("| --- | --- |\n");
             if in_pg_not_neo4j > 0 {
-                output.push_str(&format!("| In Postgres, not Neo4j | {} |\n", in_pg_not_neo4j));
+                output.push_str(&format!(
+                    "| In Postgres, not Neo4j | {} |\n",
+                    in_pg_not_neo4j
+                ));
             }
             if in_pg_not_qdrant > 0 {
-                output.push_str(&format!("| In Postgres, not Qdrant | {} |\n", in_pg_not_qdrant));
+                output.push_str(&format!(
+                    "| In Postgres, not Qdrant | {} |\n",
+                    in_pg_not_qdrant
+                ));
             }
             if in_neo4j_not_pg > 0 {
-                output.push_str(&format!("| In Neo4j, not Postgres | {} |\n", in_neo4j_not_pg));
+                output.push_str(&format!(
+                    "| In Neo4j, not Postgres | {} |\n",
+                    in_neo4j_not_pg
+                ));
             }
             if in_qdrant_not_pg > 0 {
-                output.push_str(&format!("| In Qdrant, not Postgres | {} |\n", in_qdrant_not_pg));
+                output.push_str(&format!(
+                    "| In Qdrant, not Postgres | {} |\n",
+                    in_qdrant_not_pg
+                ));
             }
         } else {
             output.push_str("No discrepancies found.\n");

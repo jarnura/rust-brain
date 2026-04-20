@@ -57,7 +57,10 @@ impl std::str::FromStr for Transport {
 
 /// MCP Server configuration
 #[derive(Debug, Clone, Parser)]
-#[command(name = "rustbrain-mcp", about = "MCP server for rust-brain code intelligence")]
+#[command(
+    name = "rustbrain-mcp",
+    about = "MCP server for rust-brain code intelligence"
+)]
 pub struct Config {
     /// Transport mode (stdio or sse)
     #[arg(long, env = "MCP_TRANSPORT", default_value = "stdio")]
@@ -214,7 +217,10 @@ mod tests {
     fn test_config_api_url_custom_base() {
         let mut config = Config::default();
         config.api_base_url = "https://api.example.com/v1".to_string();
-        assert_eq!(config.api_url("/search"), "https://api.example.com/v1/search");
+        assert_eq!(
+            config.api_url("/search"),
+            "https://api.example.com/v1/search"
+        );
     }
 
     #[test]

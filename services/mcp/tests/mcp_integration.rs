@@ -282,7 +282,9 @@ async fn test_mcp_initialize_and_list_tools() {
                 }
             }
         }
-        if init_ok { break; }
+        if init_ok {
+            break;
+        }
     }
     assert!(init_ok, "initialize response not received");
 
@@ -323,16 +325,26 @@ async fn test_mcp_initialize_and_list_tools() {
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(v) = serde_json::from_str::<Value>(data) {
                     if v["id"] == 2 {
-                        let tools = v["result"]["tools"].as_array().expect("tools should be array");
+                        let tools = v["result"]["tools"]
+                            .as_array()
+                            .expect("tools should be array");
                         assert_eq!(tools.len(), 14, "expected 14 tools, got {}", tools.len());
-                        let names: Vec<&str> = tools.iter()
-                            .filter_map(|t| t["name"].as_str())
-                            .collect();
+                        let names: Vec<&str> =
+                            tools.iter().filter_map(|t| t["name"].as_str()).collect();
                         for expected in &[
-                            "search_code", "get_function", "get_callers", "get_trait_impls",
-                            "find_type_usages", "get_module_tree", "query_graph",
-                            "find_calls_with_type", "find_trait_impls_for_type",
-                            "pg_query", "context_store", "status_check", "task_update",
+                            "search_code",
+                            "get_function",
+                            "get_callers",
+                            "get_trait_impls",
+                            "find_type_usages",
+                            "get_module_tree",
+                            "query_graph",
+                            "find_calls_with_type",
+                            "find_trait_impls_for_type",
+                            "pg_query",
+                            "context_store",
+                            "status_check",
+                            "task_update",
                             "aggregate_search",
                         ] {
                             assert!(
@@ -345,7 +357,9 @@ async fn test_mcp_initialize_and_list_tools() {
                 }
             }
         }
-        if tools_ok { break; }
+        if tools_ok {
+            break;
+        }
     }
     assert!(tools_ok, "tools/list response not received or malformed");
 }
@@ -405,7 +419,11 @@ async fn test_mcp_tool_find_type_usages() {
 #[tokio::test]
 #[ignore]
 async fn test_mcp_tool_get_module_tree() {
-    let result = invoke_tool("get_module_tree", json!({"crate_name": "rustbrain_ingestion"})).await;
+    let result = invoke_tool(
+        "get_module_tree",
+        json!({"crate_name": "rustbrain_ingestion"}),
+    )
+    .await;
     assert!(result.is_object());
 }
 
@@ -431,11 +449,7 @@ async fn test_mcp_tool_query_graph_read_only() {
 #[tokio::test]
 #[ignore]
 async fn test_mcp_tool_query_graph_rejects_write() {
-    let result = invoke_tool(
-        "query_graph",
-        json!({"cypher": "CREATE (n:Evil) RETURN n"}),
-    )
-    .await;
+    let result = invoke_tool("query_graph", json!({"cypher": "CREATE (n:Evil) RETURN n"})).await;
     // MCP tools surface errors as result.isError=true with content text,
     // or as a JSON-RPC error object. Either is acceptable.
     if !result.is_null() {
@@ -490,7 +504,9 @@ async fn test_mcp_tool_pg_query_rejects_write() {
     if !result.is_null() && result["result"].is_object() {
         let content = result["result"]["content"].to_string();
         assert!(
-            content.contains("not allowed") || content.contains("Mutating") || result["error"].is_object(),
+            content.contains("not allowed")
+                || content.contains("Mutating")
+                || result["error"].is_object(),
             "INSERT should be rejected: {}",
             content
         );
@@ -517,7 +533,10 @@ async fn test_mcp_tool_status_check() {
     // status_check should return service health info
     if result["result"].is_object() {
         let content = result["result"]["content"].to_string();
-        assert!(!content.is_empty(), "status_check should return non-empty content");
+        assert!(
+            !content.is_empty(),
+            "status_check should return non-empty content"
+        );
     }
 }
 

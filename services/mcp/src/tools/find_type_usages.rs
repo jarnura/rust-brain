@@ -48,7 +48,8 @@ pub struct UsagesResponse {
 /// Execute the find_type_usages tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: FindTypeUsagesRequest) -> Result<String> {
-    let encoded_type = url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
+    let encoded_type =
+        url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
     let response: UsagesResponse = client
         .get(&format!(
             "/tools/find_usages_of_type?type_name={}&limit={}",
@@ -75,10 +76,7 @@ pub async fn execute(client: &ApiClient, request: FindTypeUsagesRequest) -> Resu
         std::collections::BTreeMap::new();
 
     for usage in &response.usages {
-        by_kind
-            .entry(usage.kind.clone())
-            .or_default()
-            .push(usage);
+        by_kind.entry(usage.kind.clone()).or_default().push(usage);
     }
 
     for (kind, usages) in by_kind {
@@ -127,7 +125,7 @@ mod tests {
     #[test]
     fn test_definition_has_required_fields() {
         let def = definition();
-        
+
         assert_eq!(def["name"], "find_type_usages");
         assert!(!def["description"].as_str().unwrap().is_empty());
         assert!(def["inputSchema"].is_object());
@@ -136,11 +134,11 @@ mod tests {
     #[test]
     fn test_definition_schema_properties() {
         let schema = &definition()["inputSchema"];
-        
+
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["type_name"].is_object());
         assert!(schema["properties"]["limit"].is_object());
-        
+
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&serde_json::json!("type_name")));
     }
@@ -149,7 +147,7 @@ mod tests {
     fn test_find_type_usages_request_deserialization() {
         let json = r#"{"type_name": "User", "limit": 30}"#;
         let request: FindTypeUsagesRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.type_name, "User");
         assert_eq!(request.limit, 30);
     }
@@ -158,7 +156,7 @@ mod tests {
     fn test_find_type_usages_request_default_limit() {
         let json = r#"{"type_name": "HttpRequest"}"#;
         let request: FindTypeUsagesRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.type_name, "HttpRequest");
         assert_eq!(request.limit, 20); // default
     }
@@ -177,9 +175,9 @@ mod tests {
             "file_path": "src/module.rs",
             "line": 42
         }"#;
-        
+
         let usage: TypeUsage = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(usage.fqn, "crate::module::function");
         assert_eq!(usage.name, "function");
         assert_eq!(usage.kind, "function");
@@ -208,9 +206,9 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let response: UsagesResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.type_name, "User");
         assert_eq!(response.usages.len(), 2);
         assert_eq!(response.usages[0].kind, "function");
@@ -223,9 +221,9 @@ mod tests {
             "type_name": "NonExistentType",
             "usages": []
         }"#;
-        
+
         let response: UsagesResponse = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(response.type_name, "NonExistentType");
         assert!(response.usages.is_empty());
     }
@@ -239,7 +237,7 @@ mod tests {
             file_path: "src/lib.rs".to_string(),
             line: 10,
         };
-        
+
         let json = serde_json::to_string(&usage).unwrap();
         assert!(json.contains("\"fqn\":\"crate::func\""));
         assert!(json.contains("\"kind\":\"function\""));
@@ -258,7 +256,7 @@ mod tests {
                 line: 5,
             }],
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type_name\":\"User\""));
         assert!(json.contains("\"usages\""));

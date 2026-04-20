@@ -31,7 +31,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Parse configuration
     let config = Config::parse_args();
-    info!("Starting rust-brain MCP server v{}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting rust-brain MCP server v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     info!("Transport: {:?}", config.transport);
     info!("API URL: {}", config.api_base_url);
     info!("OpenCode URL: {}", config.opencode_host);

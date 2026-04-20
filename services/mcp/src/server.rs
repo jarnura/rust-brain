@@ -320,16 +320,13 @@ impl McpServer {
         &mut self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let _request: Option<InitializeRequest> = params
-            .map(|p| serde_json::from_value(p))
-            .transpose()?;
+        let _request: Option<InitializeRequest> =
+            params.map(|p| serde_json::from_value(p)).transpose()?;
 
         let result = InitializeResult {
             protocolVersion: PROTOCOL_VERSION.to_string(),
             capabilities: ServerCapabilities {
-                tools: ToolsCapability {
-                    listChanged: None,
-                },
+                tools: ToolsCapability { listChanged: None },
             },
             serverInfo: Implementation {
                 name: SERVER_NAME.to_string(),
@@ -377,7 +374,7 @@ impl McpServer {
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let request: ToolCallRequest = serde_json::from_value(
-            params.ok_or_else(|| McpError::InvalidRequest("Missing params".to_string()))?
+            params.ok_or_else(|| McpError::InvalidRequest("Missing params".to_string()))?,
         )?;
 
         let arguments = if request.arguments.is_null() {
@@ -404,7 +401,9 @@ impl McpServer {
                     // Http errors may contain URLs; IO errors may contain file paths.
                     _ => "Internal error".to_string(),
                 };
-                vec![Content::Text { text: client_message }]
+                vec![Content::Text {
+                    text: client_message,
+                }]
             }
         };
 
@@ -445,6 +444,7 @@ mod tests {
             opencode_host: "http://opencode:4096".to_string(),
             opencode_auth_user: None,
             opencode_auth_pass: None,
+            workspace_id: None,
         }
     }
 
@@ -458,7 +458,7 @@ mod tests {
     fn test_parse_valid_jsonrpc_request() {
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": null}"#;
         let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.jsonrpc, "2.0");
         assert_eq!(request.id, Some(Id::Number(1)));
         assert_eq!(request.method, "ping");
@@ -468,7 +468,7 @@ mod tests {
     fn test_parse_request_with_string_id() {
         let json = r#"{"jsonrpc": "2.0", "id": "abc-123", "method": "test"}"#;
         let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.id, Some(Id::String("abc-123".to_string())));
     }
 
@@ -476,7 +476,7 @@ mod tests {
     fn test_parse_request_without_params() {
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "initialize"}"#;
         let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.params, None);
     }
 
@@ -484,7 +484,7 @@ mod tests {
     fn test_parse_request_with_object_params() {
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "test", "params": {"key": "value"}}"#;
         let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        
+
         assert!(request.params.is_some());
         let params = request.params.unwrap();
         assert_eq!(params["key"], "value");
@@ -495,7 +495,7 @@ mod tests {
         // Notification - no id
         let json = r#"{"jsonrpc": "2.0", "method": "notify"}"#;
         let request: JsonRpcRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.id, None);
     }
 
@@ -509,7 +509,7 @@ mod tests {
             result: Some(serde_json::json!({"status": "ok"})),
             error: None,
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"id\":1"));
@@ -529,7 +529,7 @@ mod tests {
                 data: None,
             }),
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"error\""));
         assert!(json.contains("\"code\":-32600"));
@@ -544,7 +544,7 @@ mod tests {
             message: "Invalid params".to_string(),
             data: Some(serde_json::json!({"field": "query"})),
         };
-        
+
         let json = serde_json::to_string(&error).unwrap();
         assert!(json.contains("\"data\""));
         assert!(json.contains("\"field\":\"query\""));
@@ -555,7 +555,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_initialize() {
         let mut server = create_server();
-        
+
         let params = serde_json::json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
@@ -564,10 +564,10 @@ mod tests {
                 "version": "1.0.0"
             }
         });
-        
+
         let result = server.handle_initialize(Some(params)).await.unwrap();
         let init_result: InitializeResult = serde_json::from_value(result).unwrap();
-        
+
         assert_eq!(init_result.protocolVersion, PROTOCOL_VERSION);
         assert_eq!(init_result.serverInfo.name, SERVER_NAME);
         assert!(init_result.instructions.is_some());
@@ -576,10 +576,10 @@ mod tests {
     #[tokio::test]
     async fn test_handle_initialize_minimal() {
         let mut server = create_server();
-        
+
         let result = server.handle_initialize(None).await.unwrap();
         let init_result: InitializeResult = serde_json::from_value(result).unwrap();
-        
+
         assert_eq!(init_result.protocolVersion, PROTOCOL_VERSION);
     }
 
@@ -588,17 +588,15 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tools_list() {
         let server = create_server();
-        
+
         let result = server.handle_tools_list().await.unwrap();
         let tools_result: ToolsListResult = serde_json::from_value(result).unwrap();
-        
-        // Should have all 14 tools (9 original + 5 agent infrastructure)
-        assert_eq!(tools_result.tools.len(), 14);
-        
-        let tool_names: Vec<&str> = tools_result.tools.iter()
-            .map(|t| t.name.as_str())
-            .collect();
-        
+
+        // Should have all 16 tools (9 original + 5 agent infrastructure + 2 search infra)
+        assert_eq!(tools_result.tools.len(), 16);
+
+        let tool_names: Vec<&str> = tools_result.tools.iter().map(|t| t.name.as_str()).collect();
+
         assert!(tool_names.contains(&"search_code"));
         assert!(tool_names.contains(&"get_function"));
         assert!(tool_names.contains(&"get_callers"));
@@ -611,10 +609,10 @@ mod tests {
     #[tokio::test]
     async fn test_tool_definitions_have_required_fields() {
         let server = create_server();
-        
+
         let result = server.handle_tools_list().await.unwrap();
         let tools_result: ToolsListResult = serde_json::from_value(result).unwrap();
-        
+
         for tool in &tools_result.tools {
             assert!(!tool.name.is_empty());
             assert!(!tool.description.is_empty());
@@ -627,14 +625,14 @@ mod tests {
     #[test]
     fn test_error_response_creation() {
         let server = create_server();
-        
+
         let response = server.error_response(Some(Id::Number(1)), -32601, "Method not found");
-        
+
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.id, Some(Id::Number(1)));
         assert!(response.error.is_some());
         assert!(response.result.is_none());
-        
+
         let error = response.error.unwrap();
         assert_eq!(error.code, -32601);
         assert_eq!(error.message, "Method not found");
@@ -645,10 +643,10 @@ mod tests {
     #[tokio::test]
     async fn test_handle_invalid_json() {
         let mut server = create_server();
-        
+
         let result = server.handle_message("not valid json").await.unwrap();
         assert!(result.is_some());
-        
+
         let response = result.unwrap();
         assert!(response.error.is_some());
         let error = response.error.unwrap();
@@ -658,10 +656,10 @@ mod tests {
     #[tokio::test]
     async fn test_handle_invalid_jsonrpc_version() {
         let mut server = create_server();
-        
+
         let json = r#"{"jsonrpc": "1.0", "id": 1, "method": "test"}"#;
         let result = server.handle_message(json).await.unwrap();
-        
+
         let response = result.unwrap();
         assert!(response.error.is_some());
         let error = response.error.unwrap();
@@ -672,10 +670,10 @@ mod tests {
     async fn test_handle_unknown_method() {
         let mut server = create_server();
         server.initialized = true;
-        
+
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "unknown_method"}"#;
         let result = server.handle_message(json).await.unwrap();
-        
+
         let response = result.unwrap();
         assert!(response.error.is_some());
         let error = response.error.unwrap();
@@ -686,10 +684,10 @@ mod tests {
     async fn test_handle_ping() {
         let mut server = create_server();
         server.initialized = true;
-        
+
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "ping"}"#;
         let result = server.handle_message(json).await.unwrap();
-        
+
         let response = result.unwrap();
         assert!(response.result.is_some());
         assert!(response.error.is_none());
@@ -699,10 +697,10 @@ mod tests {
     async fn test_tools_list_before_initialized() {
         let mut server = create_server();
         // Don't set initialized to true
-        
+
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}"#;
         let result = server.handle_message(json).await.unwrap();
-        
+
         let response = result.unwrap();
         assert!(response.error.is_some());
         let error = response.error.unwrap();
@@ -713,10 +711,10 @@ mod tests {
     async fn test_tools_call_before_initialized() {
         let mut server = create_server();
         // Don't set initialized to true
-        
+
         let json = r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_code", "arguments": {}}}"#;
         let result = server.handle_message(json).await.unwrap();
-        
+
         let response = result.unwrap();
         assert!(response.error.is_some());
         let error = response.error.unwrap();
@@ -727,10 +725,10 @@ mod tests {
     async fn test_initialized_notification() {
         let mut server = create_server();
         server.initialized = false;
-        
+
         let json = r#"{"jsonrpc": "2.0", "method": "notifications/initialized"}"#;
         let result = server.handle_message(json).await.unwrap();
-        
+
         // Notifications return None (no response)
         assert!(result.is_none());
         assert!(server.initialized);
@@ -742,7 +740,7 @@ mod tests {
     fn test_parse_tool_call_request() {
         let json = r#"{"name": "search_code", "arguments": {"query": "test"}}"#;
         let request: ToolCallRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.name, "search_code");
         assert_eq!(request.arguments["query"], "test");
     }
@@ -751,7 +749,7 @@ mod tests {
     fn test_parse_tool_call_request_no_args() {
         let json = r#"{"name": "get_function"}"#;
         let request: ToolCallRequest = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(request.name, "get_function");
         assert!(request.arguments.is_null());
     }
@@ -763,7 +761,7 @@ mod tests {
         let content = Content::Text {
             text: "Hello, world!".to_string(),
         };
-        
+
         let json = serde_json::to_string(&content).unwrap();
         assert!(json.contains("\"type\":\"text\""));
         assert!(json.contains("\"text\":\"Hello, world!\""));
@@ -775,7 +773,7 @@ mod tests {
             data: "base64data".to_string(),
             mimeType: "image/png".to_string(),
         };
-        
+
         let json = serde_json::to_string(&content).unwrap();
         assert!(json.contains("\"type\":\"image\""));
         assert!(json.contains("\"data\":\"base64data\""));
@@ -791,7 +789,7 @@ mod tests {
                 text: Some("fn main() {}".to_string()),
             },
         };
-        
+
         let json = serde_json::to_string(&content).unwrap();
         assert!(json.contains("\"type\":\"resource\""));
         assert!(json.contains("\"uri\":\"file:///test.rs\""));
@@ -807,7 +805,7 @@ mod tests {
             }],
             isError: Some(false),
         };
-        
+
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"content\""));
         assert!(json.contains("\"isError\":false"));
@@ -821,7 +819,7 @@ mod tests {
             }],
             isError: Some(true),
         };
-        
+
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"isError\":true"));
     }
