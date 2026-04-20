@@ -9,7 +9,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json,
@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::execution::runner::{run_execution, RunParams};
 use crate::execution::{
-    create_execution, get_execution as db_get_execution, list_agent_events_after,
+    create_execution, get_execution as db_get_execution, list_agent_events_after_seq,
     list_executions as db_list_executions, CreateExecutionParams,
 };
 use crate::state::AppState;
@@ -151,12 +151,17 @@ pub async fn get_execution(
 
 /// `GET /executions/:id/events` — SSE stream of agent events.
 ///
-/// The stream polls Postgres every 500 ms for new events. It terminates once
-/// the execution reaches a terminal state (`completed`, `failed`, `aborted`,
-/// `timeout`) and all pending events have been delivered.
+/// The stream polls Postgres every 500 ms for new events using seq-based cursors.
+/// It terminates once the execution reaches a terminal state (`completed`,
+/// `failed`, `aborted`, `timeout`) and all pending events have been delivered.
+///
+/// Supports the `Last-Event-ID` header for SSE reconnect backfill. When the
+/// header is present, streaming resumes after the given seq number. Otherwise,
+/// streaming starts from seq 0 (all events).
 pub async fn stream_events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, AppError>
 {
     // Verify execution exists before starting the stream
@@ -167,17 +172,27 @@ pub async fn stream_events(
 
     let pool = state.workspace_manager.pool.clone();
 
+    // Parse Last-Event-ID header for SSE reconnect backfill.
+    // The browser sends the last received event ID automatically on reconnect.
+    let initial_seq = headers
+        .get("Last-Event-ID")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+
     let stream = async_stream::stream! {
-        let mut last_event_id: i64 = 0;
+        let mut last_seq: i64 = initial_seq;
         let poll_interval = Duration::from_millis(500);
 
         loop {
-            // Fetch new events since last seen
-            let events = match list_agent_events_after(&pool, id, last_event_id).await {
+            // Fetch new events since last seen seq
+            let events = match list_agent_events_after_seq(&pool, id, last_seq).await {
                 Ok(evts) => evts,
                 Err(e) => {
-                    // Emit an error event and stop
-                    let payload = serde_json::json!({ "error": e.to_string() });
+                    let payload = serde_json::json!({
+                        "error": e.to_string(),
+                        "persistence_degraded": true,
+                    });
                     yield Ok(Event::default()
                         .event("error")
                         .data(payload.to_string()));
@@ -188,10 +203,10 @@ pub async fn stream_events(
             for event in &events {
                 let data = serde_json::to_string(event).unwrap_or_default();
                 yield Ok(Event::default()
-                    .id(event.id.to_string())
+                    .id(event.seq.to_string())
                     .event("agent_event")
                     .data(data));
-                last_event_id = event.id;
+                last_seq = event.seq;
             }
 
             // Check execution terminal state
@@ -203,11 +218,11 @@ pub async fn stream_events(
                     );
                     if terminal {
                         // Drain any remaining events before closing
-                        if let Ok(remaining) = list_agent_events_after(&pool, id, last_event_id).await {
+                        if let Ok(remaining) = list_agent_events_after_seq(&pool, id, last_seq).await {
                             for event in &remaining {
                                 let data = serde_json::to_string(event).unwrap_or_default();
                                 yield Ok(Event::default()
-                                    .id(event.id.to_string())
+                                    .id(event.seq.to_string())
                                     .event("agent_event")
                                     .data(data));
                             }

@@ -475,7 +475,14 @@ async fn run_execution_inner(
                 };
 
                 if let Err(e) = insert_agent_event(&pool, exec_id, event_type, content).await {
-                    warn!(execution_id = %exec_id, error = %e, "Failed to insert agent_event");
+                    warn!(execution_id = %exec_id, error = %e, "Failed to insert agent_event — persistence degraded");
+                    let _ = insert_agent_event(
+                        &pool,
+                        exec_id,
+                        "error",
+                        json!({ "persistence_degraded": true, "error": e.to_string() }),
+                    )
+                    .await;
                 }
             }
             last_seen_part_count = total_part_count;
@@ -622,7 +629,14 @@ async fn bridge_new_parts(
         };
 
         if let Err(e) = insert_agent_event(pool, execution_id, event_type, content).await {
-            warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_event");
+            warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_event in bridge — persistence degraded");
+            let _ = insert_agent_event(
+                pool,
+                execution_id,
+                "error",
+                json!({ "persistence_degraded": true, "error": e.to_string() }),
+            )
+            .await;
         }
     }
 
@@ -700,7 +714,14 @@ async fn detect_agent_dispatches(
                                 info!(execution_id = %execution_id, event_id = ev.id, agent = %agent, "Inserted agent_dispatch event");
                             }
                             Err(e) => {
-                                warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_dispatch event");
+                                warn!(execution_id = %execution_id, error = %e, "Failed to insert agent_dispatch event — persistence degraded");
+                                let _ = insert_agent_event(
+                                    pool,
+                                    execution_id,
+                                    "error",
+                                    json!({ "persistence_degraded": true, "error": e.to_string() }),
+                                )
+                                .await;
                             }
                         }
                         detected.push(agent);

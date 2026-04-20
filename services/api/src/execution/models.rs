@@ -52,9 +52,12 @@ pub struct AgentEvent {
     pub id: i64,
     pub execution_id: Uuid,
     pub timestamp: DateTime<Utc>,
-    /// `reasoning` | `tool_call` | `file_edit` | `error` | `phase_change` | `agent_dispatch` | `container_kept_alive`
+    /// `reasoning` | `tool_call` | `file_edit` | `error` | `phase_change` | `agent_dispatch` | `container_kept_alive` | `unknown`
     pub event_type: String,
     pub content: serde_json::Value,
+    /// Per-execution monotonic sequence number, starting at 1.
+    /// Used as cursor for SSE backfill (FR-3, FR-17, FR-18).
+    pub seq: i64,
 }
 
 /// Parameters for creating a new execution.
@@ -377,7 +380,12 @@ pub async fn abort_executions_for_workspace(
 // AgentEvent CRUD
 // =============================================================================
 
-/// Insert a single agent event.
+/// Insert a single agent event with monotonic seq assignment.
+///
+/// Seq is computed as `COALESCE(MAX(seq), 0) + 1` within the same execution,
+/// guaranteeing monotonically increasing per-execution sequence numbers.
+/// The `UNIQUE (execution_id, seq)` constraint provides a safety net against
+/// races in concurrent-write scenarios.
 pub async fn insert_agent_event(
     pool: &PgPool,
     execution_id: Uuid,
@@ -386,9 +394,10 @@ pub async fn insert_agent_event(
 ) -> anyhow::Result<AgentEvent> {
     let row = sqlx::query_as::<_, AgentEvent>(
         r#"
-        INSERT INTO agent_events (execution_id, event_type, content)
-        VALUES ($1, $2, $3)
-        RETURNING id, execution_id, timestamp, event_type, content
+        INSERT INTO agent_events (execution_id, event_type, content, seq)
+        VALUES ($1, $2, $3,
+            (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE execution_id = $1))
+        RETURNING id, execution_id, timestamp, event_type, content, seq
         "#,
     )
     .bind(execution_id)
@@ -399,17 +408,17 @@ pub async fn insert_agent_event(
     Ok(row)
 }
 
-/// List all agent events for an execution, ordered by id (chronological).
+/// List all agent events for an execution, ordered by seq (chronological).
 pub async fn list_agent_events(
     pool: &PgPool,
     execution_id: Uuid,
 ) -> anyhow::Result<Vec<AgentEvent>> {
     let rows = sqlx::query_as::<_, AgentEvent>(
         r#"
-        SELECT id, execution_id, timestamp, event_type, content
+        SELECT id, execution_id, timestamp, event_type, content, seq
         FROM agent_events
         WHERE execution_id = $1
-        ORDER BY id ASC
+        ORDER BY seq ASC
         "#,
     )
     .bind(execution_id)
@@ -426,14 +435,38 @@ pub async fn list_agent_events_after(
 ) -> anyhow::Result<Vec<AgentEvent>> {
     let rows = sqlx::query_as::<_, AgentEvent>(
         r#"
-        SELECT id, execution_id, timestamp, event_type, content
+        SELECT id, execution_id, timestamp, event_type, content, seq
         FROM agent_events
         WHERE execution_id = $1 AND id > $2
-        ORDER BY id ASC
+        ORDER BY seq ASC
         "#,
     )
     .bind(execution_id)
     .bind(after_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Fetch agent events after a given seq number (cursor-based, for SSE backfill).
+///
+/// Returns all events for the given execution with `seq > after_seq`, ordered
+/// by seq ascending. This is the primary cursor-based read path (FR-18).
+pub async fn list_agent_events_after_seq(
+    pool: &PgPool,
+    execution_id: Uuid,
+    after_seq: i64,
+) -> anyhow::Result<Vec<AgentEvent>> {
+    let rows = sqlx::query_as::<_, AgentEvent>(
+        r#"
+        SELECT id, execution_id, timestamp, event_type, content, seq
+        FROM agent_events
+        WHERE execution_id = $1 AND seq > $2
+        ORDER BY seq ASC
+        "#,
+    )
+    .bind(execution_id)
+    .bind(after_seq)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -485,10 +518,12 @@ mod tests {
             timestamp: Utc::now(),
             event_type: "phase_change".into(),
             content: serde_json::json!({"phase": "researching"}),
+            seq: 1,
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["event_type"], "phase_change");
         assert_eq!(json["content"]["phase"], "researching");
+        assert_eq!(json["seq"], 1);
     }
 
     #[test]
@@ -514,5 +549,40 @@ mod tests {
         };
         assert_eq!(p.branch_name.as_deref(), Some("fix/issue-123"));
         assert_eq!(p.timeout_config_secs, Some(3600));
+    }
+
+    #[test]
+    fn agent_event_seq_in_json_output() {
+        let ev = AgentEvent {
+            id: 99,
+            execution_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            event_type: "tool_call".into(),
+            content: serde_json::json!({"tool": "read_file"}),
+            seq: 42,
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["seq"], 42);
+        assert_eq!(json["id"], 99);
+    }
+
+    #[test]
+    fn agent_event_seq_monotonic_ordering() {
+        let exec_id = Uuid::new_v4();
+        let events: Vec<AgentEvent> = (1..=5)
+            .map(|seq| AgentEvent {
+                id: seq * 10,
+                execution_id: exec_id,
+                timestamp: Utc::now(),
+                event_type: "reasoning".into(),
+                content: serde_json::json!({"seq": seq}),
+                seq,
+            })
+            .collect();
+        let seqs: Vec<i64> = events.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4, 5]);
+        for i in 1..events.len() {
+            assert!(events[i].seq > events[i - 1].seq);
+        }
     }
 }

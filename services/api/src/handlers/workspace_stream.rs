@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -21,7 +22,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::execution::{get_execution, list_agent_events_after, AgentEvent};
+use crate::execution::{get_execution, list_agent_events_after_seq, AgentEvent};
 use crate::state::AppState;
 use crate::workspace::get_workspace as db_get_workspace;
 
@@ -44,6 +45,7 @@ pub struct StreamQuery {
 pub struct SseAgentEvent {
     pub id: i64,
     pub execution_id: Uuid,
+    pub seq: i64,
     pub phase: Option<String>,
     pub event_type: String,
     pub content: serde_json::Value,
@@ -52,7 +54,6 @@ pub struct SseAgentEvent {
 
 impl From<AgentEvent> for SseAgentEvent {
     fn from(ev: AgentEvent) -> Self {
-        // Extract optional `phase` from the content JSON
         let phase = ev
             .content
             .get("phase")
@@ -62,6 +63,7 @@ impl From<AgentEvent> for SseAgentEvent {
         Self {
             id: ev.id,
             execution_id: ev.execution_id,
+            seq: ev.seq,
             phase,
             event_type: ev.event_type,
             content: ev.content,
@@ -78,10 +80,14 @@ impl From<AgentEvent> for SseAgentEvent {
 ///
 /// Returns a stream of `agent_event` SSE events.  Sends a `done` event and
 /// closes the stream when the execution reaches a terminal state.
+///
+/// Supports `Last-Event-ID` header for SSE reconnect backfill using seq-based
+/// cursors. When the header is absent, streaming starts from seq 0 (all events).
 pub async fn stream_workspace(
     State(state): State<AppState>,
     Path(workspace_id): Path<Uuid>,
     Query(query): Query<StreamQuery>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
     // Verify workspace exists
     db_get_workspace(&state.workspace_manager.pool, workspace_id)
@@ -107,23 +113,31 @@ pub async fn stream_workspace(
     let pool = state.workspace_manager.pool.clone();
     let exec_id = query.execution_id;
 
+    let initial_seq = headers
+        .get("Last-Event-ID")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+
     let event_stream = async_stream::stream! {
-        let mut last_id: i64 = -1;
+        let mut last_seq: i64 = initial_seq;
         let mut interval = tokio::time::interval(Duration::from_millis(500));
 
         loop {
             interval.tick().await;
 
-            // Fetch new events since last_id
-            match list_agent_events_after(&pool, exec_id, last_id).await {
+            match list_agent_events_after_seq(&pool, exec_id, last_seq).await {
                 Ok(events) => {
                     for ev in events {
-                        last_id = ev.id;
+                        last_seq = ev.seq;
                         let payload: SseAgentEvent = ev.into();
                         match serde_json::to_string(&payload) {
                             Ok(data) => {
                                 yield Ok::<Event, Infallible>(
-                                    Event::default().event("agent_event").data(data)
+                                    Event::default()
+                                        .id(last_seq.to_string())
+                                        .event("agent_event")
+                                        .data(data)
                                 );
                             }
                             Err(e) => {
@@ -152,7 +166,6 @@ pub async fn stream_workspace(
                     break;
                 }
                 Ok(None) => {
-                    // Execution was deleted — close stream
                     break;
                 }
                 _ => {}
@@ -202,9 +215,11 @@ mod tests {
             timestamp: chrono::Utc::now(),
             event_type: "phase_change".to_string(),
             content: serde_json::json!({"phase": "researching", "extra": "data"}),
+            seq: 3,
         };
         let sse: SseAgentEvent = ev.into();
         assert_eq!(sse.id, 42);
+        assert_eq!(sse.seq, 3);
         assert_eq!(sse.event_type, "phase_change");
         assert_eq!(sse.phase.as_deref(), Some("researching"));
     }
@@ -217,6 +232,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             event_type: "reasoning".to_string(),
             content: serde_json::json!({"text": "thinking..."}),
+            seq: 1,
         };
         let sse: SseAgentEvent = ev.into();
         assert!(sse.phase.is_none());
@@ -231,11 +247,13 @@ mod tests {
             timestamp: chrono::Utc::now(),
             event_type: "tool_call".to_string(),
             content: serde_json::json!({"phase": "developing", "tool": "read_file"}),
+            seq: 7,
         };
         let sse: SseAgentEvent = ev.into();
         let json = serde_json::to_value(&sse).unwrap();
         assert_eq!(json["event_type"], "tool_call");
         assert!(json["ts"].is_string());
         assert_eq!(json["phase"], "developing");
+        assert_eq!(json["seq"], 7);
     }
 }
