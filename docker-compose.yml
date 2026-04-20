@@ -273,7 +273,9 @@ services:
       # Docker socket access for per-workspace volume orchestration.
       # Override with DOCKER_HOST env var if using a remote daemon.
       DOCKER_HOST: ${DOCKER_HOST:-unix:///var/run/docker.sock}
-      GH_TOKEN: ${GH_TOKEN:-}
+      # GH_TOKEN: set in .env for private repos (uncomment next line).
+      # Empty GH_TOKEN breaks public repo cloning (uses gh CLI instead of git).
+      # GH_TOKEN: ${GH_TOKEN:-}
       # Host-side clone root — must match the host path that backs the bind
       # mount below so docker run -v <host_path>:... works from the API container.
       WORKSPACE_HOST_CLONE_ROOT: ${WORKSPACE_HOST_CLONE_ROOT:-/tmp/rustbrain-clones}
@@ -404,7 +406,8 @@ services:
       GIT_USER_NAME: ${GIT_USER_NAME:-OpenCode Developer}
       GIT_USER_EMAIL: ${GIT_USER_EMAIL:-opencode@rustbrain.local}
       FEATURE_BRANCH_PREFIX: ${FEATURE_BRANCH_PREFIX:-opencode}
-      GH_TOKEN: ${GH_TOKEN:-}
+      # GH_TOKEN: set in .env for private repo access (uncomment next line)
+      # GH_TOKEN: ${GH_TOKEN:-}
     volumes:
       - opencode_data:/home/opencode/.local/share/opencode
       - ./configs/opencode/opencode.json:/home/opencode/.config/opencode/opencode.json.template:ro

@@ -885,6 +885,158 @@ docker exec rustbrain-postgres psql -U rustbrain -c \
 - Alerts fire within 1-5 minutes of detection
 - All discrepancies are recorded in `workspace_audit_log` for forensic analysis
 
+### 16. Workspace Creation Fails — "gh repo clone failed" or "Permission denied"
+
+**Symptoms:**
+- `POST /workspaces` returns 202 but workspace enters `error` status
+- `index_error` contains "gh repo clone failed (exit exit status: 4): To get started with GitHub CLI, please run: gh auth login"
+- `index_error` contains "git clone failed (exit exit status: 128): fatal: could not create work tree dir '/tmp/rustbrain-clones/...': Permission denied"
+
+**Root cause 1 — Empty GH_TOKEN:**
+When `GH_TOKEN` is set to an empty string in docker-compose.yml, the API detects PAT auth mode and uses `gh repo clone` which requires `gh auth login`. For public repos, the API should use plain `git clone` instead.
+
+**Fix:**
+```bash
+# Check current GH_TOKEN in the API container
+docker exec rustbrain-api env | grep GH_TOKEN
+
+# If GH_TOKEN is empty, remove it from docker-compose.yml environment section
+# or set a valid token in .env
+```
+
+**Root cause 2 — Clone directory permissions:**
+The API container runs as uid 999 (rustbrain). If `/tmp/rustbrain-clones/` on the host is owned by root, the container can't create workspace subdirectories.
+
+**Fix:**
+```bash
+# Fix ownership from inside the container
+docker exec -u root rustbrain-api chown rustbrain:rustbrain /tmp/rustbrain-clones
+
+# Verify
+ls -la /tmp/rustbrain-clones/
+```
+
+**Recovery after fixing:**
+```bash
+# Delete the errored workspace
+curl -X DELETE http://localhost:8088/workspaces/<workspace-id>
+
+# Recreate it
+curl -X POST http://localhost:8088/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{"github_url": "https://github.com/owner/repo", "name": "my-workspace"}'
+
+# Monitor progress
+curl http://localhost:8088/workspaces | python3 -m json.tool
+```
+
+## Full Workspace Cleanup (Fresh Start)
+
+Removes **all** workspaces, their data, Docker volumes, and resets all three databases to a clean state. Use when you want a completely fresh start — e.g., after testing or before a clean ingestion.
+
+### Automated Script
+
+```bash
+bash scripts/clean-ingestion.sh
+```
+
+This cleans the core ingestion tables but does **not** remove workspace records, schemas, or Docker volumes. For a full workspace cleanup, use the manual procedure below.
+
+### Manual Full Workspace Cleanup
+
+This procedure is destructive and irreversible. Ensure no active workspaces or executions are in progress.
+
+#### 1. Delete Workspace Records (Postgres)
+
+```bash
+# Delete all workspace records (cascades to executions, agent_events, workspace_audit_log)
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "DELETE FROM workspaces;"
+
+# Drop all workspace schemas
+for schema in $(docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -t -A \
+  -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'ws_%'"); do
+  docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+    -c "DROP SCHEMA IF EXISTS $schema CASCADE;"
+done
+```
+
+#### 2. Truncate Core Data Tables (Postgres)
+
+```bash
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "TRUNCATE extracted_items, source_files, call_sites, trait_implementations,
+   ingestion_runs, repositories, artifacts, tasks, audit_events,
+   workspace_audit_log, bench_case_results, bench_runs, eval_cases,
+   validator_runs, pipeline_checkpoints CASCADE;"
+```
+
+#### 3. Clear Neo4j Graph
+
+```bash
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) DETACH DELETE n"
+```
+
+#### 4. Delete All Qdrant Collections and Reinitialize
+
+```bash
+# Delete workspace-specific collections
+for col in $(curl -s http://localhost:6333/collections | jq -r '.result.collections[].name' | grep '^ws_'); do
+  curl -X DELETE "http://localhost:6333/collections/$col"
+done
+
+# Delete global collections
+curl -X DELETE http://localhost:6333/collections/code_embeddings
+curl -X DELETE http://localhost:6333/collections/doc_embeddings
+
+# Reinitialize base collections
+bash scripts/init-qdrant.sh
+```
+
+#### 5. Remove Workspace Docker Volumes
+
+```bash
+# List workspace volumes
+docker volume ls --filter name=rustbrain-ws
+
+# Remove all workspace volumes
+for vol in $(docker volume ls --filter name=rustbrain-ws -q); do
+  docker volume rm "$vol"
+done
+```
+
+#### 6. Clean Host-Side Clone Directory
+
+```bash
+# Remove workspace clone data (requires root if created by Docker)
+sudo rm -rf /tmp/rustbrain-clones/*
+```
+
+#### Verification
+
+After cleanup, verify all stores are empty:
+
+```bash
+# Postgres: all data tables should be 0
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain -c \
+  "SELECT 'workspaces' as tbl, count(*) FROM workspaces
+   UNION ALL SELECT 'extracted_items', count(*) FROM extracted_items
+   UNION ALL SELECT 'source_files', count(*) FROM source_files;"
+
+# Neo4j: should be 0 nodes
+docker exec rustbrain-neo4j cypher-shell -u neo4j -p <password> \
+  "MATCH (n) RETURN count(n) as node_count"
+
+# Qdrant: should only have empty base collections
+curl -s http://localhost:6333/collections | jq '.result.collections[].name'
+# Expected: ["code_embeddings", "doc_embeddings"]
+
+# Docker: no workspace volumes
+docker volume ls --filter name=rustbrain-ws
+# Expected: (empty)
+```
+
 ## Resetting Data
 
 ### Reset All Data
