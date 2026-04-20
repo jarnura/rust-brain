@@ -171,6 +171,33 @@ export interface AgentEvent {
   content: Record<string, unknown>
 }
 
+// Re-export the typed event model (RUSA-253). Consumers should prefer
+// `TypedAgentEvent` + `parseAgentEvent` over the untyped `AgentEvent` above.
+export type {
+  AgentDispatchContent,
+  ContainerKeptAliveContent,
+  ErrorContent,
+  FileEditContent,
+  KnownEventKind,
+  PhaseChangeContent,
+  ReasoningContent,
+  ToolCallContent,
+  TypedAgentEvent,
+  TypedEventContent,
+  UnknownContent,
+} from './events'
+export {
+  KNOWN_EVENT_KINDS,
+  isAgentDispatchEvent,
+  isContainerKeptAliveEvent,
+  isErrorEvent,
+  isFileEditEvent,
+  isPhaseChangeEvent,
+  isReasoningEvent,
+  isToolCallEvent,
+  isUnknownEvent,
+} from './events'
+
 // ─── Diff ─────────────────────────────────────────────────────────────────────
 
 export interface DiffResponse {
