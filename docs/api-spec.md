@@ -91,6 +91,7 @@ REST API for the rust-brain code intelligence platform. All endpoints are served
 | `GET` | `/workspaces/:id/diff` | Get uncommitted changes |
 | `POST` | `/workspaces/:id/commit` | Commit changes |
 | `POST` | `/workspaces/:id/reset` | Discard changes |
+| `GET` | `/workspaces/:id/stats` | Per-workspace stats (counts, consistency, isolation) |
 
 ### Executions
 
@@ -1693,6 +1694,75 @@ curl -X POST http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-4466554400
 | `400` | Workspace not yet cloned |
 | `404` | Workspace not found |
 | `500` | `git reset`, `git clean`, or SHA read failed |
+
+---
+
+### GET /workspaces/:id/stats
+
+Per-workspace statistics for the Editor Playground UI. Queries Postgres, Neo4j, and Qdrant in parallel for workspace-scoped counts, cross-store consistency deltas, and isolation checks.
+
+If any store is unavailable, its count returns as `0` with a server-side warning log; the endpoint does not fail.
+
+### cURL Example
+
+```bash
+curl http://localhost:8088/workspaces/550e8400-e29b-41d4-a716-446655440000/stats | jq .
+```
+
+### Response Schema
+
+```json
+{
+  "workspace_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "ready",
+  "pg_items_count": 2285,
+  "neo4j_nodes_count": 3650,
+  "neo4j_edges_count": 3660,
+  "qdrant_vectors_count": 2285,
+  "consistency": {
+    "pg_vs_neo4j_delta": -1365,
+    "pg_vs_qdrant_delta": 0,
+    "status": "inconsistent"
+  },
+  "isolation": {
+    "multi_label_nodes": 0,
+    "cross_workspace_edges": 0,
+    "label_mismatches": 0
+  },
+  "index_duration_seconds": 5700,
+  "created_at": "2026-04-10T10:00:00Z",
+  "indexed_at": "2026-04-10T11:30:00Z"
+}
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workspace_id` | UUID | Workspace identifier |
+| `status` | string | Current workspace lifecycle status (e.g. `ready`, `indexing`, `error`) |
+| `pg_items_count` | integer | Number of rows in the workspace `extracted_items` table (Postgres) |
+| `neo4j_nodes_count` | integer | Number of nodes in Neo4j for this workspace |
+| `neo4j_edges_count` | integer | Number of relationships (edges) in Neo4j for this workspace |
+| `qdrant_vectors_count` | integer | Number of vectors in the workspace Qdrant code collection |
+| `consistency` | object | Cross-store consistency deltas (see below) |
+| `consistency.pg_vs_neo4j_delta` | integer | `pg_items_count − neo4j_nodes_count` |
+| `consistency.pg_vs_qdrant_delta` | integer | `pg_items_count − qdrant_vectors_count` |
+| `consistency.status` | string | `"consistent"` if both deltas are 0, otherwise `"inconsistent"` |
+| `isolation` | object | Workspace isolation checks (see below) |
+| `isolation.multi_label_nodes` | integer | Neo4j nodes with multiple workspace labels |
+| `isolation.cross_workspace_edges` | integer | Relationships crossing workspace boundaries |
+| `isolation.label_mismatches` | integer | Nodes whose label does not match the expected workspace label |
+| `index_duration_seconds` | integer? | Duration of the last completed indexing run in seconds (omitted if unavailable) |
+| `created_at` | datetime | When the workspace was created |
+| `indexed_at` | datetime? | When the workspace last completed indexing (omitted if unavailable) |
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `404` | Workspace not found |
+| `500` | Database or store connection error |
 
 ---
 
