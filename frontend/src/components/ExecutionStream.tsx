@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef } from 'react'
 import { API_BASE, openExecutionStream } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 import type { AgentEvent } from '../types'
+import { parseAgentEvent } from '../lib/event-parser'
+import { isToolCallEvent } from '../types/events'
+import { ToolCallCard } from './ToolCallCard'
 
 // ─── Agent display config ────────────────────────────────────────────────────
 
@@ -296,16 +299,22 @@ export function ExecutionStream() {
       )}
 
       <div className="flex-1 overflow-y-auto space-y-1 font-mono text-xs">
-        {streamEvents.map((event) => (
-          <div key={event.id} className="flex items-start gap-2 py-0.5">
-            {phaseBadge(event.event_type)}
-            {agentSourceBadge(event)}
-            <span className="text-dark-300 shrink-0 tabular-nums">
-              {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
-            </span>
-            <span className="text-dark-200 break-all">{eventSummary(event)}</span>
-          </div>
-        ))}
+        {streamEvents.map((event) => {
+          const typed = parseAgentEvent(event)
+          if (isToolCallEvent(typed)) {
+            return <ToolCallCard key={event.id} event={typed} />
+          }
+          return (
+            <div key={event.id} className="flex items-start gap-2 py-0.5">
+              {phaseBadge(event.event_type)}
+              {agentSourceBadge(event)}
+              <span className="text-dark-300 shrink-0 tabular-nums">
+                {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
+              </span>
+              <span className="text-dark-200 break-all">{eventSummary(event)}</span>
+            </div>
+          )
+        })}
         {streamEvents.length === 0 && !streamDone && (
           <p className="text-dark-500 italic animate-pulse">Waiting for events...</p>
         )}
