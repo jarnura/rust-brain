@@ -334,6 +334,9 @@ async function initPlayground() {
   // Run the cinematic boot sequence
   await runBootSequence();
 
+  // Workspace must be set before any API calls that require X-Workspace-Id
+  await initWorkspaceDropdown();
+
   switchTab('dashboard');
 
   // Enhanced command palette
@@ -374,8 +377,6 @@ async function initPlayground() {
 
   updateConnectionStatus();
   setInterval(updateConnectionStatus, 30000);
-
-  initWorkspaceDropdown();
 }
 
 async function updateConnectionStatus() {
