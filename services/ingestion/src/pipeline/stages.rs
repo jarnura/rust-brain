@@ -2932,6 +2932,7 @@ impl PipelineStage for GraphStage {
                         fqn: trait_fqn.clone(),
                         name: trait_name.clone(),
                         node_type: NodeType::Trait,
+                        workspace_id: None,
                         properties: {
                             let mut props = HashMap::new();
                             props.insert("external".to_string(), PropertyValue::from(true));
@@ -3480,6 +3481,7 @@ impl GraphStage {
             fqn: item.fqn.clone(),
             name: item.name.clone(),
             node_type,
+            workspace_id: None,
             properties,
         }
     }
@@ -3493,6 +3495,7 @@ impl GraphStage {
             fqn: crate_name.to_string(),
             name: crate_name.to_string(),
             node_type: NodeType::Crate,
+            workspace_id: None,
             properties,
         }
     }

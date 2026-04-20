@@ -34,6 +34,7 @@ use crate::workspace::{
     schema::drop_workspace_schema, CreateWorkspaceParams, Workspace, WorkspaceSourceType,
     WorkspaceStatus,
 };
+use neo4rs;
 
 // =============================================================================
 // Request / Response types
@@ -231,6 +232,7 @@ pub async fn get_workspace(
 /// 1. Stop any running execution containers
 /// 2. Abort running executions in the database
 /// 3. Drop the per-workspace Postgres schema
+///    3a. Delete the per-workspace Neo4j graph data
 ///    3b. Delete the per-workspace Qdrant collections
 /// 4. Remove the Docker volume
 /// 5. Clean up the host clone directory
@@ -282,6 +284,9 @@ pub async fn delete_workspace(
     let pool_clone = pool.clone();
     let http_client = state.http_client.clone();
     let qdrant_host = state.config.qdrant_host.clone();
+    let neo4j_graph = state.neo4j_graph.clone();
+    let ws_hex: String = id.as_simple().to_string();
+    let workspace_label = format!("Workspace_{}", &ws_hex[..12]);
 
     tokio::spawn(async move {
         // 1. Stop running execution containers
@@ -342,6 +347,21 @@ pub async fn delete_workspace(
                     error = %e,
                     "Failed to drop workspace schema"
                 );
+            }
+        }
+
+        // 3a. Delete Neo4j graph data for this workspace
+        {
+            let cypher = format!("MATCH (n:{}) DETACH DELETE n", workspace_label);
+            info!(workspace_id = %id, workspace_label = %workspace_label, "Deleting Neo4j graph data");
+            match neo4j_graph.run(neo4rs::query(&cypher)).await {
+                Ok(_) => info!(workspace_id = %id, "Neo4j graph data deleted"),
+                Err(e) => warn!(
+                    workspace_id = %id,
+                    workspace_label = %workspace_label,
+                    error = %e,
+                    "Failed to delete Neo4j graph data"
+                ),
             }
         }
 

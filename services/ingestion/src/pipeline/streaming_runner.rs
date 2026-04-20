@@ -679,6 +679,7 @@ async fn graph_stage(
                     fqn: item.fqn.clone(),
                     name: item.name.clone(),
                     node_type,
+                    workspace_id: None,
                     properties,
                 };
 

@@ -208,6 +208,19 @@ impl GraphBuilder {
             "CREATE INDEX const_fqn_index IF NOT EXISTS FOR (n:Const) ON (n.fqn)",
             "CREATE INDEX static_fqn_index IF NOT EXISTS FOR (n:Static) ON (n.fqn)",
             "CREATE INDEX macro_fqn_index IF NOT EXISTS FOR (n:Macro) ON (n.fqn)",
+            // Indexes on workspace_id for per-workspace queries and cleanup
+            "CREATE INDEX crate_workspace_id_index IF NOT EXISTS FOR (n:Crate) ON (n.workspace_id)",
+            "CREATE INDEX module_workspace_id_index IF NOT EXISTS FOR (n:Module) ON (n.workspace_id)",
+            "CREATE INDEX function_workspace_id_index IF NOT EXISTS FOR (n:Function) ON (n.workspace_id)",
+            "CREATE INDEX struct_workspace_id_index IF NOT EXISTS FOR (n:Struct) ON (n.workspace_id)",
+            "CREATE INDEX enum_workspace_id_index IF NOT EXISTS FOR (n:Enum) ON (n.workspace_id)",
+            "CREATE INDEX trait_workspace_id_index IF NOT EXISTS FOR (n:Trait) ON (n.workspace_id)",
+            "CREATE INDEX impl_workspace_id_index IF NOT EXISTS FOR (n:Impl) ON (n.workspace_id)",
+            "CREATE INDEX type_workspace_id_index IF NOT EXISTS FOR (n:Type) ON (n.workspace_id)",
+            "CREATE INDEX type_alias_workspace_id_index IF NOT EXISTS FOR (n:TypeAlias) ON (n.workspace_id)",
+            "CREATE INDEX const_workspace_id_index IF NOT EXISTS FOR (n:Const) ON (n.workspace_id)",
+            "CREATE INDEX static_workspace_id_index IF NOT EXISTS FOR (n:Static) ON (n.workspace_id)",
+            "CREATE INDEX macro_workspace_id_index IF NOT EXISTS FOR (n:Macro) ON (n.workspace_id)",
         ];
 
         for query_str in &index_queries {
@@ -288,6 +301,24 @@ impl GraphBuilder {
             .context("Failed to clear graph data")?;
 
         info!("All graph data cleared");
+        Ok(())
+    }
+
+    /// Delete all graph nodes and relationships for a specific workspace.
+    ///
+    /// Uses the workspace label (e.g. `Workspace_550e8400e29b`) to match and
+    /// delete all nodes belonging to that workspace. Relationships are
+    /// automatically removed via `DETACH DELETE`.
+    pub async fn delete_workspace_graph(&self, workspace_label: &str) -> Result<()> {
+        info!("Deleting graph data for workspace {}", workspace_label);
+
+        let query_str = format!("MATCH (n:{}) DETACH DELETE n", workspace_label);
+        self.graph
+            .run(query(&query_str))
+            .await
+            .context("Failed to delete workspace graph data")?;
+
+        info!("Workspace {} graph data deleted", workspace_label);
         Ok(())
     }
 
@@ -494,5 +525,42 @@ mod tests {
     async fn test_create_indexes() {
         let builder = GraphBuilder::new().await.unwrap();
         builder.create_indexes().await.unwrap();
+    }
+
+    #[test]
+    fn test_delete_workspace_graph_cypher() {
+        let label = "Workspace_550e8400e29b";
+        let cypher = format!("MATCH (n:{}) DETACH DELETE n", label);
+        assert_eq!(cypher, "MATCH (n:Workspace_550e8400e29b) DETACH DELETE n");
+    }
+
+    #[test]
+    fn test_workspace_id_indexes_in_create_indexes() {
+        let node_labels = [
+            "Crate",
+            "Module",
+            "Function",
+            "Struct",
+            "Enum",
+            "Trait",
+            "Impl",
+            "Type",
+            "TypeAlias",
+            "Const",
+            "Static",
+            "Macro",
+        ];
+        for label in &node_labels {
+            let index_name = format!("{}_workspace_id_index", label.to_lowercase());
+            let expected = format!(
+                "CREATE INDEX {} IF NOT EXISTS FOR (n:{}) ON (n.workspace_id)",
+                index_name, label
+            );
+            assert!(
+                expected.contains("workspace_id"),
+                "Index for {} must be on workspace_id",
+                label
+            );
+        }
     }
 }

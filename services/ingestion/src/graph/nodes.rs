@@ -24,6 +24,12 @@ pub struct NodeData {
     /// Node type
     #[serde(rename = "type")]
     pub node_type: NodeType,
+    /// Workspace ID for multi-tenant partitioning (e.g., "550e8400e29b").
+    ///
+    /// When set, this is stored as a node property enabling per-workspace queries,
+    /// workspace-scoped deletion, and index-based lookups without relying solely on
+    /// Neo4j labels.
+    pub workspace_id: Option<String>,
     /// Additional properties
     #[serde(flatten)]
     pub properties: HashMap<String, PropertyValue>,
@@ -94,6 +100,13 @@ impl From<Vec<String>> for PropertyValue {
     }
 }
 
+/// Extract the workspace ID hex from a workspace label.
+///
+/// `Workspace_550e8400e29b` → `550e8400e29b`
+pub(crate) fn extract_workspace_id(label: &str) -> Option<&str> {
+    label.strip_prefix("Workspace_")
+}
+
 pub(crate) fn build_node_merge_query(node: &NodeData, workspace_label: Option<&str>) -> String {
     let label = node.node_type.label();
     match workspace_label {
@@ -130,6 +143,15 @@ impl NodeBuilder {
         props.insert("id".to_string(), BoltType::from(node.id.as_str()));
         props.insert("fqn".to_string(), BoltType::from(node.fqn.as_str()));
         props.insert("name".to_string(), BoltType::from(node.name.as_str()));
+
+        let ws_id = node.workspace_id.as_deref().or_else(|| {
+            self.workspace_label
+                .as_deref()
+                .and_then(extract_workspace_id)
+        });
+        if let Some(ws_id) = ws_id {
+            props.insert("workspace_id".to_string(), BoltType::from(ws_id));
+        }
 
         for (key, value) in &node.properties {
             if let Some(bolt_value) = value.to_bolt_type() {
@@ -174,6 +196,7 @@ impl NodeBuilder {
             fqn,
             name,
             node_type: NodeType::Crate,
+            workspace_id: None,
             properties,
         }
     }
@@ -197,6 +220,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Module,
+            workspace_id: None,
             properties,
         }
     }
@@ -252,6 +276,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Function,
+            workspace_id: None,
             properties,
         }
     }
@@ -304,6 +329,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Struct,
+            workspace_id: None,
             properties,
         }
     }
@@ -355,6 +381,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Enum,
+            workspace_id: None,
             properties,
         }
     }
@@ -418,6 +445,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Trait,
+            workspace_id: None,
             properties,
         }
     }
@@ -469,6 +497,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Impl,
+            workspace_id: None,
             properties,
         }
     }
@@ -498,6 +527,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Type,
+            workspace_id: None,
             properties,
         }
     }
@@ -543,6 +573,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::TypeAlias,
+            workspace_id: None,
             properties,
         }
     }
@@ -580,6 +611,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Const,
+            workspace_id: None,
             properties,
         }
     }
@@ -619,6 +651,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Static,
+            workspace_id: None,
             properties,
         }
     }
@@ -665,6 +698,7 @@ impl NodeBuilder {
             fqn: fqn.into(),
             name: name.into(),
             node_type: NodeType::Macro,
+            workspace_id: None,
             properties,
         }
     }
@@ -846,5 +880,32 @@ mod tests {
                 expected_label
             );
         }
+    }
+
+    #[test]
+    fn test_extract_workspace_id() {
+        assert_eq!(
+            extract_workspace_id("Workspace_550e8400e29b"),
+            Some("550e8400e29b")
+        );
+        assert_eq!(
+            extract_workspace_id("Workspace_a1b2c3d4e5f6"),
+            Some("a1b2c3d4e5f6")
+        );
+        assert_eq!(extract_workspace_id("SomeOther"), None);
+        assert_eq!(extract_workspace_id(""), None);
+    }
+
+    #[test]
+    fn test_node_data_workspace_id_default() {
+        let node = NodeBuilder::create_crate("id", "my_crate", None, None);
+        assert_eq!(node.workspace_id, None);
+    }
+
+    #[test]
+    fn test_node_data_workspace_id_set() {
+        let mut node = NodeBuilder::create_crate("id", "my_crate", None, None);
+        node.workspace_id = Some("550e8400e29b".to_string());
+        assert_eq!(node.workspace_id, Some("550e8400e29b".to_string()));
     }
 }

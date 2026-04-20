@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use super::nodes::NodeData;
-use super::relationships::RelationshipData;
+use super::nodes::{extract_workspace_id, NodeData};
+use super::relationships::{extract_workspace_id_from_label, RelationshipData};
 
 /// Configuration for batch operations
 #[derive(Debug, Clone)]
@@ -259,6 +259,15 @@ impl BatchInsert {
                     props.insert("fqn".to_string(), BoltType::from(node.fqn.as_str()));
                     props.insert("name".to_string(), BoltType::from(node.name.as_str()));
 
+                    let ws_id = node.workspace_id.as_deref().or_else(|| {
+                        self.workspace_label
+                            .as_deref()
+                            .and_then(extract_workspace_id)
+                    });
+                    if let Some(ws_id) = ws_id {
+                        props.insert("workspace_id".to_string(), BoltType::from(ws_id));
+                    }
+
                     for (key, value) in &node.properties {
                         if let Some(bolt_value) = node_property_to_bolt(value) {
                             props.insert(key.clone(), bolt_value);
@@ -351,11 +360,20 @@ impl BatchInsert {
             let rel_params: Vec<HashMap<String, BoltType>> = group_rels
                 .iter()
                 .map(|rel| {
-                    let props: HashMap<String, BoltType> = rel
+                    let mut props: HashMap<String, BoltType> = rel
                         .properties
                         .iter()
                         .filter_map(|(k, v)| rel_property_to_bolt(v).map(|bv| (k.clone(), bv)))
                         .collect();
+
+                    let ws_id = rel.workspace_id.as_deref().or_else(|| {
+                        self.workspace_label
+                            .as_deref()
+                            .and_then(extract_workspace_id_from_label)
+                    });
+                    if let Some(ws_id) = ws_id {
+                        props.insert("workspace_id".to_string(), BoltType::from(ws_id));
+                    }
 
                     let mut rel_param = HashMap::new();
                     rel_param.insert("from_id".to_string(), BoltType::from(rel.from_id.as_str()));
@@ -587,6 +605,15 @@ impl BatchProcessor {
                     props.insert("fqn".to_string(), BoltType::from(node.fqn.as_str()));
                     props.insert("name".to_string(), BoltType::from(node.name.as_str()));
 
+                    let ws_id = node.workspace_id.as_deref().or_else(|| {
+                        self.workspace_label
+                            .as_deref()
+                            .and_then(extract_workspace_id)
+                    });
+                    if let Some(ws_id) = ws_id {
+                        props.insert("workspace_id".to_string(), BoltType::from(ws_id));
+                    }
+
                     for (key, value) in &node.properties {
                         if let Some(bolt_value) = node_property_to_bolt(value) {
                             props.insert(key.clone(), bolt_value);
@@ -678,11 +705,20 @@ impl BatchProcessor {
             let rel_params: Vec<HashMap<String, BoltType>> = group_rels
                 .iter()
                 .map(|rel| {
-                    let props: HashMap<String, BoltType> = rel
+                    let mut props: HashMap<String, BoltType> = rel
                         .properties
                         .iter()
                         .filter_map(|(k, v)| rel_property_to_bolt(v).map(|bv| (k.clone(), bv)))
                         .collect();
+
+                    let ws_id = rel.workspace_id.as_deref().or_else(|| {
+                        self.workspace_label
+                            .as_deref()
+                            .and_then(extract_workspace_id_from_label)
+                    });
+                    if let Some(ws_id) = ws_id {
+                        props.insert("workspace_id".to_string(), BoltType::from(ws_id));
+                    }
 
                     let mut rel_param = HashMap::new();
                     rel_param.insert("from_id".to_string(), BoltType::from(rel.from_id.as_str()));

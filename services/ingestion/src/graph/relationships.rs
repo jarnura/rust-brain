@@ -89,6 +89,8 @@ pub struct RelationshipData {
     pub to_label: String,
     /// Relationship type
     pub rel_type: RelationshipType,
+    /// Workspace ID for multi-tenant partitioning (e.g., "550e8400e29b")
+    pub workspace_id: Option<String>,
     /// Additional properties on the relationship
     #[serde(flatten)]
     pub properties: HashMap<String, PropertyValue>,
@@ -159,6 +161,13 @@ impl From<Vec<String>> for PropertyValue {
     }
 }
 
+/// Extract the workspace ID hex from a workspace label.
+///
+/// `Workspace_550e8400e29b` → `550e8400e29b`
+pub(crate) fn extract_workspace_id_from_label(label: &str) -> Option<&str> {
+    label.strip_prefix("Workspace_")
+}
+
 /// Builder for creating relationships in Neo4j
 pub struct RelationshipBuilder {
     graph: Arc<Graph>,
@@ -199,11 +208,20 @@ impl RelationshipBuilder {
             ),
         };
 
-        let props: HashMap<String, BoltType> = rel
+        let mut props: HashMap<String, BoltType> = rel
             .properties
             .iter()
             .filter_map(|(k, v)| v.to_bolt_type().map(|bv| (k.clone(), bv)))
             .collect();
+
+        let ws_id = rel.workspace_id.as_deref().or_else(|| {
+            self.workspace_label
+                .as_deref()
+                .and_then(extract_workspace_id_from_label)
+        });
+        if let Some(ws_id) = ws_id {
+            props.insert("workspace_id".to_string(), BoltType::from(ws_id));
+        }
 
         self.graph
             .run(
@@ -236,6 +254,7 @@ impl RelationshipBuilder {
             from_label: from_label.into(),
             to_label: to_label.into(),
             rel_type: RelationshipType::CONTAINS,
+            workspace_id: None,
             properties: HashMap::new(),
         }
     }
@@ -270,6 +289,7 @@ impl RelationshipBuilder {
             from_label: "Function".to_string(),
             to_label: "Function".to_string(),
             rel_type: RelationshipType::CALLS,
+            workspace_id: None,
             properties,
         }
     }
@@ -292,6 +312,7 @@ impl RelationshipBuilder {
             from_label: "Function".to_string(),
             to_label: "Type".to_string(),
             rel_type: RelationshipType::RETURNS,
+            workspace_id: None,
             properties,
         }
     }
@@ -324,6 +345,7 @@ impl RelationshipBuilder {
             from_label: "Function".to_string(),
             to_label: "Type".to_string(),
             rel_type: RelationshipType::ACCEPTS,
+            workspace_id: None,
             properties,
         }
     }
@@ -340,6 +362,7 @@ impl RelationshipBuilder {
             from_label: "Impl".to_string(),
             to_label: "Trait".to_string(),
             rel_type: RelationshipType::IMPLEMENTS,
+            workspace_id: None,
             properties: HashMap::new(),
         }
     }
@@ -353,6 +376,7 @@ impl RelationshipBuilder {
             from_label: "Impl".to_string(),
             to_label: "Struct".to_string(),
             rel_type: RelationshipType::FOR,
+            workspace_id: None,
             properties: HashMap::new(),
         }
     }
@@ -385,6 +409,7 @@ impl RelationshipBuilder {
             from_label: "Struct".to_string(),
             to_label: "Type".to_string(),
             rel_type: RelationshipType::HAS_FIELD,
+            workspace_id: None,
             properties,
         }
     }
@@ -415,6 +440,7 @@ impl RelationshipBuilder {
             from_label: "Enum".to_string(),
             to_label: "Type".to_string(),
             rel_type: RelationshipType::HAS_VARIANT,
+            workspace_id: None,
             properties,
         }
     }
@@ -447,6 +473,7 @@ impl RelationshipBuilder {
             from_label: "Type".to_string(),
             to_label: "Type".to_string(),
             rel_type: RelationshipType::MONOMORPHIZED_AS,
+            workspace_id: None,
             properties,
         }
     }
@@ -463,6 +490,7 @@ impl RelationshipBuilder {
             from_label: "Trait".to_string(),
             to_label: "Trait".to_string(),
             rel_type: RelationshipType::EXTENDS,
+            workspace_id: None,
             properties: HashMap::new(),
         }
     }
@@ -479,6 +507,7 @@ impl RelationshipBuilder {
             from_label: "Function".to_string(),
             to_label: "Macro".to_string(),
             rel_type: RelationshipType::EXPANDS_TO,
+            workspace_id: None,
             properties: HashMap::new(),
         }
     }
@@ -503,6 +532,7 @@ impl RelationshipBuilder {
             from_label: "Module".to_string(),
             to_label: "Module".to_string(),
             rel_type: RelationshipType::IMPORTS,
+            workspace_id: None,
             properties,
         }
     }
@@ -525,6 +555,7 @@ impl RelationshipBuilder {
             from_label: "Crate".to_string(),
             to_label: "Crate".to_string(),
             rel_type: RelationshipType::DEPENDS_ON,
+            workspace_id: None,
             properties,
         }
     }
@@ -545,6 +576,7 @@ impl RelationshipBuilder {
             from_label: "Trait".to_string(),
             to_label: "Function".to_string(),
             rel_type: RelationshipType::HAS_METHOD,
+            workspace_id: None,
             properties,
         }
     }
@@ -572,6 +604,7 @@ impl RelationshipBuilder {
             from_label: "Function".to_string(),
             to_label: "Type".to_string(),
             rel_type: RelationshipType::USES_TYPE,
+            workspace_id: None,
             properties,
         }
     }
@@ -702,5 +735,32 @@ mod tests {
         assert_eq!(rel.rel_type, RelationshipType::MONOMORPHIZED_AS);
         assert!(rel.properties.contains_key("generic_params"));
         assert!(rel.properties.contains_key("concrete_params"));
+    }
+
+    #[test]
+    fn test_extract_workspace_id_from_label() {
+        assert_eq!(
+            extract_workspace_id_from_label("Workspace_550e8400e29b"),
+            Some("550e8400e29b")
+        );
+        assert_eq!(
+            extract_workspace_id_from_label("Workspace_a1b2c3d4e5f6"),
+            Some("a1b2c3d4e5f6")
+        );
+        assert_eq!(extract_workspace_id_from_label("SomeOther"), None);
+        assert_eq!(extract_workspace_id_from_label(""), None);
+    }
+
+    #[test]
+    fn test_relationship_data_workspace_id_default() {
+        let rel = RelationshipBuilder::create_contains("a", "b", "Module", "Function");
+        assert_eq!(rel.workspace_id, None);
+    }
+
+    #[test]
+    fn test_relationship_data_workspace_id_set() {
+        let mut rel = RelationshipBuilder::create_contains("a", "b", "Module", "Function");
+        rel.workspace_id = Some("550e8400e29b".to_string());
+        assert_eq!(rel.workspace_id, Some("550e8400e29b".to_string()));
     }
 }
