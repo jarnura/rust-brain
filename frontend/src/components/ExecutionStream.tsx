@@ -1,10 +1,26 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, openExecutionStream } from '../api/client'
 import { useWorkspaceStore } from '../store/workspace'
 import type { AgentEvent } from '../types'
 import { parseAgentEvent } from '../lib/event-parser'
-import { isToolCallEvent } from '../types/events'
+import {
+  isReasoningEvent,
+  isToolCallEvent,
+  type TypedAgentEvent,
+} from '../types/events'
+import {
+  buildNavUnits,
+  eventMatchesQuery,
+  groupConsecutiveEvents,
+  isNearBottom,
+  nextNavIndex,
+  prevNavIndex,
+  summarizeGroup,
+  type NavUnit,
+  type TranscriptGroup,
+} from '../lib/collapsible-grouping'
 import { ToolCallCard } from './ToolCallCard'
+import { ReasoningCard } from './ReasoningCard'
 
 // ─── Agent display config ────────────────────────────────────────────────────
 
@@ -80,8 +96,8 @@ function phaseBadge(eventType: string) {
   )
 }
 
-function eventSummary(event: AgentEvent): string {
-  const c = event.content
+function eventSummary(event: AgentEvent | TypedAgentEvent): string {
+  const c = event.content as Record<string, unknown>
   if (typeof c === 'object' && c !== null) {
     if ('text' in c && typeof c.text === 'string') return c.text
     if ('message' in c && typeof c.message === 'string') return c.message
@@ -99,8 +115,8 @@ function eventSummary(event: AgentEvent): string {
 
 // ─── Agent source badge (shows which agent produced the event) ───────────────
 
-function agentSourceBadge(event: AgentEvent) {
-  const c = event.content
+function agentSourceBadge(event: AgentEvent | TypedAgentEvent) {
+  const c = event.content as Record<string, unknown>
   if (typeof c === 'object' && c !== null && 'agent' in c && typeof c.agent === 'string') {
     const display = getAgentDisplay(c.agent)
     return (
@@ -203,6 +219,57 @@ function AgentTimeline({ entries, activeAgent, streamDone, usesLegacyPhases }: A
   )
 }
 
+// ─── Generic event row (non-tool, non-reasoning) ─────────────────────────────
+
+interface EventRowProps {
+  event: TypedAgentEvent
+  highlighted: boolean
+  focused: boolean
+}
+
+function EventRow({ event, highlighted, focused }: EventRowProps) {
+  const ringClass = focused
+    ? 'ring-1 ring-brand-400/70 rounded'
+    : highlighted
+      ? 'ring-1 ring-yellow-400/60 rounded'
+      : ''
+  return (
+    <div className={`flex items-start gap-2 py-0.5 px-1 ${ringClass}`}>
+      {phaseBadge(event.event_type)}
+      {agentSourceBadge(event)}
+      <span className="text-dark-300 shrink-0 tabular-nums">
+        {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
+      </span>
+      <span className="text-dark-200 break-all">{eventSummary(event)}</span>
+    </div>
+  )
+}
+
+// ─── Collapsed group header ──────────────────────────────────────────────────
+
+interface GroupHeaderProps {
+  group: TranscriptGroup
+  onExpand: () => void
+  focused: boolean
+}
+
+function CollapsedGroupHeader({ group, onExpand, focused }: GroupHeaderProps) {
+  const summary = summarizeGroup(group)
+  const ringClass = focused ? 'ring-1 ring-brand-400/70' : ''
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      aria-expanded={false}
+      className={`w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-dark-300 border border-dashed border-dark-700 rounded hover:bg-dark-800/60 ${ringClass}`}
+    >
+      <span className="text-dark-500">▶</span>
+      <span className="font-medium">{summary}</span>
+      <span className="ml-auto text-[10px] text-dark-500">expand</span>
+    </button>
+  )
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function ExecutionStream() {
@@ -215,7 +282,19 @@ export function ExecutionStream() {
     upsertExecution,
   } = useWorkspaceStore()
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // ─── State: collapse, focus, autoscroll, filter ────────────────────────────
+
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
+  const [expandedUnits, setExpandedUnits] = useState<Set<string>>(() => new Set())
+  const [focusedIndex, setFocusedIndex] = useState(0)
+  const [autoScroll, setAutoScroll] = useState(true)
+  const [filter, setFilter] = useState('')
+
+  // Typed events (memoized so parsing doesn't thrash under frequent renders).
+  const typedEvents = useMemo(() => streamEvents.map(parseAgentEvent), [streamEvents])
 
   // Derive agent timeline from events
   const { entries, activeAgent, usesLegacyPhases } = useMemo(
@@ -223,10 +302,113 @@ export function ExecutionStream() {
     [streamEvents],
   )
 
-  // Auto-scroll to bottom on new events
+  // Group consecutive same-kind events
+  const groups = useMemo(() => groupConsecutiveEvents(typedEvents), [typedEvents])
+
+  // Flat navigable units (respects collapsed groups)
+  const navUnits: NavUnit[] = useMemo(
+    () => buildNavUnits(groups, collapsedGroups),
+    [groups, collapsedGroups],
+  )
+
+  // ─── Handlers ──────────────────────────────────────────────────────────────
+
+  const toggleUnit = useCallback((unitId: string) => {
+    setExpandedUnits((prev) => {
+      const next = new Set(prev)
+      if (next.has(unitId)) next.delete(unitId)
+      else next.add(unitId)
+      return next
+    })
+  }, [])
+
+  const toggleGroupCollapse = useCallback((groupId: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+  }, [])
+
+  const expandAll = useCallback(() => {
+    setCollapsedGroups(new Set())
+    const allUnitIds = new Set<string>()
+    for (const group of groups) {
+      for (const event of group.events) {
+        allUnitIds.add(`${group.id}:${event.id}`)
+      }
+    }
+    setExpandedUnits(allUnitIds)
+  }, [groups])
+
+  const collapseAll = useCallback(() => {
+    setExpandedUnits(new Set())
+    setCollapsedGroups(new Set(groups.map((g) => g.id)))
+  }, [groups])
+
+  const toggleFocused = useCallback(() => {
+    const unit = navUnits[focusedIndex]
+    if (!unit) return
+    if (unit.kind === 'group-header') {
+      toggleGroupCollapse(unit.groupId)
+    } else {
+      toggleUnit(unit.id)
+    }
+  }, [focusedIndex, navUnits, toggleGroupCollapse, toggleUnit])
+
+  // Keyboard shortcuts (J/K next/prev, Enter toggle, Ctrl+Shift+C collapse all)
   useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      // Don't hijack keys while typing in form inputs.
+      const target = e.target as HTMLElement | null
+      if (target) {
+        const tag = target.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) {
+          return
+        }
+      }
+
+      if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        e.preventDefault()
+        collapseAll()
+        return
+      }
+      if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault()
+        setFocusedIndex((idx) => nextNavIndex(idx, navUnits.length))
+      } else if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault()
+        setFocusedIndex((idx) => prevNavIndex(idx, navUnits.length))
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        toggleFocused()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [collapseAll, navUnits.length, toggleFocused])
+
+  // Clamp focusedIndex when navUnits shrinks.
+  useEffect(() => {
+    if (focusedIndex >= navUnits.length && navUnits.length > 0) {
+      setFocusedIndex(navUnits.length - 1)
+    }
+  }, [focusedIndex, navUnits.length])
+
+  // Auto-scroll when new events arrive (if enabled).
+  useEffect(() => {
+    if (!autoScroll) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [streamEvents.length])
+  }, [autoScroll, streamEvents.length])
+
+  // Scroll handler: pause auto-scroll when user scrolls up, resume at bottom.
+  const onScroll = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const atBottom = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
+    setAutoScroll(atBottom)
+  }, [])
 
   // Open SSE stream when executionId changes
   useEffect(() => {
@@ -243,7 +425,6 @@ export function ExecutionStream() {
       },
       () => {
         setStreamDone(true)
-        // Refresh execution status
         fetch(`${API_BASE}/executions/${activeExecutionId}`)
           .then((r) => r.json())
           .then((exec) => upsertExecution(exec as Parameters<typeof upsertExecution>[0]))
@@ -255,6 +436,14 @@ export function ExecutionStream() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeExecutionId])
 
+  // Reset state when a new execution begins.
+  useEffect(() => {
+    setCollapsedGroups(new Set())
+    setExpandedUnits(new Set())
+    setFocusedIndex(0)
+    setAutoScroll(true)
+  }, [activeExecutionId])
+
   if (!activeExecutionId) {
     return (
       <p className="text-dark-500 text-xs italic p-2">
@@ -262,6 +451,11 @@ export function ExecutionStream() {
       </p>
     )
   }
+
+  const filterActive = filter.trim().length > 0
+  const matchCount = filterActive
+    ? typedEvents.reduce((n, ev) => (eventMatchesQuery(ev, filter) ? n + 1 : n), 0)
+    : 0
 
   return (
     <div className="flex flex-col h-full">
@@ -298,20 +492,136 @@ export function ExecutionStream() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto space-y-1 font-mono text-xs">
-        {streamEvents.map((event) => {
-          const typed = parseAgentEvent(event)
-          if (isToolCallEvent(typed)) {
-            return <ToolCallCard key={event.id} event={typed} />
+      {/* Transcript toolbar */}
+      <div className="flex flex-wrap items-center gap-2 mb-2 text-[11px]">
+        <button
+          type="button"
+          onClick={expandAll}
+          className="px-2 py-0.5 rounded border border-dark-700 text-dark-300 hover:bg-dark-800"
+          title="Expand all events"
+        >
+          Expand all
+        </button>
+        <button
+          type="button"
+          onClick={collapseAll}
+          className="px-2 py-0.5 rounded border border-dark-700 text-dark-300 hover:bg-dark-800"
+          title="Collapse all (Ctrl+Shift+C)"
+        >
+          Collapse all
+        </button>
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter…"
+          aria-label="Filter events"
+          className="flex-1 min-w-[8rem] px-2 py-0.5 rounded border border-dark-700 bg-dark-900/60 text-dark-200 placeholder-dark-500 focus:outline-none focus:border-brand-500"
+        />
+        {filterActive && (
+          <span className="text-dark-400 tabular-nums">
+            {matchCount} match{matchCount === 1 ? '' : 'es'}
+          </span>
+        )}
+        <span
+          className={`px-2 py-0.5 rounded ${autoScroll ? 'text-green-400' : 'text-dark-500'}`}
+          title={
+            autoScroll
+              ? 'Auto-scroll on (at bottom)'
+              : 'Auto-scroll paused (user scrolled up)'
           }
+        >
+          {autoScroll ? '⇣ auto' : '⏸ paused'}
+        </span>
+        <span className="text-[10px] text-dark-500">J/K nav · Enter toggle</span>
+      </div>
+
+      <div
+        ref={scrollContainerRef}
+        onScroll={onScroll}
+        className="flex-1 overflow-y-auto space-y-1 font-mono text-xs"
+      >
+        {groups.map((group, groupIdx) => {
+          const isGroupCollapsed = collapsedGroups.has(group.id)
+          const headerUnitId = `${group.id}:hdr`
+          const headerFocused =
+            isGroupCollapsed &&
+            navUnits[focusedIndex]?.kind === 'group-header' &&
+            navUnits[focusedIndex]?.groupId === group.id
+
+          if (isGroupCollapsed) {
+            return (
+              <div key={headerUnitId} data-group-id={group.id}>
+                <CollapsedGroupHeader
+                  group={group}
+                  onExpand={() => toggleGroupCollapse(group.id)}
+                  focused={headerFocused}
+                />
+              </div>
+            )
+          }
+
+          const showGroupDivider = group.events.length > 1
+
           return (
-            <div key={event.id} className="flex items-start gap-2 py-0.5">
-              {phaseBadge(event.event_type)}
-              {agentSourceBadge(event)}
-              <span className="text-dark-300 shrink-0 tabular-nums">
-                {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
-              </span>
-              <span className="text-dark-200 break-all">{eventSummary(event)}</span>
+            <div key={group.id} data-group-id={group.id}>
+              {showGroupDivider && (
+                <div className="flex items-center gap-2 mt-1 mb-0.5 text-[10px] text-dark-500">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroupCollapse(group.id)}
+                    className="flex items-center gap-1 hover:text-dark-300"
+                    title="Collapse group"
+                  >
+                    <span>▼</span>
+                    <span>{summarizeGroup(group)}</span>
+                  </button>
+                  <div className="flex-1 h-px bg-dark-800" />
+                </div>
+              )}
+              {group.events.map((event, eventIdx) => {
+                const unitId = `${group.id}:${event.id}`
+                const unitExpanded = expandedUnits.has(unitId)
+                const highlighted = filterActive && eventMatchesQuery(event, filter)
+                const navUnit = navUnits[focusedIndex]
+                const unitFocused =
+                  navUnit?.kind === 'event' &&
+                  navUnit.groupIndex === groupIdx &&
+                  navUnit.eventIndex === eventIdx
+
+                if (isToolCallEvent(event)) {
+                  return (
+                    <ToolCallCard
+                      key={event.id}
+                      event={event}
+                      expanded={unitExpanded}
+                      onToggle={() => toggleUnit(unitId)}
+                      highlighted={highlighted}
+                      focused={unitFocused}
+                    />
+                  )
+                }
+                if (isReasoningEvent(event)) {
+                  return (
+                    <ReasoningCard
+                      key={event.id}
+                      event={event}
+                      expanded={unitExpanded}
+                      onToggle={() => toggleUnit(unitId)}
+                      highlighted={highlighted}
+                      focused={unitFocused}
+                    />
+                  )
+                }
+                return (
+                  <EventRow
+                    key={event.id}
+                    event={event}
+                    highlighted={highlighted}
+                    focused={unitFocused}
+                  />
+                )
+              })}
             </div>
           )
         })}

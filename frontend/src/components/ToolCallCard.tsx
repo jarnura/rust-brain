@@ -154,6 +154,13 @@ export function summarizeArgs(args: unknown): string {
 
 interface ToolCallCardProps {
   event: TypedAgentEvent & { content: ToolCallContent }
+  /** Controlled `expanded` state. When omitted, the card manages its own. */
+  expanded?: boolean
+  onToggle?: () => void
+  /** Highlight ring (search match). */
+  highlighted?: boolean
+  /** Focus ring (keyboard navigation). */
+  focused?: boolean
 }
 
 function StatusIndicator({ status }: { status: ToolCallStatus }) {
@@ -279,8 +286,20 @@ function TruncatedBlock({ raw, label }: { raw: string; label: string }) {
   )
 }
 
-export function ToolCallCard({ event }: ToolCallCardProps) {
-  const [expanded, setExpanded] = useState(false)
+export function ToolCallCard({
+  event,
+  expanded: expandedProp,
+  onToggle,
+  highlighted = false,
+  focused = false,
+}: ToolCallCardProps) {
+  const [internalExpanded, setInternalExpanded] = useState(false)
+  const isControlled = expandedProp !== undefined
+  const expanded = isControlled ? expandedProp : internalExpanded
+  const handleToggle = () => {
+    if (onToggle) onToggle()
+    if (!isControlled) setInternalExpanded((v) => !v)
+  }
   const { content, timestamp } = event
   const status = deriveToolCallStatus(content)
 
@@ -294,12 +313,17 @@ export function ToolCallCard({ event }: ToolCallCardProps) {
       : status === 'pending'
         ? 'border-dark-700'
         : 'border-dark-600'
+  const ringClass = focused
+    ? 'ring-1 ring-brand-400/70'
+    : highlighted
+      ? 'ring-1 ring-yellow-400/60'
+      : ''
 
   return (
-    <div className={`border ${borderColor} rounded-md bg-dark-900/30`}>
+    <div className={`border ${borderColor} rounded-md bg-dark-900/30 ${ringClass}`}>
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={handleToggle}
         aria-expanded={expanded}
         className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-dark-800/60 rounded-md"
       >
