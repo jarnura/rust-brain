@@ -411,19 +411,37 @@ pub async fn list_files(
         ))
     })?;
 
-    let root_path = std::path::PathBuf::from(clone_path);
-    if !root_path.exists() {
-        return Err(AppError::Internal(format!(
-            "Clone path does not exist on disk for workspace {}",
-            id
-        )));
+    let root_path = std::path::PathBuf::from(&clone_path);
+    if root_path.exists() {
+        let tree = tokio::task::spawn_blocking(move || build_tree(&root_path, &root_path))
+            .await
+            .map_err(|e| AppError::Internal(format!("File tree task panicked: {}", e)))?
+            .map_err(|e| AppError::Internal(format!("Failed to build file tree: {}", e)))?;
+        return Ok(Json(tree));
     }
 
-    let tree = tokio::task::spawn_blocking(move || build_tree(&root_path, &root_path))
-        .await
-        .map_err(|e| AppError::Internal(format!("File tree task panicked: {}", e)))?
-        .map_err(|e| AppError::Internal(format!("Failed to build file tree: {}", e)))?;
+    let vol_name = workspace
+        .volume_name
+        .as_deref()
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "Clone path does not exist on disk and no Docker volume for workspace {}",
+                id
+            ))
+        })?;
 
+    let entries = state
+        .docker
+        .list_volume_paths(vol_name)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to list files from Docker volume {}: {}",
+                vol_name, e
+            ))
+        })?;
+
+    let tree = build_tree_from_paths(&entries);
     Ok(Json(tree))
 }
 
@@ -733,6 +751,67 @@ fn build_tree(path: &std::path::Path, root: &std::path::Path) -> std::io::Result
     })
 }
 
+/// Build a [`FileNode`] tree from a flat list of `(relative_path, is_dir)` pairs.
+///
+/// Used as a fallback when the clone directory is gone but the Docker volume
+/// still exists.
+fn build_tree_from_paths(entries: &[(String, bool)]) -> FileNode {
+    use std::collections::BTreeMap;
+
+    struct DirEntry {
+        is_dir: bool,
+        children: BTreeMap<String, DirEntry>,
+    }
+
+    let mut root = DirEntry {
+        is_dir: true,
+        children: BTreeMap::new(),
+    };
+
+    for (path, is_dir) in entries {
+        let parts: Vec<&str> = path.split('/').collect();
+        let mut current = &mut root;
+        for (i, part) in parts.iter().enumerate() {
+            let is_last = i == parts.len() - 1;
+            let entry = current
+                .children
+                .entry(part.to_string())
+                .or_insert_with(|| DirEntry {
+                    is_dir: if is_last { *is_dir } else { true },
+                    children: BTreeMap::new(),
+                });
+            if is_last {
+                entry.is_dir = *is_dir;
+            }
+            current = entry;
+        }
+    }
+
+    fn to_file_node(name: &str, path: &str, entry: &DirEntry) -> FileNode {
+        let mut children: Vec<FileNode> = entry
+            .children
+            .iter()
+            .map(|(child_name, child)| {
+                let child_path = if path.is_empty() {
+                    child_name.clone()
+                } else {
+                    format!("{}/{}", path, child_name)
+                };
+                to_file_node(child_name, &child_path, child)
+            })
+            .collect();
+        children.sort_by_key(|c| (!c.is_dir, c.name.clone()));
+        FileNode {
+            name: name.to_string(),
+            path: path.to_string(),
+            is_dir: entry.is_dir,
+            children,
+        }
+    }
+
+    to_file_node(".", "", &root)
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -899,5 +978,45 @@ mod tests {
         let json = r#"{"github_url": "https://github.com/org/repo", "name": ""}"#;
         let req: CreateWorkspaceRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_build_tree_from_paths_basic() {
+        let entries = vec![
+            ("src".to_string(), true),
+            ("src/main.rs".to_string(), false),
+            ("Cargo.toml".to_string(), false),
+        ];
+        let tree = build_tree_from_paths(&entries);
+        assert!(tree.is_dir);
+
+        let names: Vec<&str> = tree.children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["src", "Cargo.toml"]);
+
+        let src = &tree.children[0];
+        assert!(src.is_dir);
+        assert_eq!(src.children.len(), 1);
+        assert_eq!(src.children[0].name, "main.rs");
+        assert_eq!(src.children[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_build_tree_from_paths_dirs_before_files() {
+        let entries = vec![
+            ("README.md".to_string(), false),
+            ("src".to_string(), true),
+            ("src/lib.rs".to_string(), false),
+        ];
+        let tree = build_tree_from_paths(&entries);
+        assert_eq!(tree.children[0].name, "src");
+        assert_eq!(tree.children[1].name, "README.md");
+    }
+
+    #[test]
+    fn test_build_tree_from_paths_empty() {
+        let entries: Vec<(String, bool)> = vec![];
+        let tree = build_tree_from_paths(&entries);
+        assert!(tree.is_dir);
+        assert!(tree.children.is_empty());
     }
 }

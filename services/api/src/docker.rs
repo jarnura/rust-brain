@@ -526,6 +526,49 @@ impl DockerClient {
         Ok(())
     }
 
+    /// List all file and directory paths in a Docker volume.
+    ///
+    /// Spins up a short-lived `busybox` container that runs `find /mnt` on the
+    /// read-only volume, then returns relative paths (stripped of the `/mnt/`
+    /// prefix). Hidden entries (starting with `.`) are excluded.
+    ///
+    /// Uses a shell one-liner compatible with busybox `find` (no `-printf`).
+    pub async fn list_volume_paths(&self, volume_name: &str) -> anyhow::Result<Vec<(String, bool)>> {
+        let vol_mount = format!("{}:/mnt:ro", volume_name);
+        let script = r#"cd /mnt && find . -not -path '*/.*' | while read p; do [ -d "$p" ] && printf 'd %s\n' "$p" || printf 'f %s\n' "$p"; done"#;
+
+        let output = Command::new("docker")
+            .args(["run", "--rm", "-v", &vol_mount, "busybox", "sh", "-c", script])
+            .output()
+            .await
+            .context("failed to spawn `docker run` for volume listing")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "volume listing failed (exit {}): {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let entries: Vec<(String, bool)> = stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let (kind, rel) = line.split_once(' ')?;
+                let path = rel.strip_prefix("./").unwrap_or(rel);
+                if path.is_empty() || path == "." {
+                    return None;
+                }
+                Some((path.to_string(), kind == "d"))
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
     /// Returns `true` if the named volume exists, `false` otherwise.
     ///
     /// Uses `docker volume inspect <name>` — exit 0 means found, exit 1 means
