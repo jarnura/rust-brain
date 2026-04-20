@@ -18,7 +18,7 @@ use crate::errors::AppError;
 use crate::neo4j::WorkspaceContext;
 use crate::state::AppState;
 use crate::workspace::{
-    acquire_conn, collection_name_for, get_workspace as db_get_workspace,
+    acquire_conn, collection_name_for, default_collection_name, get_workspace as db_get_workspace,
     schema::COLLECTION_TYPE_CODE,
 };
 
@@ -180,6 +180,9 @@ async fn query_pg_counts(state: &AppState, ws_ctx: &WorkspaceContext) -> Result<
 }
 
 /// Query Neo4j for node and edge counts scoped to a workspace.
+///
+/// Falls back to global (unlabeled) counts when workspace-scoped query returns 0,
+/// which happens for data ingested before multitenancy labels were applied.
 async fn query_neo4j_counts(
     state: &AppState,
     ws_ctx: &WorkspaceContext,
@@ -197,8 +200,36 @@ async fn query_neo4j_counts(
 
     let results = client.execute_query(&cypher, serde_json::json!({})).await?;
 
-    let row = results.into_iter().next();
-    match row {
+    let (nodes, rels) = match results.into_iter().next() {
+        Some(row) => {
+            let nodes = row.get("nodes").and_then(|v| v.as_i64()).unwrap_or(0);
+            let rels = row.get("rels").and_then(|v| v.as_i64()).unwrap_or(0);
+            (nodes, rels)
+        }
+        None => (0, 0),
+    };
+
+    if nodes > 0 {
+        return Ok((nodes, rels));
+    }
+
+    // Fallback: pre-multitenancy data has no workspace labels
+    debug!(
+        workspace_id = %ws_ctx.workspace_id(),
+        "Workspace-scoped Neo4j count is 0, falling back to global count"
+    );
+
+    let global_cypher =
+        "MATCH (n) \
+         WITH count(n) AS nodes \
+         OPTIONAL MATCH ()-[r]->() \
+         WITH nodes, count(r) AS rels \
+         RETURN nodes, rels";
+
+    let global_results =
+        crate::neo4j::execute_neo4j_query(state, global_cypher, serde_json::json!({})).await?;
+
+    match global_results.into_iter().next() {
         Some(row) => {
             let nodes = row.get("nodes").and_then(|v| v.as_i64()).unwrap_or(0);
             let rels = row.get("rels").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -209,6 +240,9 @@ async fn query_neo4j_counts(
 }
 
 /// Query Qdrant for vector count in the workspace code collection.
+///
+/// Falls back to the global `code_embeddings` collection when the workspace-scoped
+/// collection does not exist (404), which happens for pre-multitenancy data.
 async fn query_qdrant_count(state: &AppState, ws_ctx: &WorkspaceContext) -> Result<i64, AppError> {
     let schema_name = crate::workspace::schema::schema_name_for(ws_ctx.workspace_id());
     let collection_name = collection_name_for(&schema_name, COLLECTION_TYPE_CODE);
@@ -225,22 +259,52 @@ async fn query_qdrant_count(state: &AppState, ws_ctx: &WorkspaceContext) -> Resu
         .await
         .map_err(|e| AppError::Qdrant(format!("Failed to query Qdrant: {}", e)))?;
 
-    if !resp.status().is_success() {
+    if resp.status().is_success() {
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Qdrant(format!("Failed to parse Qdrant response: {}", e)))?;
+
+        let count = json["result"]["points_count"].as_i64().unwrap_or(0);
+        if count > 0 {
+            return Ok(count);
+        }
+    }
+
+    // Fallback: pre-multitenancy data lives in the global collection
+    debug!(
+        workspace_id = %ws_ctx.workspace_id(),
+        collection = %collection_name,
+        "Workspace-scoped Qdrant collection missing or empty, falling back to global collection"
+    );
+
+    let global_collection = default_collection_name(COLLECTION_TYPE_CODE);
+    let global_url = format!(
+        "{}/collections/{}",
+        state.config.qdrant_host, global_collection
+    );
+
+    let global_resp = state
+        .http_client
+        .get(&global_url)
+        .send()
+        .await
+        .map_err(|e| AppError::Qdrant(format!("Failed to query global Qdrant collection: {}", e)))?;
+
+    if !global_resp.status().is_success() {
         return Err(AppError::Qdrant(format!(
-            "Qdrant returned status {} for collection {}",
-            resp.status(),
-            collection_name
+            "Qdrant returned status {} for global collection {}",
+            global_resp.status(),
+            global_collection
         )));
     }
 
-    let json: serde_json::Value = resp
+    let json: serde_json::Value = global_resp
         .json()
         .await
         .map_err(|e| AppError::Qdrant(format!("Failed to parse Qdrant response: {}", e)))?;
 
-    let count = json["result"]["points_count"].as_i64().unwrap_or(0);
-
-    Ok(count)
+    Ok(json["result"]["points_count"].as_i64().unwrap_or(0))
 }
 
 /// Query Neo4j for workspace isolation checks.
