@@ -136,7 +136,7 @@ export interface Execution {
   started_at: string | null
   completed_at: string | null
   created_at: string
-  diff_summary?: string | null
+  diff_summary?: string | Record<string, unknown> | null
   // Coming from RUSA-124
   volume_name?: string | null
   opencode_endpoint?: string | null

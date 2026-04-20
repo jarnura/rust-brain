@@ -70,7 +70,11 @@ export function DiffViewer() {
       getExecution(activeExecutionId)
         .then((full) => {
           if (full.diff_summary) {
-            setDiff({ patch: full.diff_summary, clean: false })
+            const patch =
+              typeof full.diff_summary === 'string'
+                ? full.diff_summary
+                : JSON.stringify(full.diff_summary, null, 2)
+            setDiff({ patch, clean: !patch })
           } else {
             setDiff({ patch: '', clean: true })
           }
