@@ -922,4 +922,82 @@ mod tests {
         let msg = classify_container_error("something weird happened");
         assert!(msg.contains("something weird happened"));
     }
+
+    #[test]
+    fn unknown_message_part_classifies_as_unknown_event() {
+        use crate::opencode::MessagePart;
+
+        let part = MessagePart::Unknown {
+            raw_type: "image".to_string(),
+            raw: serde_json::json!({
+                "type": "image",
+                "url": "https://example.com/diagram.png"
+            }),
+        };
+
+        let (event_type, content) = match &part {
+            MessagePart::Text { text } => ("reasoning", json!({ "agent": "test", "text": text })),
+            MessagePart::Reasoning { text } => {
+                ("reasoning", json!({ "agent": "test", "reasoning": text }))
+            }
+            MessagePart::ToolInvocation { .. } => ("tool_call", json!({})),
+            MessagePart::StepStart { id } => {
+                ("reasoning", json!({ "agent": "test", "step_start": id }))
+            }
+            MessagePart::StepFinish { reason } => (
+                "reasoning",
+                json!({ "agent": "test", "step_finish": reason }),
+            ),
+            MessagePart::Unknown { raw_type, raw } => {
+                ("unknown", json!({ "raw_type": raw_type, "raw": raw }))
+            }
+        };
+
+        assert_eq!(event_type, "unknown");
+        assert_eq!(
+            content.get("raw_type").and_then(|v| v.as_str()),
+            Some("image")
+        );
+        assert_eq!(
+            content
+                .get("raw")
+                .and_then(|r| r.get("url"))
+                .and_then(|v| v.as_str()),
+            Some("https://example.com/diagram.png")
+        );
+    }
+
+    #[test]
+    fn unknown_message_part_is_not_silently_dropped() {
+        use crate::opencode::MessagePart;
+
+        let unknown_part = MessagePart::Unknown {
+            raw_type: "future-type".to_string(),
+            raw: serde_json::json!({ "type": "future-type", "data": 42 }),
+        };
+
+        let all_parts: Vec<MessagePart> = vec![
+            MessagePart::Text {
+                text: "hello".to_string(),
+            },
+            unknown_part.clone(),
+            MessagePart::Reasoning {
+                text: "thinking".to_string(),
+            },
+        ];
+
+        let classified: Vec<&str> = all_parts
+            .iter()
+            .map(|p| match p {
+                MessagePart::Text { .. } => "reasoning",
+                MessagePart::Reasoning { .. } => "reasoning",
+                MessagePart::ToolInvocation { .. } => "tool_call",
+                MessagePart::StepStart { .. } => "reasoning",
+                MessagePart::StepFinish { .. } => "reasoning",
+                MessagePart::Unknown { .. } => "unknown",
+            })
+            .collect();
+
+        assert_eq!(classified, vec!["reasoning", "unknown", "reasoning"]);
+    }
 }

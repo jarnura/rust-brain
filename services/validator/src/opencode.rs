@@ -155,15 +155,20 @@ pub enum MessagePart {
     Text { text: String },
     /// Chain-of-thought reasoning (hidden from user display)
     Reasoning { text: String },
-    /// A tool invocation with optional arguments and result
-    #[serde(rename = "tool-invocation")]
+    /// A tool invocation with optional arguments and result.
+    ///
+    /// OpenCode sends `type: "tool"` with fields `tool` (name), `state`
+    /// (nested `input`/`output`), `callID`, etc. Legacy format uses
+    /// `type: "tool-invocation"` with `toolName`, `args`, `result`.
     ToolInvocation {
-        #[serde(rename = "toolName", default)]
+        #[serde(rename = "toolName", alias = "tool", default)]
         tool_name: Option<String>,
         #[serde(default)]
         args: Option<serde_json::Value>,
         #[serde(default)]
         result: Option<serde_json::Value>,
+        #[serde(default)]
+        state: Option<serde_json::Value>,
     },
     /// Marks the beginning of an agent step
     #[serde(rename = "step-start")]
@@ -208,10 +213,12 @@ impl Serialize for MessagePart {
                 tool_name,
                 args,
                 result,
+                state,
             } => KnownMessagePart::ToolInvocation {
                 tool_name: tool_name.clone(),
                 args: args.clone(),
                 result: result.clone(),
+                state: state.clone(),
             }
             .serialize(serializer),
             MessagePart::StepStart { id } => {
@@ -243,14 +250,16 @@ enum KnownMessagePart {
     Reasoning {
         text: String,
     },
-    #[serde(rename = "tool-invocation")]
+    #[serde(rename = "tool-invocation", alias = "tool")]
     ToolInvocation {
-        #[serde(rename = "toolName", default)]
+        #[serde(rename = "toolName", alias = "tool", default)]
         tool_name: Option<String>,
         #[serde(default)]
         args: Option<serde_json::Value>,
         #[serde(default)]
         result: Option<serde_json::Value>,
+        #[serde(default)]
+        state: Option<serde_json::Value>,
     },
     #[serde(rename = "step-start")]
     StepStart {
@@ -297,10 +306,12 @@ impl From<MessagePartHelper> for MessagePart {
                     tool_name,
                     args,
                     result,
+                    state,
                 } => MessagePart::ToolInvocation {
                     tool_name,
                     args,
                     result,
+                    state,
                 },
                 KnownMessagePart::StepStart { id } => MessagePart::StepStart { id },
                 KnownMessagePart::StepFinish { reason } => MessagePart::StepFinish { reason },
@@ -715,6 +726,74 @@ mod tests {
                 assert_eq!(text, "Let me think about this...");
             }
             _ => panic!("Expected Reasoning variant, got {part:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_type_alias_deserializes_opencode_format() {
+        let json = serde_json::json!({
+            "type": "tool",
+            "tool": "task",
+            "callID": "functions.task:0",
+            "state": {
+                "status": "completed",
+                "input": {
+                    "subagent_type": "explore",
+                    "prompt": "Find auth patterns"
+                },
+                "output": "Found 5 matches"
+            }
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+                state,
+            } => {
+                assert_eq!(tool_name, Some("task".to_string()));
+                assert!(args.is_none());
+                assert!(result.is_none());
+                assert!(state.is_some());
+                let s = state.unwrap();
+                assert_eq!(
+                    s.get("input")
+                        .and_then(|i| i.get("subagent_type"))
+                        .and_then(|v| v.as_str()),
+                    Some("explore")
+                );
+            }
+            _ => panic!("Expected ToolInvocation variant, got {part:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_invocation_legacy_format_deserializes() {
+        let json = serde_json::json!({
+            "type": "tool-invocation",
+            "toolName": "bash",
+            "args": { "command": "ls -la" },
+            "result": "file1.txt\nfile2.txt"
+        });
+
+        let part: MessagePart = serde_json::from_value(json).expect("Failed to deserialize");
+
+        match part {
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+                state,
+            } => {
+                assert_eq!(tool_name, Some("bash".to_string()));
+                assert!(args.is_some());
+                assert!(result.is_some());
+                assert!(state.is_none());
+            }
+            _ => panic!("Expected ToolInvocation variant, got {part:?}"),
         }
     }
 }

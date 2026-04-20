@@ -88,6 +88,10 @@ pub async fn chat_handler(
         .iter()
         .filter_map(|p| match p {
             opencode::MessagePart::Text { text } => Some(text.as_str()),
+            opencode::MessagePart::Unknown { raw_type, .. } => {
+                debug!(raw_type, "Non-Text MessagePart in chat handler");
+                None
+            }
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -225,24 +229,56 @@ pub async fn chat_stream_handler(
                                             Some("tool-invocation") | Some("tool_invocation") => {
                                                 let name = part["toolName"].as_str()
                                                     .or_else(|| part["tool_name"].as_str())
+                                                    .or_else(|| part["tool"].as_str())
                                                     .unwrap_or("unknown");
                                                 let args = &part["args"];
                                                 let result = &part["result"];
-                                                let status = if part["state"].as_str() == Some("error") {
+                                                let state = &part["state"];
+                                                let status = if state.get("error").is_some() || part["state"].as_str() == Some("error") {
                                                     "error"
-                                                } else if !result.is_null() {
+                                                } else if !result.is_null() || state.get("output").is_some() {
                                                     "done"
                                                 } else {
                                                     "running"
                                                 };
+                                                let args_val = if args.is_null() {
+                                                    state.get("input").unwrap_or(args)
+                                                } else {
+                                                    args
+                                                };
+                                                let result_val = if result.is_null() {
+                                                    state.get("output").unwrap_or(result)
+                                                } else {
+                                                    result
+                                                };
                                                 let payload = serde_json::json!({
                                                     "name": name,
-                                                    "args": args,
+                                                    "args": args_val,
                                                     "status": status,
-                                                    "result": result,
+                                                    "result": result_val,
                                                 });
                                                 yield Ok(Event::default()
                                                     .event("tool_call")
+                                                    .data(payload.to_string()));
+                                            }
+                                            Some("reasoning") => {
+                                                if let Some(text) = part["text"].as_str() {
+                                                    let payload = serde_json::json!({
+                                                        "text": text,
+                                                    });
+                                                    yield Ok(Event::default()
+                                                        .event("reasoning")
+                                                        .data(payload.to_string()));
+                                                }
+                                            }
+                                            Some("step-start") => {
+                                                let id = part["id"].as_str();
+                                                let payload = serde_json::json!({
+                                                    "step": "start",
+                                                    "id": id,
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("step")
                                                     .data(payload.to_string()));
                                             }
                                             Some("step-finish")
@@ -257,7 +293,34 @@ pub async fn chat_stream_handler(
                                                     .data(payload.to_string()));
                                                 accumulated_text.clear();
                                             }
-                                            _ => {}
+                                            Some("step-finish") => {
+                                                let reason = part["reason"].as_str();
+                                                let payload = serde_json::json!({
+                                                    "step": "finish",
+                                                    "reason": reason,
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("step")
+                                                    .data(payload.to_string()));
+                                            }
+                                            Some(unknown_type) => {
+                                                // Per RECONCILIATION.md R-4: unknown MessagePart
+                                                // types must NOT be silently dropped. Forward as
+                                                // an opaque event so the frontend can decide how
+                                                // to render them.
+                                                debug!(
+                                                    part_type = unknown_type,
+                                                    "Unknown MessagePart type in SSE stream, forwarding as opaque event"
+                                                );
+                                                let payload = serde_json::json!({
+                                                    "type": unknown_type,
+                                                    "raw": part,
+                                                });
+                                                yield Ok(Event::default()
+                                                    .event("unknown_part")
+                                                    .data(payload.to_string()));
+                                            }
+                                            None => {}
                                         }
                                     }
 
@@ -286,7 +349,9 @@ pub async fn chat_stream_handler(
                                         }
                                     }
 
-                                    _ => {}
+                                    _ => {
+                                        debug!(event_type, "Unhandled OpenCode SSE event type");
+                                    }
                                 }
                             }
                         }
