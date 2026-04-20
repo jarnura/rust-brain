@@ -14,6 +14,7 @@ pub enum McpError {
     Api(String),
 
     /// Resource not found
+    #[allow(dead_code)]
     #[error("Not found: {0}")]
     NotFound(String),
 
@@ -22,6 +23,7 @@ pub enum McpError {
     InvalidRequest(String),
 
     /// Internal error
+    #[allow(dead_code)]
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -34,16 +36,19 @@ pub enum McpError {
     Io(#[from] std::io::Error),
 
     /// MCP protocol error
+    #[allow(dead_code)]
     #[error("MCP protocol error: {0}")]
     Protocol(String),
 
     /// OpenCode error
+    #[allow(dead_code)]
     #[error("OpenCode error: {0}")]
     OpenCode(String),
 }
 
 impl McpError {
     /// Convert to MCP error code
+    #[allow(dead_code)]
     pub fn to_code(&self) -> i32 {
         match self {
             McpError::Http(_) => -1,
@@ -59,6 +64,7 @@ impl McpError {
     }
 
     /// Check if this error is retryable
+    #[allow(dead_code)]
     pub fn is_retryable(&self) -> bool {
         matches!(self, McpError::Http(_) | McpError::Internal(_))
     }
@@ -89,7 +95,7 @@ mod tests {
         let json_err = McpError::Json(serde_json::from_str::<i32>("not a number").unwrap_err());
         assert_eq!(json_err.to_code(), -6);
 
-        let io_err = McpError::Io(std::io::Error::new(std::io::ErrorKind::Other, "IO error"));
+        let io_err = McpError::Io(std::io::Error::other("IO error"));
         assert_eq!(io_err.to_code(), -7);
 
         let protocol_err = McpError::Protocol("Protocol error".to_string());
@@ -115,7 +121,7 @@ mod tests {
         let json_err = McpError::Json(serde_json::from_str::<i32>("not a number").unwrap_err());
         assert!(!json_err.is_retryable());
 
-        let io_err = McpError::Io(std::io::Error::new(std::io::ErrorKind::Other, "IO error"));
+        let io_err = McpError::Io(std::io::Error::other("IO error"));
         assert!(!io_err.is_retryable());
 
         let protocol_err = McpError::Protocol("Protocol error".to_string());

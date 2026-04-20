@@ -71,9 +71,12 @@ pub enum Id {
 /// Initialize request
 #[derive(Debug, Deserialize)]
 pub struct InitializeRequest {
+    #[allow(dead_code)]
     pub protocolVersion: String,
+    #[allow(dead_code)]
     pub capabilities: ClientCapabilities,
     #[serde(default)]
+    #[allow(dead_code)]
     pub clientInfo: Option<Implementation>,
 }
 
@@ -81,8 +84,10 @@ pub struct InitializeRequest {
 #[derive(Debug, Deserialize, Default)]
 pub struct ClientCapabilities {
     #[serde(default)]
+    #[allow(dead_code)]
     pub roots: Option<RootsCapability>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub sampling: Option<()>,
 }
 
@@ -91,6 +96,7 @@ pub struct ClientCapabilities {
 #[derive(Debug, Deserialize, Default)]
 pub struct RootsCapability {
     #[serde(default)]
+    #[allow(dead_code)]
     pub listChanged: Option<bool>,
 }
 
@@ -165,8 +171,10 @@ pub struct ToolCallResult {
 pub enum Content {
     #[serde(rename = "text")]
     Text { text: String },
+    #[allow(dead_code)]
     #[serde(rename = "image")]
     Image { data: String, mimeType: String },
+    #[allow(dead_code)]
     #[serde(rename = "resource")]
     Resource { resource: Resource },
 }
@@ -320,8 +328,7 @@ impl McpServer {
         &mut self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let _request: Option<InitializeRequest> =
-            params.map(|p| serde_json::from_value(p)).transpose()?;
+        let _request: Option<InitializeRequest> = params.map(serde_json::from_value).transpose()?;
 
         let result = InitializeResult {
             protocolVersion: PROTOCOL_VERSION.to_string(),

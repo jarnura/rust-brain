@@ -138,6 +138,7 @@ impl Config {
     }
 
     /// Get the full URL for an API endpoint
+    #[allow(dead_code)]
     pub fn api_url(&self, path: &str) -> String {
         let url = format!("{}{}", self.api_base_url.trim_end_matches('/'), path);
         debug!(path = %path, url = %url, "Resolved API URL");
@@ -202,8 +203,10 @@ mod tests {
 
     #[test]
     fn test_config_api_url_with_trailing_slash() {
-        let mut config = Config::default();
-        config.api_base_url = "http://localhost:8088/".to_string();
+        let config = Config {
+            api_base_url: "http://localhost:8088/".to_string(),
+            ..Default::default()
+        };
         assert_eq!(config.api_url("/health"), "http://localhost:8088/health");
     }
 
@@ -215,8 +218,10 @@ mod tests {
 
     #[test]
     fn test_config_api_url_custom_base() {
-        let mut config = Config::default();
-        config.api_base_url = "https://api.example.com/v1".to_string();
+        let config = Config {
+            api_base_url: "https://api.example.com/v1".to_string(),
+            ..Default::default()
+        };
         assert_eq!(
             config.api_url("/search"),
             "https://api.example.com/v1/search"

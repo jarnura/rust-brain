@@ -50,7 +50,7 @@ pub struct CallersResponse {
 /// Execute the get_callers tool
 #[instrument(skip(client))]
 pub async fn execute(client: &ApiClient, request: GetCallersRequest) -> Result<String> {
-    let depth = request.depth.min(5).max(1);
+    let depth = request.depth.clamp(1, 5);
     let encoded_fqn =
         url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
 

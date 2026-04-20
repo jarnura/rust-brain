@@ -106,6 +106,7 @@ impl ApiClient {
     }
 
     /// Make a GET request to the API with an optional workspace ID header.
+    #[allow(dead_code)]
     #[instrument(skip(self), fields(path = %path))]
     pub async fn get_with_workspace<T: DeserializeOwned>(
         &self,
@@ -159,6 +160,7 @@ impl ApiClient {
     }
 
     /// Check if the API is healthy
+    #[allow(dead_code)]
     #[instrument(skip(self))]
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/health", self.base_url.trim_end_matches('/'));
@@ -209,6 +211,7 @@ impl OpenCodeClient {
     }
 
     /// Make a GET request to OpenCode
+    #[allow(dead_code)]
     #[instrument(skip(self), fields(path = %path))]
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}{}", self.host.trim_end_matches('/'), path);

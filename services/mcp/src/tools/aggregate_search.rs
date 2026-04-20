@@ -36,6 +36,7 @@ struct ApiAggregateSearchRequest {
 #[derive(Debug, Deserialize)]
 struct SearchResult {
     fqn: Option<String>,
+    #[allow(dead_code)]
     name: Option<String>,
     kind: Option<String>,
     file_path: Option<String>,
@@ -49,6 +50,7 @@ struct SearchResult {
 #[derive(Debug, Deserialize)]
 struct AggregateSearchResponse {
     results: Vec<SearchResult>,
+    #[allow(dead_code)]
     total: Option<usize>,
 }
 
