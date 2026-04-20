@@ -9,6 +9,12 @@ import type {
   Workspace,
   WorkspaceStats,
 } from '../types'
+import {
+  openReconnectingEventSource,
+  type ConnectionState,
+} from './sse-reconnect'
+
+export type { ConnectionState } from './sse-reconnect'
 
 // Resolve API base: use env override if set, otherwise derive from the
 // current page hostname so the playground works from any device (Tailscale, LAN, etc.)
@@ -142,61 +148,53 @@ export function resetWorkspace(id: string): Promise<ResetResponse> {
 
 // ─── SSE stream ───────────────────────────────────────────────────────────────
 
+export interface ExecutionStreamCallbacks {
+  /** Called for every live or backfilled agent event (deduped by seq). */
+  onEvent: (event: unknown) => void
+  /** Called when the transport state changes (connecting/connected/reconnecting/disconnected). */
+  onStateChange?: (state: ConnectionState) => void
+  /**
+   * Called when the server skips past the expected seq after a reconnect.
+   * `expected` is `lastSeq + 1`; `actual` is the seq of the first event
+   * received after the reconnect. In normal operation the backend backfills
+   * the full range, so this should never fire — when it does, it indicates
+   * the client missed events that the server has already evicted from its
+   * buffer (the ring buffer only holds the last N events).
+   */
+  onGap?: (expected: number, actual: number) => void
+  /** Called once when the server sends the terminal `done` event. */
+  onDone: () => void
+}
+
 /**
- * Open an EventSource SSE stream for a given execution.
+ * Open a reconnecting SSE stream for a given execution.
  *
- * Prefers `/executions/:id/events` (cleaner route). Falls back to
- * `/workspaces/:wsId/stream?execution_id=:id` if needed.
+ * The underlying transport is `ReconnectingEventSource`: on error the
+ * connection is retried with exponential backoff (1s → 30s) and the
+ * `?last_event_id=<seq>` cursor so the backend (RUSA-252) backfills any
+ * events missed during the outage. Events are keyed by seq and forwarded at
+ * most once, so overlapping backfill + live windows are a no-op for the
+ * caller (RUSA-257, FR-24 / NFR-11).
  *
- * @returns A cleanup function that closes the EventSource.
+ * @returns A cleanup function that closes the stream permanently.
  */
 export function openExecutionStream(
   executionId: string,
-  onEvent: (event: unknown) => void,
-  onError: (err: Event) => void,
-  onDone: () => void,
+  callbacks: ExecutionStreamCallbacks,
 ): () => void {
   const url = `${API_BASE}/executions/${executionId}/events`
-  const es = new EventSource(url)
+  const handle = openReconnectingEventSource(
+    {
+      url,
+      eventName: 'agent_event',
+    },
+    {
+      onEvent: (data) => callbacks.onEvent(data),
+      onStateChange: (state) => callbacks.onStateChange?.(state),
+      onGap: (expected, actual) => callbacks.onGap?.(expected, actual),
+      onDone: () => callbacks.onDone(),
+    },
+  )
 
-  // Track reconnect attempts for graceful back-off
-  let closed = false
-
-  const handleMessage = (e: MessageEvent) => {
-    if (closed) return
-    try {
-      const data = JSON.parse(e.data as string) as unknown
-      onEvent(data)
-    } catch {
-      // non-JSON keepalive comment — ignore
-    }
-  }
-
-  // Listen for typed "agent_event" SSE events (what the backend actually sends)
-  es.addEventListener('agent_event', handleMessage)
-
-  // Also keep onmessage as fallback for generic/unnamed SSE messages
-  es.onmessage = handleMessage
-
-  es.addEventListener('done', () => {
-    if (!closed) {
-      closed = true
-      es.close()
-      onDone()
-    }
-  })
-
-  es.onerror = (e) => {
-    if (closed) return
-    onError(e)
-    // EventSource auto-reconnects; close explicitly on error to avoid loops
-    closed = true
-    es.close()
-    onDone()
-  }
-
-  return () => {
-    closed = true
-    es.close()
-  }
+  return () => handle.close()
 }

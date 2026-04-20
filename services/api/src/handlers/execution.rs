@@ -8,7 +8,7 @@
 //! | GET  | `/executions/:id/events` | [`stream_events`] | SSE stream of agent events |
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -149,18 +149,35 @@ pub async fn get_execution(
         .ok_or_else(|| AppError::NotFound(format!("Execution {id} not found")))
 }
 
+/// Query parameters accepted by [`stream_events`].
+#[derive(Debug, Deserialize)]
+pub struct StreamEventsQuery {
+    /// Cursor for SSE reconnect backfill. Alternative to the `Last-Event-ID`
+    /// header for clients (such as the browser `EventSource` API) that cannot
+    /// set custom headers when opening a new connection.
+    #[serde(default)]
+    pub last_event_id: Option<i64>,
+}
+
 /// `GET /executions/:id/events` — SSE stream of agent events.
 ///
 /// The stream polls Postgres every 500 ms for new events using seq-based cursors.
 /// It terminates once the execution reaches a terminal state (`completed`,
 /// `failed`, `aborted`, `timeout`) and all pending events have been delivered.
 ///
-/// Supports the `Last-Event-ID` header for SSE reconnect backfill. When the
-/// header is present, streaming resumes after the given seq number. Otherwise,
-/// streaming starts from seq 0 (all events).
+/// Supports two equivalent cursor-resume mechanisms:
+///
+///   * `Last-Event-ID` header — set automatically by the browser when an
+///     `EventSource` auto-reconnects.
+///   * `?last_event_id=<seq>` query string — used by our frontend reconnect
+///     client (RUSA-257), which cannot set headers because `EventSource` has
+///     no header-setting API.
+///
+/// When both are present, the query string wins (explicit caller intent).
 pub async fn stream_events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    Query(query): Query<StreamEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, AppError>
 {
@@ -172,13 +189,15 @@ pub async fn stream_events(
 
     let pool = state.workspace_manager.pool.clone();
 
-    // Parse Last-Event-ID header for SSE reconnect backfill.
-    // The browser sends the last received event ID automatically on reconnect.
-    let initial_seq = headers
-        .get("Last-Event-ID")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0);
+    // Parse cursor for SSE reconnect backfill. Prefer the explicit query
+    // string (see handler doc), falling back to the `Last-Event-ID` header.
+    let initial_seq = query.last_event_id.unwrap_or_else(|| {
+        headers
+            .get("Last-Event-ID")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0)
+    });
 
     let stream = async_stream::stream! {
         let mut last_seq: i64 = initial_seq;
@@ -278,5 +297,17 @@ mod tests {
         };
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["status"], "running");
+    }
+
+    #[test]
+    fn stream_events_query_deserializes_empty() {
+        let q: StreamEventsQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.last_event_id.is_none());
+    }
+
+    #[test]
+    fn stream_events_query_deserializes_cursor() {
+        let q: StreamEventsQuery = serde_json::from_str(r#"{"last_event_id":42}"#).unwrap();
+        assert_eq!(q.last_event_id, Some(42));
     }
 }

@@ -1,5 +1,8 @@
 import { create } from 'zustand'
+import type { ConnectionState } from '../api/sse-reconnect'
 import type { AgentEvent, DiffResponse, Execution, FileNode, Workspace } from '../types'
+
+export type StreamConnectionState = ConnectionState
 
 interface WorkspaceState {
   // workspace list
@@ -29,10 +32,24 @@ interface WorkspaceState {
 
   // SSE event stream
   streamEvents: AgentEvent[]
+  /**
+   * Append an event, deduping by `event.id` (server-assigned seq). Required
+   * for gap-free backfill: the reconnect client already dedups within a
+   * session, but a second subscriber on the same store (e.g. StrictMode
+   * double-invoke, tab refocus) may replay events we have already seen.
+   */
   appendStreamEvent: (event: AgentEvent) => void
   clearStreamEvents: () => void
   streamDone: boolean
   setStreamDone: (done: boolean) => void
+
+  // SSE connection health (RUSA-257)
+  streamConnectionState: StreamConnectionState
+  setStreamConnectionState: (state: StreamConnectionState) => void
+  /** Number of reconnect-gap events — see `onGap` in api/client.ts. */
+  streamGapCount: number
+  recordStreamGap: () => void
+  clearStreamGap: () => void
 
   // diff
   diff: DiffResponse | null
@@ -62,6 +79,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         activeExecutionId: null,
         streamEvents: [],
         streamDone: false,
+        streamConnectionState: 'connecting' as StreamConnectionState,
+        streamGapCount: 0,
         diff: null,
       }
     }),
@@ -91,10 +110,34 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   streamEvents: [],
   appendStreamEvent: (event) =>
-    set((state) => ({ streamEvents: [...state.streamEvents, event] })),
-  clearStreamEvents: () => set({ streamEvents: [], streamDone: false }),
+    set((state) => {
+      // Dedup by seq (stored as `id` on AgentEvent). If we have already
+      // persisted this event, drop the duplicate so the UI never renders the
+      // same row twice during an overlapping backfill + live window.
+      if (event.id !== undefined) {
+        for (const existing of state.streamEvents) {
+          if (existing.id === event.id) return state
+        }
+      }
+      return { streamEvents: [...state.streamEvents, event] }
+    }),
+  clearStreamEvents: () =>
+    set({
+      streamEvents: [],
+      streamDone: false,
+      streamConnectionState: 'connecting',
+      streamGapCount: 0,
+    }),
   streamDone: false,
   setStreamDone: (streamDone) => set({ streamDone }),
+
+  streamConnectionState: 'connecting',
+  setStreamConnectionState: (streamConnectionState) =>
+    set({ streamConnectionState }),
+  streamGapCount: 0,
+  recordStreamGap: () =>
+    set((state) => ({ streamGapCount: state.streamGapCount + 1 })),
+  clearStreamGap: () => set({ streamGapCount: 0 }),
 
   diff: null,
   setDiff: (diff) => set({ diff }),

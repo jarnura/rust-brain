@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE, openExecutionStream } from '../api/client'
+import type { ConnectionState } from '../api/sse-reconnect'
 import { useWorkspaceStore } from '../store/workspace'
 import type { AgentEvent } from '../types'
 import { parseAgentEvent } from '../lib/event-parser'
@@ -270,6 +271,52 @@ function CollapsedGroupHeader({ group, onExpand, focused }: GroupHeaderProps) {
   )
 }
 
+// ─── Connection status indicator ─────────────────────────────────────────────
+
+interface ConnectionStatusProps {
+  state: ConnectionState
+  streamDone: boolean
+}
+
+function ConnectionStatus({ state, streamDone }: ConnectionStatusProps) {
+  // Stream completed cleanly via `done` event — show terminal state, not a
+  // warning, even though the underlying transport is now `disconnected`.
+  if (streamDone) {
+    return <span className="text-xs text-dark-500">Stream closed</span>
+  }
+
+  switch (state) {
+    case 'connected':
+      return (
+        <span className="flex items-center gap-1 text-xs text-green-400">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          Connected
+        </span>
+      )
+    case 'connecting':
+      return (
+        <span className="flex items-center gap-1 text-xs text-dark-400">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-dark-400 animate-pulse" />
+          Connecting…
+        </span>
+      )
+    case 'reconnecting':
+      return (
+        <span className="flex items-center gap-1 text-xs text-yellow-400">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
+          Reconnecting…
+        </span>
+      )
+    case 'disconnected':
+      return (
+        <span className="flex items-center gap-1 text-xs text-red-400">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400" />
+          Disconnected
+        </span>
+      )
+  }
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function ExecutionStream() {
@@ -280,6 +327,11 @@ export function ExecutionStream() {
     appendStreamEvent,
     setStreamDone,
     upsertExecution,
+    streamConnectionState,
+    setStreamConnectionState,
+    streamGapCount,
+    recordStreamGap,
+    clearStreamGap,
   } = useWorkspaceStore()
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -414,23 +466,25 @@ export function ExecutionStream() {
   useEffect(() => {
     if (!activeExecutionId) return
 
-    const cleanup = openExecutionStream(
-      activeExecutionId,
-      (raw) => {
+    const cleanup = openExecutionStream(activeExecutionId, {
+      onEvent: (raw) => {
         const event = raw as AgentEvent
         appendStreamEvent(event)
       },
-      (_err) => {
-        setStreamDone(true)
+      onStateChange: (state) => {
+        setStreamConnectionState(state)
       },
-      () => {
+      onGap: () => {
+        recordStreamGap()
+      },
+      onDone: () => {
         setStreamDone(true)
         fetch(`${API_BASE}/executions/${activeExecutionId}`)
           .then((r) => r.json())
           .then((exec) => upsertExecution(exec as Parameters<typeof upsertExecution>[0]))
           .catch(() => {})
       },
-    )
+    })
 
     return cleanup
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -442,6 +496,8 @@ export function ExecutionStream() {
     setExpandedUnits(new Set())
     setFocusedIndex(0)
     setAutoScroll(true)
+    clearStreamGap()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeExecutionId])
 
   if (!activeExecutionId) {
@@ -463,16 +519,30 @@ export function ExecutionStream() {
         <span className="text-xs text-dark-400 font-medium">
           Execution <code className="text-brand-400 font-mono text-[10px]">{activeExecutionId.slice(0, 8)}...</code>
         </span>
-        {!streamDone && (
-          <span className="flex items-center gap-1 text-xs text-green-400">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-            Live
-          </span>
-        )}
-        {streamDone && (
-          <span className="text-xs text-dark-500">Stream closed</span>
-        )}
+        <ConnectionStatus
+          state={streamConnectionState}
+          streamDone={streamDone}
+        />
       </div>
+
+      {streamGapCount > 0 && (
+        <div
+          role="alert"
+          className="mb-2 px-2 py-1 text-[11px] rounded border border-yellow-700/60 bg-yellow-900/30 text-yellow-300 flex items-center justify-between"
+        >
+          <span>
+            ⚠ {streamGapCount} event{streamGapCount === 1 ? '' : 's'} may be
+            missing — server buffer overflowed during reconnect.
+          </span>
+          <button
+            type="button"
+            onClick={clearStreamGap}
+            className="text-[10px] px-1 text-yellow-200 hover:text-yellow-100"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
 
       {/* Agent timeline */}
       <AgentTimeline

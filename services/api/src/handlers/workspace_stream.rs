@@ -34,6 +34,12 @@ use crate::workspace::get_workspace as db_get_workspace;
 pub struct StreamQuery {
     /// The execution whose events to stream.
     pub execution_id: Uuid,
+    /// Optional cursor for SSE reconnect backfill. Alternative to the
+    /// `Last-Event-ID` header for `EventSource` clients that cannot set
+    /// headers. When both are present, the query string wins (explicit
+    /// caller intent).
+    #[serde(default)]
+    pub last_event_id: Option<i64>,
 }
 
 // =============================================================================
@@ -113,11 +119,13 @@ pub async fn stream_workspace(
     let pool = state.workspace_manager.pool.clone();
     let exec_id = query.execution_id;
 
-    let initial_seq = headers
-        .get("Last-Event-ID")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0);
+    let initial_seq = query.last_event_id.unwrap_or_else(|| {
+        headers
+            .get("Last-Event-ID")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0)
+    });
 
     let event_stream = async_stream::stream! {
         let mut last_seq: i64 = initial_seq;
