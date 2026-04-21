@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- Remove loose task/planning artifacts from root directory: `tasks.md`, `tasks-logging.json`, `tasks-lets-analyses-architecture-wise-and-any-1774029501.json`, `tasks-lets-analyses-architecture-wise-and-any-1774029501.md`, `logging-audit.md`, `RUSA-151-verification-report.md`, `nohup.out`, and all `tasks-*.json`, `tasks-*.md`, `pipeline-*.json` files (RUSA-279)
+- Add `nohup.out` to `.gitignore`
+
 ## [0.4.0] - 2026-04-21
 
 A major release focused on **multi-tenancy**, **SSE reliability**, and **agent trace observability**. This version introduces workspace-scoped data isolation across all three stores, cursor-based SSE reconnection with gap-free backfill, and a rich agent trace UI for monitoring multi-agent executions.
