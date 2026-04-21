@@ -283,11 +283,10 @@ const MAX_PARSE_THREADS: usize = 4;
 
 /// Compute a SHA-256 content hash of a string, returning a hex-encoded string.
 fn compute_content_hash(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Redact password from database/connection URLs for safe logging
@@ -1499,6 +1498,30 @@ impl PipelineStage for ExpandStage {
                     continue;
                 }
 
+                // Check incremental context: skip crates where all files are unchanged
+                let unchanged_set = {
+                    let state = ctx.state.read().await;
+                    state.incremental_context.as_ref().and_then(|ic| {
+                        if ic.mode == crate::pipeline::change_detection::IngestionMode::Incremental
+                        {
+                            Some(ic.unchanged_files.clone())
+                        } else {
+                            None
+                        }
+                    })
+                };
+
+                if let Some(ref unchanged) = unchanged_set {
+                    let all_unchanged = source_files.iter().all(|f| unchanged.contains(f));
+                    if all_unchanged {
+                        debug!(
+                            "Skipping {} - all files unchanged (incremental)",
+                            crate_name
+                        );
+                        continue;
+                    }
+                }
+
                 // Compute cache file path: {crate_name}-{hash}.expand
                 let content_hash = self.compute_crate_hash(crate_path);
                 let cache_key = format!("{}-{}.expand", crate_name, content_hash);
@@ -1520,6 +1543,14 @@ impl PipelineStage for ExpandStage {
                         }
 
                         for file_path in &source_files {
+                            // Skip unchanged files in incremental mode
+                            if let Some(ref unchanged) = unchanged_set {
+                                if unchanged.contains(file_path) {
+                                    debug!("Skipping unchanged file: {:?}", file_path);
+                                    continue;
+                                }
+                            }
+
                             // Pre-flight file size check: skip files > 10 MB
                             if let Ok(metadata) = std::fs::metadata(file_path) {
                                 if crate::pipeline::memory_accountant::MemoryAccountant::should_skip_file(metadata.len()) {
@@ -1651,6 +1682,16 @@ impl PipelineStage for ParseStage {
         let start = Instant::now();
 
         info!("Starting parse stage (batch insert to database)");
+
+        if ctx.config.incremental == super::IngestionMode::Incremental {
+            let state = ctx.state.read().await;
+            if let Some(ref ic) = state.incremental_context {
+                info!(
+                    "Parse stage running in incremental mode: {} changed files to parse",
+                    ic.changed_files.len()
+                );
+            }
+        }
 
         let db_pool = ctx
             .config
@@ -2172,6 +2213,16 @@ impl PipelineStage for TypecheckStage {
     async fn run(&self, ctx: &PipelineContext) -> Result<StageResult> {
         let start = Instant::now();
 
+        if ctx.config.incremental == super::IngestionMode::Incremental {
+            let state = ctx.state.read().await;
+            if let Some(ref ic) = state.incremental_context {
+                info!(
+                    "Typecheck stage running in incremental mode: {} changed files",
+                    ic.changed_files.len()
+                );
+            }
+        }
+
         let state = ctx.state.read().await;
         let parsed_items: Vec<ParsedItemInfo> =
             state.parsed_items.values().flatten().cloned().collect();
@@ -2345,6 +2396,16 @@ impl PipelineStage for ExtractStage {
         if ctx.config.dry_run {
             info!("Extract stage skipped (dry_run mode)");
             return Ok(StageResult::skipped("extract"));
+        }
+
+        if ctx.config.incremental == super::IngestionMode::Incremental {
+            let state = ctx.state.read().await;
+            if let Some(ref ic) = state.incremental_context {
+                info!(
+                    "Extract stage running in incremental mode: {} changed files",
+                    ic.changed_files.len()
+                );
+            }
         }
 
         let state = ctx.state.read().await;
@@ -2650,6 +2711,16 @@ impl PipelineStage for GraphStage {
         let mut graph_error_messages: Vec<String> = Vec::new();
 
         info!("Starting graph stage");
+
+        if ctx.config.incremental == super::IngestionMode::Incremental {
+            let state = ctx.state.read().await;
+            if let Some(ref ic) = state.incremental_context {
+                info!(
+                    "Graph stage running in incremental mode: {} changed files",
+                    ic.changed_files.len()
+                );
+            }
+        }
 
         if ctx.config.dry_run {
             info!("Dry run - skipping graph building");
@@ -4684,6 +4755,16 @@ impl PipelineStage for EmbedStage {
 
         info!("Starting embed stage");
 
+        if ctx.config.incremental == super::IngestionMode::Incremental {
+            let state = ctx.state.read().await;
+            if let Some(ref ic) = state.incremental_context {
+                info!(
+                    "Embed stage running in incremental mode: {} changed files",
+                    ic.changed_files.len()
+                );
+            }
+        }
+
         if ctx.config.dry_run {
             info!("Dry run - skipping embedding");
             return Ok(StageResult::skipped("embed"));
@@ -5440,7 +5521,7 @@ mod tests {
         let hash1 = compute_content_hash("fn main() {}");
         let hash2 = compute_content_hash("fn main() {}");
         assert_eq!(hash1, hash2);
-        assert_eq!(hash1.len(), 16);
+        assert_eq!(hash1.len(), 64); // SHA-256 produces 64 hex chars
     }
 
     #[test]
@@ -5453,7 +5534,7 @@ mod tests {
     #[test]
     fn test_compute_content_hash_empty() {
         let hash = compute_content_hash("");
-        assert_eq!(hash.len(), 16);
+        assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex chars
     }
 
     #[test]
@@ -5466,7 +5547,7 @@ mod tests {
             git_hash: None,
             content_hash: compute_content_hash("fn main() {}"),
         };
-        assert_eq!(info.content_hash.len(), 16);
+        assert_eq!(info.content_hash.len(), 64);
     }
 
     #[test]

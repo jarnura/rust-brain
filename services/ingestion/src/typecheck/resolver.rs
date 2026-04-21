@@ -48,6 +48,50 @@ pub struct TypeArg {
     pub concrete_type: String,
 }
 
+/// Dispatch kind for a call site.
+///
+/// Indicates how the call was resolved:
+/// - **Static**: Direct function/method call or concrete impl dispatch (receiver type known)
+/// - **Trait**: Call resolved to a trait method definition (concrete impl not yet determined)
+/// - **Dynamic**: Cannot determine dispatch target (unknown receiver type)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CallDispatch {
+    /// Direct function/method call or resolved to a concrete impl
+    Static,
+    /// Call resolved to a trait method (impl not yet determined)
+    Trait,
+    /// Cannot determine dispatch target
+    #[default]
+    Dynamic,
+}
+
+impl CallDispatch {
+    /// Returns the string representation for database storage.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CallDispatch::Static => "static",
+            CallDispatch::Trait => "trait",
+            CallDispatch::Dynamic => "dynamic",
+        }
+    }
+
+    /// Parses a dispatch kind from its string representation.
+    pub fn parse_str(s: &str) -> Self {
+        match s {
+            "static" => CallDispatch::Static,
+            "trait" => CallDispatch::Trait,
+            _ => CallDispatch::Dynamic,
+        }
+    }
+}
+
+impl std::fmt::Display for CallDispatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// A call site with type information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallSite {
@@ -65,6 +109,9 @@ pub struct CallSite {
     pub is_monomorphized: bool,
     /// Quality of the resolution
     pub quality: ResolutionQuality,
+    /// Dispatch kind for this call site
+    #[serde(default)]
+    pub dispatch: CallDispatch,
 }
 
 /// A trait implementation
@@ -201,33 +248,62 @@ impl TypeResolver {
         source: &str,
         _caller_fqns: &[String],
     ) -> Result<(Vec<TraitImplementation>, Vec<CallSite>)> {
-        // Parse the entire source file
         let file: syn::File =
             syn::parse_str(source).with_context(|| "Failed to parse source with syn")?;
 
+        // Phase 1: Extract trait impls and build a method dispatch index.
+        // The index maps (self_type, method_name) → impl_fqn so we can resolve
+        // trait method calls on concrete receiver types.
         let mut trait_impls = Vec::new();
-        let mut call_sites = Vec::new();
+        let mut trait_method_index: std::collections::HashMap<(String, String), String> =
+            std::collections::HashMap::new();
 
         for (idx, item) in file.items.iter().enumerate() {
+            if let SynItem::Impl(impl_item) = item {
+                if let Some(impl_info) =
+                    self.extract_trait_impl(impl_item, crate_name, module_path, file_path, idx)
+                {
+                    for method_item in &impl_item.items {
+                        if let ImplItem::Fn(method) = method_item {
+                            let key = (impl_info.self_type.clone(), method.sig.ident.to_string());
+                            trait_method_index.insert(key, impl_info.impl_fqn.clone());
+                        }
+                    }
+                    trait_impls.push(impl_info);
+                }
+            }
+        }
+
+        // Phase 2: Extract call sites with dispatch resolution.
+        // When a method call's receiver type is known and matches a trait impl
+        // in the index, we emit an additional call site targeting the concrete
+        // impl method FQN with dispatch = Static.
+        let mut call_sites = Vec::new();
+
+        for item in file.items.iter() {
             match item {
                 SynItem::Impl(impl_item) => {
-                    if let Some(impl_info) =
-                        self.extract_trait_impl(impl_item, crate_name, module_path, file_path, idx)
-                    {
-                        trait_impls.push(impl_info);
-                    }
-
-                    // Also extract call sites from within impl blocks
                     let caller_fqn = self.impl_caller_fqn(impl_item, module_path);
-                    for call_site in self.extract_calls_from_impl(impl_item, file_path, &caller_fqn)
-                    {
+                    let self_type = self.type_to_string(&impl_item.self_ty);
+                    for call_site in self.extract_calls_from_impl(
+                        impl_item,
+                        file_path,
+                        &caller_fqn,
+                        &self_type,
+                        &trait_method_index,
+                    ) {
                         call_sites.push(call_site);
                     }
                 }
                 SynItem::Fn(fn_item) => {
-                    // Extract call sites from standalone functions
                     let caller_fqn = format!("{}::{}", module_path, fn_item.sig.ident);
-                    for call_site in self.extract_calls_from_fn(fn_item, file_path, &caller_fqn) {
+                    for call_site in self.extract_calls_from_fn(
+                        fn_item,
+                        file_path,
+                        &caller_fqn,
+                        None,
+                        &trait_method_index,
+                    ) {
                         call_sites.push(call_site);
                     }
                 }
@@ -235,7 +311,6 @@ impl TypeResolver {
             }
         }
 
-        // Mark all as analyzed quality
         for impl_info in &mut trait_impls {
             impl_info.quality = ResolutionQuality::Analyzed;
         }
@@ -299,6 +374,8 @@ impl TypeResolver {
         impl_item: &ItemImpl,
         file_path: &str,
         caller_fqn: &str,
+        self_type: &str,
+        trait_method_index: &std::collections::HashMap<(String, String), String>,
     ) -> Vec<CallSite> {
         let mut sites = Vec::new();
 
@@ -309,6 +386,8 @@ impl TypeResolver {
                     method,
                     file_path,
                     &method_caller_fqn,
+                    Some(self_type),
+                    trait_method_index,
                 ));
             }
         }
@@ -322,11 +401,19 @@ impl TypeResolver {
         method: &syn::ImplItemFn,
         file_path: &str,
         caller_fqn: &str,
+        self_type: Option<&str>,
+        trait_method_index: &std::collections::HashMap<(String, String), String>,
     ) -> Vec<CallSite> {
         let mut sites = Vec::new();
 
-        // Walk the expression tree looking for calls
-        self.extract_calls_from_block(&method.block, file_path, caller_fqn, &mut sites);
+        self.extract_calls_from_block(
+            &method.block,
+            file_path,
+            caller_fqn,
+            self_type,
+            trait_method_index,
+            &mut sites,
+        );
 
         sites
     }
@@ -337,11 +424,19 @@ impl TypeResolver {
         fn_item: &syn::ItemFn,
         file_path: &str,
         caller_fqn: &str,
+        self_type: Option<&str>,
+        trait_method_index: &std::collections::HashMap<(String, String), String>,
     ) -> Vec<CallSite> {
         let mut sites = Vec::new();
 
-        // Walk the expression tree looking for calls
-        self.extract_calls_from_block(&fn_item.block, file_path, caller_fqn, &mut sites);
+        self.extract_calls_from_block(
+            &fn_item.block,
+            file_path,
+            caller_fqn,
+            self_type,
+            trait_method_index,
+            &mut sites,
+        );
 
         sites
     }
@@ -352,23 +447,44 @@ impl TypeResolver {
         block: &syn::Block,
         file_path: &str,
         caller_fqn: &str,
+        self_type: Option<&str>,
+        trait_method_index: &std::collections::HashMap<(String, String), String>,
         sites: &mut Vec<CallSite>,
     ) {
         for stmt in &block.stmts {
             match stmt {
                 syn::Stmt::Local(local) => {
                     if let Some(init) = &local.init {
-                        self.extract_calls_from_expr(&init.expr, file_path, caller_fqn, sites);
+                        self.extract_calls_from_expr(
+                            &init.expr,
+                            file_path,
+                            caller_fqn,
+                            self_type,
+                            trait_method_index,
+                            sites,
+                        );
                     }
                 }
                 syn::Stmt::Item(SynItem::Fn(nested_fn)) => {
-                    // Could have nested items
                     let nested_fqn = format!("{}::{}", caller_fqn, nested_fn.sig.ident);
-                    sites.extend(self.extract_calls_from_fn(nested_fn, file_path, &nested_fqn));
+                    sites.extend(self.extract_calls_from_fn(
+                        nested_fn,
+                        file_path,
+                        &nested_fqn,
+                        self_type,
+                        trait_method_index,
+                    ));
                 }
                 syn::Stmt::Item(_) => {}
                 syn::Stmt::Expr(expr, _) => {
-                    self.extract_calls_from_expr(expr, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        expr,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
                 _ => {}
             }
@@ -381,6 +497,8 @@ impl TypeResolver {
         expr: &Expr,
         file_path: &str,
         caller_fqn: &str,
+        self_type: Option<&str>,
+        trait_method_index: &std::collections::HashMap<(String, String), String>,
         sites: &mut Vec<CallSite>,
     ) {
         match expr {
@@ -390,93 +508,292 @@ impl TypeResolver {
                 }
                 // Recurse into arguments
                 for arg in &call.args {
-                    self.extract_calls_from_expr(arg, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        arg,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::MethodCall(method_call) => {
-                if let Some(site) =
-                    self.extract_method_call_site(method_call, file_path, caller_fqn)
-                {
-                    sites.push(site);
-                }
+                let method_sites = self.extract_method_call_site(
+                    method_call,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                );
+                sites.extend(method_sites);
                 // Recurse into receiver and arguments
-                self.extract_calls_from_expr(&method_call.receiver, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &method_call.receiver,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
                 for arg in &method_call.args {
-                    self.extract_calls_from_expr(arg, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        arg,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::If(if_expr) => {
-                self.extract_calls_from_expr(&if_expr.cond, file_path, caller_fqn, sites);
-                self.extract_calls_from_block(&if_expr.then_branch, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &if_expr.cond,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
+                self.extract_calls_from_block(
+                    &if_expr.then_branch,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
                 if let Some((_, else_block)) = &if_expr.else_branch {
-                    self.extract_calls_from_expr(else_block, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        else_block,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::Match(match_expr) => {
-                self.extract_calls_from_expr(&match_expr.expr, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &match_expr.expr,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
                 for arm in &match_expr.arms {
-                    self.extract_calls_from_expr(&arm.body, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        &arm.body,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::Block(block_expr) => {
-                self.extract_calls_from_block(&block_expr.block, file_path, caller_fqn, sites);
+                self.extract_calls_from_block(
+                    &block_expr.block,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Assign(assign) => {
-                self.extract_calls_from_expr(&assign.left, file_path, caller_fqn, sites);
-                self.extract_calls_from_expr(&assign.right, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &assign.left,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
+                self.extract_calls_from_expr(
+                    &assign.right,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Binary(binary) => {
-                self.extract_calls_from_expr(&binary.left, file_path, caller_fqn, sites);
-                self.extract_calls_from_expr(&binary.right, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &binary.left,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
+                self.extract_calls_from_expr(
+                    &binary.right,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Unary(unary) => {
-                self.extract_calls_from_expr(&unary.expr, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &unary.expr,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Return(ret) => {
                 if let Some(expr) = &ret.expr {
-                    self.extract_calls_from_expr(expr, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        expr,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::Await(await_expr) => {
-                self.extract_calls_from_expr(&await_expr.base, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &await_expr.base,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Try(try_expr) => {
-                self.extract_calls_from_expr(&try_expr.expr, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &try_expr.expr,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Paren(paren) => {
-                self.extract_calls_from_expr(&paren.expr, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &paren.expr,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Tuple(tuple) => {
                 for elem in &tuple.elems {
-                    self.extract_calls_from_expr(elem, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        elem,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::Array(array) => {
                 for elem in &array.elems {
-                    self.extract_calls_from_expr(elem, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        elem,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::Struct(struct_expr) => {
                 for field in &struct_expr.fields {
-                    self.extract_calls_from_expr(&field.expr, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        &field.expr,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
                 if let Some(rest) = &struct_expr.rest {
-                    self.extract_calls_from_expr(rest, file_path, caller_fqn, sites);
+                    self.extract_calls_from_expr(
+                        rest,
+                        file_path,
+                        caller_fqn,
+                        self_type,
+                        trait_method_index,
+                        sites,
+                    );
                 }
             }
             Expr::Closure(closure) => {
-                self.extract_calls_from_expr(&closure.body, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &closure.body,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::Loop(loop_expr) => {
-                self.extract_calls_from_block(&loop_expr.body, file_path, caller_fqn, sites);
+                self.extract_calls_from_block(
+                    &loop_expr.body,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::ForLoop(for_loop) => {
-                self.extract_calls_from_expr(&for_loop.expr, file_path, caller_fqn, sites);
-                self.extract_calls_from_block(&for_loop.body, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &for_loop.expr,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
+                self.extract_calls_from_block(
+                    &for_loop.body,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             Expr::While(while_expr) => {
-                self.extract_calls_from_expr(&while_expr.cond, file_path, caller_fqn, sites);
-                self.extract_calls_from_block(&while_expr.body, file_path, caller_fqn, sites);
+                self.extract_calls_from_expr(
+                    &while_expr.cond,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
+                self.extract_calls_from_block(
+                    &while_expr.body,
+                    file_path,
+                    caller_fqn,
+                    self_type,
+                    trait_method_index,
+                    sites,
+                );
             }
             _ => {}
         }
@@ -505,35 +822,68 @@ impl TypeResolver {
             caller_fqn: caller_fqn.to_string(),
             callee_fqn,
             file_path: file_path.to_string(),
-            line_number: 1, // Approximate - would need span info for exact
+            line_number: 1,
             concrete_type_args: type_args,
             is_monomorphized,
             quality: ResolutionQuality::Analyzed,
+            dispatch: CallDispatch::Static,
         })
     }
 
-    /// Extract a call site from a method call
     fn extract_method_call_site(
         &self,
         method_call: &ExprMethodCall,
         file_path: &str,
         caller_fqn: &str,
-    ) -> Option<CallSite> {
+        self_type: Option<&str>,
+        trait_method_index: &std::collections::HashMap<(String, String), String>,
+    ) -> Vec<CallSite> {
         let method_name = method_call.method.to_string();
-
-        // Extract turbofish type arguments if present
         let type_args = if let Some(turbofish) = &method_call.turbofish {
             self.extract_turbofish_args_from_angle_bracketed(turbofish)
         } else {
             Vec::new()
         };
-
         let is_monomorphized = !type_args.is_empty();
-
-        // Try to infer the callee FQN from the receiver type
         let callee_fqn = self.infer_method_callee(&method_call.receiver, &method_name);
 
-        Some(CallSite {
+        let mut sites = Vec::new();
+
+        let receiver_type = self_type
+            .map(|s| s.to_string())
+            .or_else(|| self.infer_receiver_type(&method_call.receiver));
+
+        if let Some(ref recv_type) = receiver_type {
+            if let Some(impl_fqn) =
+                trait_method_index.get(&(recv_type.clone(), method_name.clone()))
+            {
+                sites.push(CallSite {
+                    caller_fqn: caller_fqn.to_string(),
+                    callee_fqn: format!("{}::{}", impl_fqn, method_name),
+                    file_path: file_path.to_string(),
+                    line_number: 1,
+                    concrete_type_args: type_args.clone(),
+                    is_monomorphized,
+                    quality: ResolutionQuality::Analyzed,
+                    dispatch: CallDispatch::Static,
+                });
+
+                sites.push(CallSite {
+                    caller_fqn: caller_fqn.to_string(),
+                    callee_fqn,
+                    file_path: file_path.to_string(),
+                    line_number: 1,
+                    concrete_type_args: type_args,
+                    is_monomorphized,
+                    quality: ResolutionQuality::Analyzed,
+                    dispatch: CallDispatch::Trait,
+                });
+
+                return sites;
+            }
+        }
+
+        sites.push(CallSite {
             caller_fqn: caller_fqn.to_string(),
             callee_fqn,
             file_path: file_path.to_string(),
@@ -541,7 +891,10 @@ impl TypeResolver {
             concrete_type_args: type_args,
             is_monomorphized,
             quality: ResolutionQuality::Analyzed,
-        })
+            dispatch: CallDispatch::Dynamic,
+        });
+
+        sites
     }
 
     /// Extract type arguments from turbofish syntax
@@ -613,6 +966,20 @@ impl TypeResolver {
         };
 
         receiver_type
+    }
+
+    fn infer_receiver_type(&self, receiver: &Expr) -> Option<String> {
+        match receiver {
+            Expr::Path(_path_expr) => None,
+            Expr::Field(field_expr) => match &field_expr.member {
+                syn::Member::Named(ident) => Some(ident.to_string()),
+                syn::Member::Unnamed(index) => Some(format!("field_{}", index.index)),
+            },
+            Expr::Reference(ref_expr) => self.infer_receiver_type(&ref_expr.expr),
+            Expr::Paren(paren) => self.infer_receiver_type(&paren.expr),
+            Expr::Cast(cast) => Some(self.type_to_string(&cast.ty)),
+            _ => None,
+        }
     }
 
     /// Convert a path to FQN string
@@ -824,6 +1191,7 @@ impl TypeResolver {
                     concrete_type_args: type_args,
                     is_monomorphized,
                     quality: ResolutionQuality::Heuristic,
+                    dispatch: CallDispatch::Static,
                 });
             }
 
@@ -843,6 +1211,7 @@ impl TypeResolver {
                     concrete_type_args: type_args,
                     is_monomorphized,
                     quality: ResolutionQuality::Heuristic,
+                    dispatch: CallDispatch::Dynamic,
                 });
             }
         }
@@ -1142,11 +1511,23 @@ mod tests {
 
     #[test]
     fn test_resolution_quality_parse_str() {
-        assert_eq!(ResolutionQuality::parse_str("analyzed"), ResolutionQuality::Analyzed);
-        assert_eq!(ResolutionQuality::parse_str("heuristic"), ResolutionQuality::Heuristic);
+        assert_eq!(
+            ResolutionQuality::parse_str("analyzed"),
+            ResolutionQuality::Analyzed
+        );
+        assert_eq!(
+            ResolutionQuality::parse_str("heuristic"),
+            ResolutionQuality::Heuristic
+        );
         // Any unknown string maps to Heuristic
-        assert_eq!(ResolutionQuality::parse_str("unknown"), ResolutionQuality::Heuristic);
-        assert_eq!(ResolutionQuality::parse_str(""), ResolutionQuality::Heuristic);
+        assert_eq!(
+            ResolutionQuality::parse_str("unknown"),
+            ResolutionQuality::Heuristic
+        );
+        assert_eq!(
+            ResolutionQuality::parse_str(""),
+            ResolutionQuality::Heuristic
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1175,7 +1556,10 @@ mod tests {
         );
 
         // Heuristics should detect the trait impl from the impl line
-        assert!(!result.trait_impls.is_empty(), "Expected at least one trait impl");
+        assert!(
+            !result.trait_impls.is_empty(),
+            "Expected at least one trait impl"
+        );
         for impl_info in &result.trait_impls {
             assert!(matches!(impl_info.quality, ResolutionQuality::Heuristic));
             assert_eq!(impl_info.file_path, "ui.rs");
@@ -1213,7 +1597,10 @@ mod tests {
             &["main_mod::main".to_string()],
         );
 
-        assert!(!result.call_sites.is_empty(), "Expected turbofish call sites");
+        assert!(
+            !result.call_sites.is_empty(),
+            "Expected turbofish call sites"
+        );
         for site in &result.call_sites {
             assert!(matches!(site.quality, ResolutionQuality::Heuristic));
             assert!(site.is_monomorphized);
@@ -1252,7 +1639,11 @@ mod tests {
 
         // Two trait impls: Default and Clone
         assert_eq!(result.trait_impls.len(), 2);
-        let traits: Vec<&str> = result.trait_impls.iter().map(|i| i.trait_fqn.as_str()).collect();
+        let traits: Vec<&str> = result
+            .trait_impls
+            .iter()
+            .map(|i| i.trait_fqn.as_str())
+            .collect();
         assert!(traits.contains(&"Default"));
         assert!(traits.contains(&"Clone"));
 
@@ -1349,8 +1740,16 @@ mod tests {
         assert!(!result.trait_impls.is_empty());
         // impl_fqn should follow module::Trait_Type format
         let fqn = &result.trait_impls[0].impl_fqn;
-        assert!(fqn.contains("Debug"), "impl_fqn should contain trait name: {}", fqn);
-        assert!(fqn.contains("Foo"), "impl_fqn should contain type name: {}", fqn);
+        assert!(
+            fqn.contains("Debug"),
+            "impl_fqn should contain trait name: {}",
+            fqn
+        );
+        assert!(
+            fqn.contains("Foo"),
+            "impl_fqn should contain type name: {}",
+            fqn
+        );
     }
 
     #[test]
@@ -1364,8 +1763,15 @@ mod tests {
 
         let result = resolver.analyze_source("crate", "crate::m", "m.rs", source, &[]);
 
-        let mono_sites: Vec<_> = result.call_sites.iter().filter(|s| s.is_monomorphized).collect();
-        assert!(!mono_sites.is_empty(), "Expected monomorphized call site for Vec::<String>::new()");
+        let mono_sites: Vec<_> = result
+            .call_sites
+            .iter()
+            .filter(|s| s.is_monomorphized)
+            .collect();
+        assert!(
+            !mono_sites.is_empty(),
+            "Expected monomorphized call site for Vec::<String>::new()"
+        );
         let site = &mono_sites[0];
         assert_eq!(site.concrete_type_args.len(), 1);
         assert!(site.concrete_type_args[0].concrete_type.contains("String"));
@@ -1409,8 +1815,7 @@ mod tests {
             }
         "#;
 
-        let result =
-            resolver.analyze_source("crate", "crate::m", "src/lib.rs", source, &[]);
+        let result = resolver.analyze_source("crate", "crate::m", "src/lib.rs", source, &[]);
 
         assert!(!result.trait_impls.is_empty());
         assert_eq!(result.trait_impls[0].file_path, "src/lib.rs");
@@ -1447,7 +1852,11 @@ mod tests {
         "#;
 
         let result = resolver.analyze_source("crate", "crate::math", "math.rs", source, &[]);
-        assert!(result.errors.is_empty(), "No errors expected for valid source: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "No errors expected for valid source: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -1459,7 +1868,10 @@ mod tests {
         let result = resolver.analyze_source("crate", "crate::m", "f.rs", source, &[]);
 
         // Syn will fail; errors should be recorded
-        assert!(!result.errors.is_empty(), "Expected errors for invalid source");
+        assert!(
+            !result.errors.is_empty(),
+            "Expected errors for invalid source"
+        );
     }
 
     #[test]
@@ -1474,7 +1886,11 @@ mod tests {
         let result = resolver.analyze_source("crate", "crate::work", "work.rs", source, &[]);
 
         // Should find at least one monomorphized method call
-        let mono: Vec<_> = result.call_sites.iter().filter(|s| s.is_monomorphized).collect();
+        let mono: Vec<_> = result
+            .call_sites
+            .iter()
+            .filter(|s| s.is_monomorphized)
+            .collect();
         assert!(!mono.is_empty(), "Expected monomorphized method calls");
     }
 }

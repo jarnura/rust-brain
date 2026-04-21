@@ -15,7 +15,9 @@
 
 mod resolver;
 
-pub use resolver::{CallSite, ResolutionQuality, TraitImplementation, TypeArg, TypeResolver};
+pub use resolver::{
+    CallDispatch, CallSite, ResolutionQuality, TraitImplementation, TypeArg, TypeResolver,
+};
 
 use anyhow::Result;
 use sqlx::{PgPool, Row};
@@ -161,9 +163,9 @@ impl TypeResolutionService {
             sqlx::query(
                 r#"
                 INSERT INTO call_sites 
-                    (caller_fqn, callee_fqn, file_path, line_number, concrete_type_args, is_monomorphized, quality)
+                    (caller_fqn, callee_fqn, file_path, line_number, concrete_type_args, is_monomorphized, quality, dispatch)
                 VALUES 
-                    ($1, $2, $3, $4, $5, $6, $7)
+                    ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#
             )
             .bind(&site.caller_fqn)
@@ -173,6 +175,7 @@ impl TypeResolutionService {
             .bind(&type_args_json)
             .bind(site.is_monomorphized)
             .bind(site.quality.as_str())
+            .bind(site.dispatch.as_str())
             .execute(&self.pool)
             .await?;
         }
@@ -201,7 +204,8 @@ impl TypeResolutionService {
                 line_number,
                 concrete_type_args,
                 is_monomorphized,
-                quality
+                quality,
+                dispatch
             FROM call_sites
             WHERE callee_fqn LIKE $1
               AND concrete_type_args::text LIKE $2
@@ -235,6 +239,7 @@ impl TypeResolutionService {
                 concrete_type_args: type_args,
                 is_monomorphized,
                 quality: ResolutionQuality::parse_str(quality_str.as_deref().unwrap_or_default()),
+                dispatch: crate::typecheck::CallDispatch::default(),
             });
         }
 

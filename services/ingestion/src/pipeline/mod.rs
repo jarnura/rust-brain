@@ -8,6 +8,7 @@
 //! 5. **Graph** - Build Neo4j relationship graph
 //! 6. **Embed** - Create vector embeddings
 
+pub mod change_detection;
 pub mod circuit_breaker;
 pub mod memory_accountant;
 pub mod resilience;
@@ -15,6 +16,7 @@ pub mod runner;
 pub mod stages;
 pub mod streaming_runner;
 
+pub use change_detection::{ChangeDetector, IncrementalContext, IngestionMode};
 pub use circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, CircuitState,
 };
@@ -93,6 +95,9 @@ pub struct PipelineConfig {
 
     /// Names of all crates in the workspace
     pub workspace_crate_names: Vec<String>,
+
+    /// Ingestion mode: incremental (default) or full re-ingestion
+    pub incremental: IngestionMode,
 }
 
 impl Default for PipelineConfig {
@@ -112,6 +117,7 @@ impl Default for PipelineConfig {
             workspace_id: None,
             workspace_label: None,
             workspace_crate_names: Vec::new(),
+            incremental: IngestionMode::Incremental,
         }
     }
 }
@@ -299,6 +305,9 @@ pub struct PipelineState {
 
     /// Current FQNs extracted during this run (for stale detection)
     pub current_fqns: HashSet<String>,
+
+    /// Incremental context: tracks changed/unchanged/deleted files
+    pub incremental_context: Option<IncrementalContext>,
 }
 
 /// Information about a source file
@@ -477,6 +486,7 @@ mod tests {
             workspace_id: None,
             workspace_label: None,
             workspace_crate_names: Vec::new(),
+            incremental: IngestionMode::Incremental,
         }
     }
 

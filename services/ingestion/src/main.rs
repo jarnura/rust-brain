@@ -37,8 +37,19 @@
 //! | `--stages` | `-s` | all | — |
 //! | `--dry-run` | — | false | — |
 //! | `--fail-fast` | — | false | — |
+//! | `--full` | — | false | — |
 //! | `--max-concurrency` | — | 4 | — |
 //! | `--verbose` | `-v` | false | — |
+//!
+//! # Incremental Ingestion
+//!
+//! By default, the pipeline runs in **incremental mode**: it detects file changes
+//! via SHA-256 content hashing and only re-processes new or modified files.
+//! Unchanged files are skipped, and deleted files are cascade-removed from all
+//! data stores (Postgres, Neo4j, Qdrant).
+//!
+//! Use `--full` to force a complete re-ingestion of all files, ignoring any
+//! previously stored content hashes.
 
 pub mod derive_detector;
 pub mod embedding;
@@ -113,6 +124,10 @@ struct Args {
     #[arg(long, default_value = "4")]
     max_concurrency: usize,
 
+    /// Force full re-ingestion (default: incremental)
+    #[arg(long, default_value = "false")]
+    full: bool,
+
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -165,6 +180,11 @@ async fn main() -> Result<()> {
         workspace_id: args.workspace_id.and_then(|s| Uuid::parse_str(&s).ok()),
         workspace_label: args.workspace_label,
         workspace_crate_names: Vec::new(),
+        incremental: if args.full {
+            pipeline::IngestionMode::Full
+        } else {
+            pipeline::IngestionMode::Incremental
+        },
     };
 
     config.validate().context("Invalid configuration")?;

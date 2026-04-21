@@ -161,6 +161,53 @@ impl PipelineRunner {
             self.create_ingestion_run(pipeline_id).await?;
         }
 
+        // Run change detection for incremental mode
+        if self.ctx.config.incremental == crate::pipeline::IngestionMode::Incremental {
+            if let Some(pool) = &self.pool {
+                if let Some(ref crate_name) = self.ctx.config.crate_name {
+                    info!(
+                        "Running incremental change detection for crate {}",
+                        crate_name
+                    );
+                    let detector = crate::pipeline::ChangeDetector::new();
+                    match detector
+                        .detect_changes(&self.ctx.config.crate_path, crate_name, pool)
+                        .await
+                    {
+                        Ok(incremental_ctx) => {
+                            info!(
+                                "Change detection: {} changed, {} unchanged, {} deleted files",
+                                incremental_ctx.changed_files.len(),
+                                incremental_ctx.unchanged_files.len(),
+                                incremental_ctx.deleted_files.len()
+                            );
+                            let mut state = self.ctx.state.write().await;
+                            state.incremental_context = Some(incremental_ctx);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Change detection failed, falling back to full ingestion: {}",
+                                e
+                            );
+                            let mut state = self.ctx.state.write().await;
+                            state.incremental_context =
+                                Some(crate::pipeline::IncrementalContext::full());
+                        }
+                    }
+                } else {
+                    warn!("No crate_name set, skipping change detection (will process all files)");
+                }
+            }
+        } else {
+            info!("Full ingestion mode - processing all files");
+            let mut state = self.ctx.state.write().await;
+            state.incremental_context = Some(crate::pipeline::IncrementalContext::full());
+        }
+
+        if !self.ctx.config.dry_run {
+            self.cleanup_deleted_files().await?;
+        }
+
         let mut results = Vec::new();
         let mut has_failures = false;
         let mut has_partial = false;
@@ -743,6 +790,140 @@ impl PipelineRunner {
         Ok(())
     }
 
+    /// Cascade-delete data for files detected as deleted during incremental change detection.
+    /// Removes source_files rows and their extracted_items (via ON DELETE CASCADE),
+    /// then deletes corresponding Neo4j nodes and Qdrant points by FQN.
+    async fn cleanup_deleted_files(&self) -> Result<()> {
+        let pool = match &self.pool {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        let crate_name = match &self.ctx.config.crate_name {
+            Some(name) => name,
+            None => return Ok(()),
+        };
+
+        let deleted_files = {
+            let state = self.ctx.state.read().await;
+            match &state.incremental_context {
+                Some(ctx) if ctx.mode == crate::pipeline::IngestionMode::Incremental => {
+                    ctx.deleted_files.clone()
+                }
+                _ => return Ok(()),
+            }
+        };
+
+        if deleted_files.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Cleaning up {} deleted files for crate {}",
+            deleted_files.len(),
+            crate_name
+        );
+
+        let file_paths: Vec<String> = deleted_files
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+
+        let deleted_fqns: std::collections::HashSet<String> =
+            sqlx::query_scalar("SELECT fqn FROM extracted_items WHERE source_file_id IN (SELECT id FROM source_files WHERE crate_name = $1 AND file_path = ANY($2))")
+                .bind(crate_name)
+                .bind(&file_paths)
+                .fetch_all(pool)
+                .await
+                .context("Failed to query FQNs for deleted files")?
+                .into_iter()
+                .collect();
+
+        let result =
+            sqlx::query("DELETE FROM source_files WHERE crate_name = $1 AND file_path = ANY($2)")
+                .bind(crate_name)
+                .bind(&file_paths)
+                .execute(pool)
+                .await
+                .context("Failed to delete source files for deleted paths")?;
+
+        info!(
+            "Deleted {} source file records from Postgres",
+            result.rows_affected()
+        );
+
+        if let Some(neo4j) = &self.ctx.config.neo4j_url {
+            if !deleted_fqns.is_empty() {
+                let stale_fqns: Vec<String> = deleted_fqns.iter().cloned().collect();
+                match neo4rs::Graph::new(
+                    neo4j,
+                    std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
+                    std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string()),
+                )
+                .await
+                {
+                    Ok(graph) => {
+                        let q = neo4rs::query(
+                            "UNWIND $fqns AS fqn MATCH (n {fqn: fqn, crate_name: $crate_name}) DETACH DELETE n"
+                        )
+                        .param("fqns", stale_fqns.clone())
+                        .param("crate_name", crate_name.as_str());
+                        match graph.run(q).await {
+                            Ok(_) => info!(
+                                "Deleted {} nodes from Neo4j for deleted files",
+                                deleted_fqns.len()
+                            ),
+                            Err(e) => {
+                                warn!("Failed to delete Neo4j nodes for deleted files: {}", e)
+                            }
+                        }
+                    }
+                    Err(e) => warn!("Failed to connect to Neo4j for deleted file cleanup: {}", e),
+                }
+            }
+        }
+
+        if let Some(qdrant) = &self.ctx.config.embedding_url {
+            if !deleted_fqns.is_empty() {
+                let client = reqwest::Client::new();
+                let namespace = uuid::Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                    .expect("Invalid namespace UUID");
+                let point_ids: Vec<String> = deleted_fqns
+                    .iter()
+                    .map(|fqn| uuid::Uuid::new_v5(&namespace, fqn.as_bytes()).to_string())
+                    .collect();
+                let delete_req = serde_json::json!({ "ids": point_ids });
+                match client
+                    .post(format!(
+                        "{}/collections/code_embeddings/points/delete",
+                        qdrant
+                    ))
+                    .json(&delete_req)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        info!(
+                            "Deleted {} points from Qdrant for deleted files",
+                            deleted_fqns.len()
+                        );
+                    }
+                    Ok(resp) => {
+                        warn!(
+                            "Qdrant delete for deleted files returned {}: {}",
+                            resp.status(),
+                            resp.text().await.unwrap_or_default()
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Failed to delete Qdrant points for deleted files: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create a runner that resumes from a previous checkpoint.
     ///
     /// Looks up the latest checkpoint for the given run_id and creates
@@ -807,6 +988,7 @@ mod tests {
             workspace_id: None,
             workspace_label: None,
             workspace_crate_names: Vec::new(),
+            incremental: crate::pipeline::IngestionMode::Incremental,
         }
     }
 
@@ -951,7 +1133,11 @@ mod tests {
     #[test]
     fn test_stage_names_no_duplicates() {
         let unique: std::collections::HashSet<_> = STAGE_NAMES.iter().collect();
-        assert_eq!(unique.len(), STAGE_NAMES.len(), "STAGE_NAMES must have no duplicates");
+        assert_eq!(
+            unique.len(),
+            STAGE_NAMES.len(),
+            "STAGE_NAMES must have no duplicates"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1054,7 +1240,10 @@ mod tests {
             workspace_label: Some("Workspace_1a2b3c4d5e6f".to_string()),
             ..test_config()
         };
-        assert_eq!(config.workspace_schema(), Some("ws_1a2b3c4d5e6f".to_string()));
+        assert_eq!(
+            config.workspace_schema(),
+            Some("ws_1a2b3c4d5e6f".to_string())
+        );
     }
 
     #[test]
