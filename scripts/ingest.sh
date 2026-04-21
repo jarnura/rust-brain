@@ -52,13 +52,15 @@ MEMORY SAFETY:
     Direct host execution is disabled to prevent OOM crashes.
 
     Memory budget breakdown (32GB default):
-    - Discover stage:  512MB
+    Stages run SEQUENTIALLY — peak memory = max(stage) + overhead.
+    - Discover stage:  512MB   (peak stage)
     - Expand stage:    4GB
-    - Parse stage:     6GB
+    - Parse stage:     6GB     (peak stage)
     - Typecheck stage: 2GB
     - Graph stage:     4GB
     - Embed stage:     3GB
-    - Overhead:       12.5GB (runtime, DB pools, OS, cargo expand cache)
+    - Overhead:        ~2GB    (runtime, DB pools, OS, cargo expand cache)
+    Peak memory: ~6GB + ~2GB overhead ≈ 8GB (well within 32GB limit)
 EOF
 }
 

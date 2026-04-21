@@ -1389,6 +1389,9 @@ docker compose up -d opencode
 | Tool API | 8088 | HTTP | REST API + Playground |
 | MCP SSE | 3001 | HTTP/SSE | MCP streaming transport |
 | OpenCode | 4096 | HTTP | IDE integration |
+| Audit | 8090 | HTTP | Workspace leak detection & metrics |
+| Playground UI | 8092 | HTTP | Editor playground frontend |
+| Ingestion Health | 9091 | HTTP | Ingestion health & metrics (when running) |
 
 ### Changing Ports
 

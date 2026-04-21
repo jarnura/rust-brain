@@ -82,3 +82,11 @@ scrape_configs:
       - targets: ['audit:8090']
     metrics_path: /metrics
     scrape_interval: 30s
+
+  # Ingestion service — pipeline metrics (when running)
+  - job_name: 'rustbrain-ingestion'
+    static_configs:
+      - targets: ['ingestion:9091']
+    metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
