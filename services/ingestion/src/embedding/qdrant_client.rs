@@ -620,6 +620,278 @@ impl QdrantClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
+
+    #[tokio::test]
+    async fn test_health_check_healthy() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/healthz")
+            .with_status(200)
+            .with_body("ok")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_health_check_unhealthy() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/healthz")
+            .with_status(503)
+            .with_body("unavailable")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_list_collections_success() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"result":{"collections":[{"name":"code_embeddings"},{"name":"doc_embeddings"}]}}"#;
+        let mock = server
+            .mock("GET", "/collections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.list_collections().await;
+
+        assert!(result.is_ok());
+        let collections = result.unwrap();
+        assert_eq!(collections.len(), 2);
+        assert!(collections.contains(&"code_embeddings".to_string()));
+        assert!(collections.contains(&"doc_embeddings".to_string()));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_list_collections_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/collections")
+            .with_status(500)
+            .with_body("internal error")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.list_collections().await;
+
+        assert!(result.is_err());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_ensure_collection_already_exists() {
+        let mut server = Server::new_async().await;
+        // list_collections returns the code collection — no PUT should follow.
+        let body = r#"{"result":{"collections":[{"name":"code_embeddings"}]}}"#;
+        let mock_list = server
+            .mock("GET", "/collections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.ensure_collection("code_embeddings").await;
+
+        assert!(result.is_ok());
+        mock_list.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_ensure_collection_creates_new() {
+        let mut server = Server::new_async().await;
+        // list_collections returns empty — expect a PUT to create.
+        let list_body = r#"{"result":{"collections":[]}}"#;
+        let mock_list = server
+            .mock("GET", "/collections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(list_body)
+            .create_async()
+            .await;
+
+        let mock_create = server
+            .mock("PUT", "/collections/new_collection")
+            .with_status(200)
+            .with_body("{\"result\":true}")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.ensure_collection("new_collection").await;
+
+        assert!(result.is_ok());
+        mock_list.assert_async().await;
+        mock_create.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_upsert_points_empty_returns_immediately() {
+        // No mock needed — empty batch must not make any HTTP call.
+        let client = QdrantClient::with_base_url("http://127.0.0.1:1".to_string()).unwrap();
+        let result = client.upsert_points("code_embeddings", vec![]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_upsert_points_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("PUT", "/collections/code_embeddings/points?wait=true")
+            .with_status(200)
+            .with_body("{\"result\":{\"operation_id\":0,\"status\":\"completed\"}}")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let point = Point {
+            id: Uuid::nil(),
+            vector: vec![0.1, 0.2, 0.3],
+            payload: HashMap::new(),
+        };
+        let result = client.upsert_points("code_embeddings", vec![point]).await;
+
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_upsert_points_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("PUT", "/collections/code_embeddings/points?wait=true")
+            .with_status(400)
+            .with_body("bad request")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let point = Point {
+            id: Uuid::nil(),
+            vector: vec![0.1],
+            payload: HashMap::new(),
+        };
+        let result = client.upsert_points("code_embeddings", vec![point]).await;
+
+        assert!(result.is_err());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_upsert_point_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("PUT", "/collections/code_embeddings/points?wait=true")
+            .with_status(200)
+            .with_body("{\"result\":{\"operation_id\":1,\"status\":\"completed\"}}")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let point = Point {
+            id: Uuid::nil(),
+            vector: vec![1.0, 2.0],
+            payload: HashMap::new(),
+        };
+        let result = client.upsert_point("code_embeddings", point).await;
+
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_search_success() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"result":[{"id":"00000000-0000-0000-0000-000000000001","score":0.92,"payload":{"fn_name":"foo"}}]}"#;
+        let mock = server
+            .mock("POST", "/collections/code_embeddings/points/search")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let req = SearchRequest {
+            vector: vec![0.1, 0.2],
+            limit: Some(10),
+            score_threshold: Some(0.5),
+            filter: None,
+            with_payload: true,
+        };
+        let result = client.search("code_embeddings", req).await;
+
+        assert!(result.is_ok());
+        let hits = result.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!((hits[0].score - 0.92_f32).abs() < 1e-4);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_search_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/collections/code_embeddings/points/search")
+            .with_status(404)
+            .with_body("collection not found")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let req = SearchRequest {
+            vector: vec![0.1],
+            limit: None,
+            score_threshold: None,
+            filter: None,
+            with_payload: false,
+        };
+        let result = client.search("code_embeddings", req).await;
+
+        assert!(result.is_err());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_delete_point_success() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock(
+                "POST",
+                "/collections/code_embeddings/points/delete?wait=true",
+            )
+            .with_status(200)
+            .with_body("{\"result\":{\"operation_id\":2,\"status\":\"completed\"}}")
+            .create_async()
+            .await;
+
+        let client = QdrantClient::with_base_url(server.url()).unwrap();
+        let result = client.delete_point("code_embeddings", Uuid::nil()).await;
+
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
 
     #[test]
     fn test_config_default() {

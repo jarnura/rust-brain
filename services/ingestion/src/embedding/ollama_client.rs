@@ -333,6 +333,289 @@ impl OllamaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
+
+    #[tokio::test]
+    async fn test_embed_success() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"embedding": [0.1, 0.2, 0.3]}"#;
+        let mock = server
+            .mock("POST", "/api/embeddings")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.embed("hello world").await;
+
+        assert!(result.is_ok());
+        let embedding = result.unwrap();
+        assert_eq!(embedding.len(), 3);
+        assert!((embedding[0] - 0.1_f32).abs() < 1e-5);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_embed_error_status() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/embeddings")
+            .with_status(400)
+            .with_body("bad request")
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.embed("hello").await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("400"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_success() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}"#;
+        let mock = server
+            .mock("POST", "/api/embed")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let texts = vec!["foo".to_string(), "bar".to_string()];
+        let result = client.embed_batch(&texts).await;
+
+        assert!(result.is_ok());
+        let embeddings = result.unwrap();
+        assert_eq!(embeddings.len(), 2);
+        assert_eq!(embeddings[0].len(), 2);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_empty_returns_immediately() {
+        // No mock needed — empty input must not make any HTTP call.
+        let client = OllamaClient::with_base_url("http://127.0.0.1:1".to_string()).unwrap();
+        let result = client.embed_batch(&[]).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_retries_on_429_then_succeeds() {
+        let mut server = Server::new_async().await;
+
+        // First call returns 429; once consumed the second mock takes over.
+        let mock_429 = server
+            .mock("POST", "/api/embed")
+            .with_status(429)
+            .with_body("rate limited")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let success_body = r#"{"embeddings": [[0.5, 0.6]]}"#;
+        let mock_ok = server
+            .mock("POST", "/api/embed")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(success_body)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::new(OllamaConfig {
+            base_url: server.url(),
+            initial_backoff: Duration::from_millis(1),
+            max_retries: 2,
+            ..OllamaConfig::default()
+        })
+        .unwrap();
+
+        let result = client.embed_batch(&["hello".to_string()]).await;
+        assert!(result.is_ok());
+        let embeddings = result.unwrap();
+        assert_eq!(embeddings.len(), 1);
+        mock_429.assert_async().await;
+        mock_ok.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_non_retryable_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/embed")
+            .with_status(500)
+            .with_body("internal error")
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.embed_batch(&["text".to_string()]).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("500"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_embed_all_batches_multiple_chunks() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"embeddings": [[0.1, 0.2]]}"#;
+
+        // Two chunks → two POST calls; each mock consumed once.
+        let mock1 = server
+            .mock("POST", "/api/embed")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .expect(1)
+            .create_async()
+            .await;
+        let mock2 = server
+            .mock("POST", "/api/embed")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::new(OllamaConfig {
+            base_url: server.url(),
+            max_batch_size: 1, // Force two chunks for two texts
+            ..OllamaConfig::default()
+        })
+        .unwrap();
+
+        let texts = vec!["a".to_string(), "b".to_string()];
+        let result = client.embed_all(&texts).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+        mock1.assert_async().await;
+        mock2.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_health_check_healthy() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_health_check_unhealthy() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(503)
+            .with_body("unavailable")
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_check_model_found() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"models":[{"name":"nomic-embed-text"}]}"#;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.check_model().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_check_model_found_with_latest_suffix() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"models":[{"name":"nomic-embed-text:latest"}]}"#;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.check_model().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_check_model_not_found() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"models":[{"name":"llama3"}]}"#;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.check_model().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_check_model_api_error() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/tags")
+            .with_status(500)
+            .with_body("error")
+            .create_async()
+            .await;
+
+        let client = OllamaClient::with_base_url(server.url()).unwrap();
+        let result = client.check_model().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+        mock.assert_async().await;
+    }
 
     #[test]
     fn test_config_default() {
