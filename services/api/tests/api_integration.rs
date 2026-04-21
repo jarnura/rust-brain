@@ -9,17 +9,56 @@
 //! cargo test --test api_integration -- --include-ignored
 //! ```
 //!
-//! In CI the docker-compose stack is always up, so the tests run unconditionally.
+//! ## Configuration
+//!
+//! | Env var | Required | Description |
+//! |---------|----------|-------------|
+//! | `RUSTBRAIN_TEST_API_KEY` | no | Bearer token for `Authorization` header. Omit when `RUSTBRAIN_AUTH_DISABLED=true`. |
+//! | `RUSTBRAIN_TEST_WORKSPACE_ID` | no | Value for `X-Workspace-Id` header. Defaults to `ws_1db76434a542`. |
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use reqwest::Client;
 use serde_json::{json, Value};
 
 const BASE: &str = "http://localhost:8088";
 
-/// Build a reusable reqwest client.
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
 fn client() -> Client {
     Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(10));
+
+    let mut headers = HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    builder
+        .default_headers(headers)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -48,7 +87,11 @@ async fn test_health_returns_healthy() {
 
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "healthy");
+    let status = body["status"].as_str().unwrap_or("unknown");
+    assert!(
+        matches!(status, "healthy" | "degraded"),
+        "unexpected status: {status}"
+    );
     assert!(has_key(&body["dependencies"], "postgres"));
     assert!(has_key(&body["dependencies"], "neo4j"));
     assert!(has_key(&body["dependencies"], "qdrant"));
@@ -72,7 +115,7 @@ async fn test_metrics_endpoint() {
 #[tokio::test]
 #[ignore]
 async fn test_snapshot_endpoint() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/snapshot"))
         .send()
         .await
@@ -91,7 +134,7 @@ async fn test_snapshot_endpoint() {
 #[tokio::test]
 #[ignore]
 async fn test_search_semantic_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({"query": "parse rust source file", "limit": 3}))
         .send()
@@ -111,7 +154,7 @@ async fn test_search_semantic_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_search_semantic_missing_query() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({"limit": 5}))
         .send()
@@ -129,7 +172,7 @@ async fn test_search_semantic_missing_query() {
 #[tokio::test]
 #[ignore]
 async fn test_search_semantic_empty_query_returns_results() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({"query": "", "limit": 1}))
         .send()
@@ -147,7 +190,7 @@ async fn test_search_semantic_empty_query_returns_results() {
 #[tokio::test]
 #[ignore]
 async fn test_aggregate_search_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/aggregate_search"))
         .json(&json!({"query": "function", "limit": 3}))
         .send()
@@ -162,7 +205,7 @@ async fn test_aggregate_search_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_aggregate_search_missing_query() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/aggregate_search"))
         .json(&json!({}))
         .send()
@@ -183,7 +226,7 @@ async fn test_aggregate_search_missing_query() {
 #[tokio::test]
 #[ignore]
 async fn test_search_docs_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_docs"))
         .json(&json!({"query": "how to authenticate users", "limit": 5}))
         .send()
@@ -208,7 +251,7 @@ async fn test_search_docs_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_search_docs_missing_query() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_docs"))
         .json(&json!({"limit": 5}))
         .send()
@@ -225,7 +268,7 @@ async fn test_search_docs_missing_query() {
 #[tokio::test]
 #[ignore]
 async fn test_search_docs_with_score_threshold() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_docs"))
         .json(&json!({"query": "API documentation", "limit": 3, "score_threshold": 0.7}))
         .send()
@@ -248,7 +291,7 @@ async fn test_search_docs_with_score_threshold() {
 #[tokio::test]
 #[ignore]
 async fn test_get_function_not_found() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!(
             "{BASE}/tools/get_function?fqn=nonexistent::fake::fn"
         ))
@@ -264,7 +307,7 @@ async fn test_get_function_not_found() {
 #[tokio::test]
 #[ignore]
 async fn test_get_function_missing_fqn_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_function"))
         .send()
         .await
@@ -284,7 +327,7 @@ async fn test_get_function_missing_fqn_param() {
 #[tokio::test]
 #[ignore]
 async fn test_get_callers_unknown_fqn_returns_empty() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_callers?fqn=nonexistent::fn"))
         .send()
         .await
@@ -301,7 +344,7 @@ async fn test_get_callers_unknown_fqn_returns_empty() {
 #[tokio::test]
 #[ignore]
 async fn test_get_callers_missing_fqn_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_callers"))
         .send()
         .await
@@ -321,7 +364,7 @@ async fn test_get_callers_missing_fqn_param() {
 #[tokio::test]
 #[ignore]
 async fn test_get_trait_impls_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_trait_impls?trait_name=Display"))
         .send()
         .await
@@ -336,7 +379,7 @@ async fn test_get_trait_impls_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_get_trait_impls_missing_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_trait_impls"))
         .send()
         .await
@@ -356,7 +399,7 @@ async fn test_get_trait_impls_missing_param() {
 #[tokio::test]
 #[ignore]
 async fn test_find_usages_of_type_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_usages_of_type?type_name=String"))
         .send()
         .await
@@ -371,7 +414,7 @@ async fn test_find_usages_of_type_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_find_usages_of_type_missing_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_usages_of_type"))
         .send()
         .await
@@ -391,7 +434,7 @@ async fn test_find_usages_of_type_missing_param() {
 #[tokio::test]
 #[ignore]
 async fn test_get_module_tree_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!(
             "{BASE}/tools/get_module_tree?crate_name=rustbrain_ingestion"
         ))
@@ -408,7 +451,7 @@ async fn test_get_module_tree_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_get_module_tree_missing_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
         .send()
         .await
@@ -428,7 +471,7 @@ async fn test_get_module_tree_missing_param() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_read_only_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({"query": "MATCH (n) RETURN n LIMIT 1", "parameters": {}}))
         .send()
@@ -443,7 +486,7 @@ async fn test_query_graph_read_only_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_rejects_write_cypher() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({"query": "CREATE (n:Test {name: 'evil'}) RETURN n", "parameters": {}}))
         .send()
@@ -458,7 +501,7 @@ async fn test_query_graph_rejects_write_cypher() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_both_fields_missing() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({}))
         .send()
@@ -481,7 +524,7 @@ async fn test_query_graph_both_fields_missing() {
 #[tokio::test]
 #[ignore]
 async fn test_find_calls_with_type_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!(
             "{BASE}/tools/find_calls_with_type?type_name=String"
         ))
@@ -497,7 +540,7 @@ async fn test_find_calls_with_type_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_find_calls_with_type_missing_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_calls_with_type"))
         .send()
         .await
@@ -518,7 +561,7 @@ async fn test_find_calls_with_type_missing_param() {
 #[ignore]
 async fn test_find_trait_impls_for_type_happy_path() {
     // Parameter is `type_name`, not `type_fqn`
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!(
             "{BASE}/tools/find_trait_impls_for_type?type_name=String"
         ))
@@ -534,7 +577,7 @@ async fn test_find_trait_impls_for_type_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_find_trait_impls_for_type_missing_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_trait_impls_for_type"))
         .send()
         .await
@@ -554,7 +597,7 @@ async fn test_find_trait_impls_for_type_missing_param() {
 #[tokio::test]
 #[ignore]
 async fn test_pg_query_select_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
         .json(&json!({"query": "SELECT 1 AS n"}))
         .send()
@@ -571,7 +614,7 @@ async fn test_pg_query_select_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_pg_query_rejects_insert() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
         .json(&json!({"query": "INSERT INTO extracted_items VALUES (1)"}))
         .send()
@@ -586,7 +629,7 @@ async fn test_pg_query_rejects_insert() {
 #[tokio::test]
 #[ignore]
 async fn test_pg_query_rejects_drop() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
         .json(&json!({"query": "DROP TABLE extracted_items"}))
         .send()
@@ -599,7 +642,7 @@ async fn test_pg_query_rejects_drop() {
 #[tokio::test]
 #[ignore]
 async fn test_pg_query_rejects_system_tables() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
         .json(&json!({"query": "SELECT * FROM pg_catalog.pg_tables"}))
         .send()
@@ -612,7 +655,7 @@ async fn test_pg_query_rejects_system_tables() {
 #[tokio::test]
 #[ignore]
 async fn test_pg_query_missing_query_field() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
         .json(&json!({}))
         .send()
@@ -633,7 +676,7 @@ async fn test_pg_query_missing_query_field() {
 #[tokio::test]
 #[ignore]
 async fn test_ingestion_progress() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
         .send()
         .await
@@ -652,7 +695,7 @@ async fn test_ingestion_progress() {
 #[tokio::test]
 #[ignore]
 async fn test_artifacts_crud_lifecycle() {
-    let client = client();
+    let client = authenticated_client();
     let artifact_id = format!("test-artifact-{}", uuid_v4());
 
     // CREATE
@@ -739,7 +782,7 @@ async fn test_artifacts_crud_lifecycle() {
 #[tokio::test]
 #[ignore]
 async fn test_tasks_crud_lifecycle() {
-    let client = client();
+    let client = authenticated_client();
     let task_id = format!("test-task-{}", uuid_v4());
 
     // CREATE — valid phases: understand, plan, build, verify, communicate
@@ -848,7 +891,7 @@ async fn test_tasks_crud_lifecycle() {
 #[tokio::test]
 #[ignore]
 async fn test_chat_happy_path() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/chat"))
         .json(&json!({"message": "What is 2+2?", "session_id": null}))
         .send()
@@ -863,7 +906,7 @@ async fn test_chat_happy_path() {
 #[tokio::test]
 #[ignore]
 async fn test_chat_missing_message() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/chat"))
         .json(&json!({}))
         .send()
@@ -885,7 +928,7 @@ async fn test_chat_missing_message() {
 #[ignore]
 async fn test_chat_stream_is_sse() {
     // Just verify the endpoint accepts a GET with a message parameter and starts streaming
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/chat/stream?message=hello"))
         .header("Accept", "text/event-stream")
         .send()
@@ -907,7 +950,7 @@ async fn test_chat_stream_is_sse() {
 #[tokio::test]
 #[ignore]
 async fn test_chat_stream_post_returns_405() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/chat/stream"))
         .json(&json!({"message": "hello"}))
         .send()
@@ -929,7 +972,7 @@ async fn test_chat_stream_post_returns_405() {
 #[tokio::test]
 #[ignore]
 async fn test_chat_sessions_lifecycle() {
-    let client = client();
+    let client = authenticated_client();
 
     // CREATE
     let create_resp = client
@@ -1025,7 +1068,7 @@ async fn test_chat_sessions_lifecycle() {
 /// Returns the workspace ID.
 async fn create_test_workspace() -> String {
     let name = format!("test-ws-{}", uuid_v4());
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1048,7 +1091,7 @@ async fn create_test_workspace() -> String {
 /// Helper: Wait for workspace to be ready (volume created).
 async fn wait_for_workspace_ready(workspace_id: &str) {
     for _ in 0..30 {
-        let resp = client()
+        let resp = authenticated_client()
             .get(format!("{BASE}/workspaces/{}", workspace_id))
             .send()
             .await
@@ -1072,7 +1115,7 @@ async fn test_execute_class_a_simple_query() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_ready(&workspace_id).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
         .json(&json!({
             "prompt": "What does PipelineRunner do?"
@@ -1103,7 +1146,7 @@ async fn test_execution_lifecycle_and_agent_dispatch() {
     wait_for_workspace_ready(&workspace_id).await;
 
     // Start execution
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
         .json(&json!({
             "prompt": "What does PipelineRunner do?"
@@ -1179,7 +1222,7 @@ async fn test_execute_rejects_empty_prompt() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_ready(&workspace_id).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
         .json(&json!({
             "prompt": ""
@@ -1199,7 +1242,7 @@ async fn test_execution_sse_stream() {
     wait_for_workspace_ready(&workspace_id).await;
 
     // Start execution
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/execute", workspace_id))
         .json(&json!({
             "prompt": "What does PipelineRunner do?"

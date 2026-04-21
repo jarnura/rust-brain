@@ -13,6 +13,7 @@
 //! ```
 
 use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -26,6 +27,27 @@ fn client() -> Client {
         .expect("Failed to build HTTP client")
 }
 
+/// Build a reqwest client with `Authorization: Bearer <key>` default header.
+///
+/// Reads the API key from `RUSTBRAIN_TEST_API_KEY` env var.  If not set,
+/// returns a plain client (works when `RUSTBRAIN_AUTH_DISABLED=true`).
+fn authenticated_client() -> Client {
+    let builder = Client::builder()
+        .timeout(Duration::from_secs(15));
+
+    match std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        Ok(key) if !key.is_empty() => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {key}").parse().expect("Invalid API key header value"),
+            );
+            builder.default_headers(headers).build().expect("Failed to build HTTP client")
+        }
+        _ => builder.build().expect("Failed to build HTTP client"),
+    }
+}
+
 // =============================================================================
 // Full round-trip helper: open session, initialize, invoke tool, read response
 // =============================================================================
@@ -37,7 +59,7 @@ fn client() -> Client {
 ///
 /// Returns the `result` field of the tools/call JSON-RPC response.
 async fn invoke_tool(tool_name: &str, arguments: Value) -> Value {
-    let client = client();
+    let client = authenticated_client();
 
     // 1. Open SSE connection and get session ID
     let sse_resp = client
@@ -204,7 +226,7 @@ async fn test_mcp_health() {
 #[tokio::test]
 #[ignore]
 async fn test_mcp_initialize_and_list_tools() {
-    let client = client();
+    let client = authenticated_client();
 
     // Open SSE and get session ID
     let sse_resp = client

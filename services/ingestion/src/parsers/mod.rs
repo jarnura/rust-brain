@@ -698,7 +698,10 @@ mod tests {
             "Expected at least 100 items, got {}",
             result.items.len()
         );
-        assert!(result.errors.is_empty(), "Expected no parse errors for clean source");
+        assert!(
+            result.errors.is_empty(),
+            "Expected no parse errors for clean source"
+        );
     }
 
     // -----------------------------------------------------------------------

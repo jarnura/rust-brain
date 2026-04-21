@@ -661,7 +661,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_collections_success() {
         let mut server = Server::new_async().await;
-        let body = r#"{"result":{"collections":[{"name":"code_embeddings"},{"name":"doc_embeddings"}]}}"#;
+        let body =
+            r#"{"result":{"collections":[{"name":"code_embeddings"},{"name":"doc_embeddings"}]}}"#;
         let mock = server
             .mock("GET", "/collections")
             .with_status(200)

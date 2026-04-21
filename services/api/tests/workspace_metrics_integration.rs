@@ -15,6 +15,7 @@
 //! cargo test --test workspace_metrics_integration -- --include-ignored
 //! ```
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -26,6 +27,40 @@ const BASE: &str = "http://localhost:8088";
 fn client() -> Client {
     Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(30));
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    builder
+        .default_headers(headers)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -268,7 +303,7 @@ async fn test_metrics_records_requests() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_summary_report() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -311,7 +346,7 @@ async fn test_consistency_summary_report() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_full_detail() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
         .send()
         .await
@@ -332,7 +367,7 @@ async fn test_consistency_full_detail() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_with_crate_filter() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?crate=rustbrain_common"))
         .send()
         .await
@@ -350,7 +385,7 @@ async fn test_consistency_with_crate_filter() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_invalid_detail_param() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=invalid"))
         .send()
         .await
@@ -443,7 +478,7 @@ async fn test_health_consistency_crate_summaries() {
 #[tokio::test]
 #[ignore]
 async fn test_ingestion_progress_structure() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
         .send()
         .await
@@ -469,7 +504,7 @@ async fn test_ingestion_progress_structure() {
 #[tokio::test]
 #[ignore]
 async fn test_ingestion_progress_stages() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
         .send()
         .await
@@ -495,7 +530,7 @@ async fn test_ingestion_progress_stages() {
 #[tokio::test]
 #[ignore]
 async fn test_ingestion_progress_items_non_negative() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
         .send()
         .await
@@ -526,7 +561,7 @@ async fn test_ingestion_progress_items_non_negative() {
 #[tokio::test]
 #[ignore]
 async fn test_count_by_label_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "count_by_label",
@@ -551,7 +586,7 @@ async fn test_count_by_label_template() {
 #[tokio::test]
 #[ignore]
 async fn test_count_by_label_invalid_label() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "count_by_label",
@@ -570,7 +605,7 @@ async fn test_count_by_label_invalid_label() {
 #[tokio::test]
 #[ignore]
 async fn test_find_crate_overview_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "find_crate_overview",
@@ -595,7 +630,7 @@ async fn test_find_crate_overview_template() {
 #[tokio::test]
 #[ignore]
 async fn test_count_total_nodes_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "count_total_nodes"
@@ -617,7 +652,7 @@ async fn test_count_total_nodes_template() {
 #[tokio::test]
 #[ignore]
 async fn test_count_total_relationships_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "count_total_relationships"
@@ -643,7 +678,7 @@ async fn test_count_total_relationships_template() {
 /// Helper: Create a test workspace and return its ID.
 async fn create_test_workspace() -> String {
     let name = format!("test-metrics-ws-{}", uuid_v4());
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -666,7 +701,7 @@ async fn create_test_workspace() -> String {
 /// Helper: Wait for workspace to reach a specific status.
 async fn wait_for_workspace_status(workspace_id: &str, target_status: &str, max_polls: usize) {
     for _ in 0..max_polls {
-        let resp = client()
+        let resp = authenticated_client()
             .get(format!("{BASE}/workspaces/{}", workspace_id))
             .send()
             .await
@@ -697,7 +732,7 @@ async fn wait_for_workspace_status(workspace_id: &str, target_status: &str, max_
 
 /// Helper: Clean up workspace by archiving it.
 async fn cleanup_workspace(workspace_id: &str) {
-    let _ = client()
+    let _ = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await;
@@ -713,7 +748,7 @@ async fn test_workspace_index_progress_field() {
     wait_for_workspace_status(&workspace_id, "ready", 60).await;
 
     // Get workspace details
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -758,7 +793,7 @@ async fn test_workspace_list_includes_status() {
     // Wait a bit for workspace to be created
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces"))
         .send()
         .await
@@ -791,7 +826,7 @@ async fn test_workspace_stats_happy_path() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -859,7 +894,7 @@ async fn test_workspace_stats_consistency_computation() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -923,7 +958,7 @@ async fn test_workspace_stats_isolation_fields() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -969,7 +1004,7 @@ async fn test_workspace_stats_optional_fields() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -1042,7 +1077,7 @@ async fn test_workspace_stats_prometheus_gauges() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let stats_resp = client()
+    let stats_resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -1073,7 +1108,7 @@ async fn test_workspace_stats_middleware_labels() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let _ = client()
+    let _ = authenticated_client()
         .get(format!("{BASE}/health"))
         .header("X-Workspace-Id", &workspace_id)
         .send()
@@ -1107,13 +1142,13 @@ async fn test_workspace_stats_repeated_calls_consistent() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let resp1 = client()
+    let resp1 = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
         .expect("First GET /workspaces/:id/stats failed");
 
-    let resp2 = client()
+    let resp2 = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -1155,7 +1190,7 @@ async fn test_cardinality_endpoint_label_collapsing() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let _ = client()
+    let _ = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/stats"))
         .send()
         .await
@@ -1231,7 +1266,7 @@ async fn test_cardinality_workspace_label_from_header() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let _ = client()
+    let _ = authenticated_client()
         .get(format!("{BASE}/health"))
         .header("X-Workspace-Id", &workspace_id)
         .send()
@@ -1270,12 +1305,12 @@ async fn test_cardinality_no_raw_uuid_in_endpoint_labels() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
 
-    let _ = client()
+    let _ = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/files"))
         .send()
         .await;
 
-    let _ = client()
+    let _ = authenticated_client()
         .get(format!("{BASE}/workspaces/{workspace_id}/diff"))
         .send()
         .await;

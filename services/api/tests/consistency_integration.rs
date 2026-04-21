@@ -13,6 +13,7 @@
 //! cargo test --test consistency_integration -- --include-ignored
 //! ```
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use reqwest::Client;
 use serde_json::Value;
 
@@ -23,6 +24,40 @@ const BASE: &str = "http://localhost:8088";
 fn client() -> Client {
     Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(30));
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    builder
+        .default_headers(headers)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -43,7 +78,7 @@ fn has_key(v: &Value, key: &str) -> bool {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_endpoint_returns_200() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -55,7 +90,7 @@ async fn test_consistency_endpoint_returns_200() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_response_schema() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -108,7 +143,7 @@ async fn test_consistency_with_crate_filter() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_detail_full_includes_discrepancies() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
         .send()
         .await
@@ -132,7 +167,7 @@ async fn test_consistency_detail_full_includes_discrepancies() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_detail_summary_omits_discrepancies() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=summary"))
         .send()
         .await
@@ -151,7 +186,7 @@ async fn test_consistency_detail_summary_omits_discrepancies() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_unknown_crate_returns_zero_counts() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!(
             "{BASE}/api/consistency?crate=nonexistent_crate_xyz_12345"
         ))
@@ -171,7 +206,7 @@ async fn test_consistency_unknown_crate_returns_zero_counts() {
 #[ignore]
 async fn test_consistency_status_values() {
     // Verify status field only returns "consistent" or "inconsistent"
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -341,7 +376,7 @@ async fn test_health_consistency_empty_when_no_data() {
 async fn test_cross_store_counts_match_after_ingestion() {
     // Verify that after a full ingestion run, all three stores have equal
     // counts per ADR-004's consistency definition.
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -373,7 +408,7 @@ async fn test_cross_store_counts_match_after_ingestion() {
 async fn test_fqn_sets_match_across_stores() {
     // Using detail=full, verify that FQN sets are identical across all stores.
     // This is the core cross-store consistency guarantee from ADR-004.
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
         .send()
         .await
@@ -434,7 +469,7 @@ async fn test_per_crate_consistency_check() {
                 .as_str()
                 .expect("crate_name should be a string");
 
-            let resp = client()
+            let resp = authenticated_client()
                 .get(format!(
                     "{BASE}/api/consistency?crate={first_crate}&detail=full"
                 ))
@@ -458,7 +493,7 @@ async fn test_per_crate_consistency_check() {
 async fn test_consistency_recommendation_is_actionable() {
     // When stores are inconsistent, the recommendation must mention which
     // stage to re-run, per ADR-004's output format.
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -543,7 +578,7 @@ async fn test_idempotency_consistency_after_reingestion() {
     //
     // Per ADR-004: "Re-ingestion must be safe. Idempotent writes already
     // satisfy this."
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -577,7 +612,7 @@ async fn test_idempotency_no_orphaned_data() {
     // After idempotent writes, there should be no orphaned data in Neo4j
     // or Qdrant (items not in Postgres). This validates that idempotent
     // re-ingestion doesn't create ghost entries.
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
         .send()
         .await
@@ -706,7 +741,7 @@ async fn test_consistency_detects_zero_qdrant_as_inconsistent() {
 async fn test_consistency_detects_partial_neo4j_data() {
     // If Neo4j has fewer items than Postgres, the detail=full response
     // should list the missing FQNs in in_postgres_not_neo4j.
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
         .send()
         .await
@@ -742,7 +777,7 @@ async fn test_consistency_detects_partial_neo4j_data() {
 async fn test_consistency_detects_partial_qdrant_data() {
     // If Qdrant has fewer items than Postgres, the detail=full response
     // should list the missing FQNs in in_postgres_not_qdrant.
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
         .send()
         .await
@@ -779,7 +814,7 @@ async fn test_consistency_detects_partial_qdrant_data() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_timestamp_is_iso8601() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await
@@ -806,7 +841,7 @@ async fn test_consistency_timestamp_is_iso8601() {
 #[ignore]
 async fn test_consistency_all_crates_scope() {
     // When no crate filter is provided, crate_name should be "all"
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .send()
         .await

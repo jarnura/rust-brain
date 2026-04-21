@@ -10,8 +10,44 @@
 //! - Storage failure → structured error event emitted (not silent)
 //! - Integration test: write N events, read from seq M, get exactly N-M events in order
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
+use reqwest::Client;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(15));
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    builder
+        .default_headers(headers)
+        .build()
+        .expect("Failed to build HTTP client")
+}
 
 async fn test_pool() -> PgPool {
     let db_url = std::env::var("DATABASE_URL")

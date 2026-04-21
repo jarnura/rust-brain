@@ -18,6 +18,7 @@
 //! cargo test --test workspace_integration -- --include-ignored
 //! ```
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -28,6 +29,40 @@ const BASE: &str = "http://localhost:8088";
 fn client() -> Client {
     Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(30));
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    builder
+        .default_headers(headers)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -55,7 +90,7 @@ fn uuid_v4() -> String {
 #[ignore]
 async fn test_workspace_create_returns_202() {
     let name = format!("test-crud-{}", uuid_v4());
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -83,7 +118,7 @@ async fn test_workspace_create_returns_202() {
 #[tokio::test]
 #[ignore]
 async fn test_workspace_create_rejects_invalid_github_url() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://gitlab.com/some/repo",
@@ -99,7 +134,7 @@ async fn test_workspace_create_rejects_invalid_github_url() {
 #[tokio::test]
 #[ignore]
 async fn test_workspace_create_rejects_missing_url() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "name": "no-url"
@@ -118,7 +153,7 @@ async fn test_workspace_create_rejects_missing_url() {
 #[tokio::test]
 #[ignore]
 async fn test_workspace_list_returns_array() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces"))
         .send()
         .await
@@ -134,7 +169,7 @@ async fn test_workspace_list_returns_array() {
 async fn test_workspace_get_existing() {
     // Create a workspace first
     let name = format!("test-get-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -149,7 +184,7 @@ async fn test_workspace_get_existing() {
     let workspace_id = create_body["id"].as_str().unwrap();
 
     // Fetch it
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -168,7 +203,7 @@ async fn test_workspace_get_existing() {
 #[ignore]
 async fn test_workspace_get_nonexistent_returns_404() {
     let fake_id = "00000000-0000-0000-0000-000000000000";
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}", fake_id))
         .send()
         .await
@@ -180,7 +215,7 @@ async fn test_workspace_get_nonexistent_returns_404() {
 #[tokio::test]
 #[ignore]
 async fn test_workspace_get_invalid_uuid_returns_400_or_404() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/not-a-uuid"))
         .send()
         .await
@@ -198,7 +233,7 @@ async fn test_workspace_get_invalid_uuid_returns_400_or_404() {
 async fn test_workspace_delete_returns_204() {
     // Create a workspace
     let name = format!("test-delete-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -213,7 +248,7 @@ async fn test_workspace_delete_returns_204() {
     let workspace_id = create_body["id"].as_str().unwrap();
 
     // Delete it
-    let resp = client()
+    let resp = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -222,7 +257,7 @@ async fn test_workspace_delete_returns_204() {
     assert_eq!(resp.status(), 204, "Delete should return 204 No Content");
 
     // Verify it's archived (GET should still work but show archived status)
-    let get_resp = client()
+    let get_resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -242,7 +277,7 @@ async fn test_workspace_delete_returns_204() {
 #[ignore]
 async fn test_workspace_delete_nonexistent_returns_404_or_204() {
     let fake_id = "00000000-0000-0000-0000-000000000000";
-    let resp = client()
+    let resp = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", fake_id))
         .send()
         .await
@@ -261,7 +296,7 @@ async fn test_workspace_delete_nonexistent_returns_404_or_204() {
 async fn test_workspace_delete_idempotent() {
     // Create a workspace
     let name = format!("test-idempotent-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -276,14 +311,14 @@ async fn test_workspace_delete_idempotent() {
         .to_string();
 
     // Delete twice — both should succeed
-    let resp1 = client()
+    let resp1 = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
         .expect("First DELETE failed");
     assert_eq!(resp1.status(), 204);
 
-    let resp2 = client()
+    let resp2 = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -299,7 +334,7 @@ async fn test_workspace_delete_idempotent() {
 #[ignore]
 async fn test_workspace_lifecycle_cloning_to_ready() {
     let name = format!("test-lifecycle-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -321,7 +356,7 @@ async fn test_workspace_lifecycle_cloning_to_ready() {
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let resp = client()
+        let resp = authenticated_client()
             .get(format!("{BASE}/workspaces/{}", workspace_id))
             .send()
             .await
@@ -345,7 +380,7 @@ async fn test_workspace_lifecycle_cloning_to_ready() {
     }
 
     // Cleanup
-    let _ = client()
+    let _ = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await;
@@ -361,7 +396,7 @@ async fn test_workspace_lifecycle_cloning_to_ready() {
 #[ignore]
 async fn test_workspace_schema_name_format() {
     let name = format!("test-schema-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -374,7 +409,7 @@ async fn test_workspace_schema_name_format() {
     let workspace_id = body["id"].as_str().unwrap();
 
     // Fetch workspace details
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -405,7 +440,7 @@ async fn test_workspace_schema_name_format() {
     }
 
     // Cleanup
-    let _ = client()
+    let _ = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await;
@@ -416,7 +451,7 @@ async fn test_workspace_schema_name_format() {
 async fn test_workspace_files_endpoint() {
     // Create workspace and wait for it to be ready
     let name = format!("test-files-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -433,14 +468,14 @@ async fn test_workspace_files_endpoint() {
     wait_for_workspace_status(workspace_id, "ready", 60).await;
 
     // List files
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}/files", workspace_id))
         .send()
         .await
         .expect("GET /workspaces/:id/files failed");
 
     // Cleanup
-    let _ = client()
+    let _ = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await;
@@ -469,7 +504,7 @@ async fn test_workspace_files_endpoint() {
 /// Helper: Create a workspace and wait for it to reach the given status.
 async fn wait_for_workspace_status(workspace_id: &str, target_status: &str, max_polls: usize) {
     for _ in 0..max_polls {
-        let resp = client()
+        let resp = authenticated_client()
             .get(format!("{BASE}/workspaces/{}", workspace_id))
             .send()
             .await
@@ -505,7 +540,7 @@ async fn create_two_workspaces() -> (String, String) {
     let name_a = format!("ws-iso-a-{}", uuid_v4());
     let name_b = format!("ws-iso-b-{}", uuid_v4());
 
-    let resp_a = client()
+    let resp_a = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -515,7 +550,7 @@ async fn create_two_workspaces() -> (String, String) {
         .await
         .expect("POST /workspaces for A failed");
 
-    let resp_b = client()
+    let resp_b = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -550,7 +585,7 @@ async fn create_two_workspaces() -> (String, String) {
 
 /// Helper: Clean up workspace by archiving it.
 async fn cleanup_workspace(workspace_id: &str) {
-    let _ = client()
+    let _ = authenticated_client()
         .delete(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await;
@@ -584,7 +619,7 @@ async fn test_workspace_search_qdrant_isolation() {
     //   }
 
     // Verify basic search still works (without workspace header = public)
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({
             "query": "function",
@@ -622,7 +657,7 @@ async fn test_workspace_search_postgres_isolation() {
     //   // Result count should match only workspace A's schema
 
     // Verify basic pg_query still works (without workspace header)
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
         .json(&json!({
             "query": "SELECT count(*) as cnt FROM extracted_items"
@@ -643,7 +678,7 @@ async fn test_workspace_search_postgres_isolation() {
 async fn test_workspace_cross_store_consistency() {
     // Create workspace and wait for ready
     let name = format!("ws-consistency-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -661,7 +696,7 @@ async fn test_workspace_cross_store_consistency() {
 
     // Verify cross-store counts match (Postgres items == Qdrant vectors)
     // This uses the existing consistency endpoint
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .query(&[("crate", "rustbrain_api")])
         .send()
@@ -690,7 +725,7 @@ async fn test_workspace_cross_store_consistency() {
 #[tokio::test]
 #[ignore]
 async fn test_search_semantic_with_crate_filter() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({
             "query": "function",
@@ -721,7 +756,7 @@ async fn test_search_semantic_with_crate_filter() {
 #[tokio::test]
 #[ignore]
 async fn test_search_semantic_with_nonexistent_crate_filter() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({
             "query": "function",
@@ -746,7 +781,7 @@ async fn test_search_semantic_with_nonexistent_crate_filter() {
 #[tokio::test]
 #[ignore]
 async fn test_search_semantic_without_crate_filter() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({
             "query": "function",
@@ -763,7 +798,7 @@ async fn test_search_semantic_without_crate_filter() {
 #[tokio::test]
 #[ignore]
 async fn test_get_module_tree_with_valid_crate() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
         .query(&[("crate_name", "rustbrain_common")])
         .send()
@@ -782,7 +817,7 @@ async fn test_get_module_tree_with_valid_crate() {
 #[tokio::test]
 #[ignore]
 async fn test_get_module_tree_with_unknown_crate() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
         .query(&[("crate_name", "nonexistent_crate_xyz")])
         .send()
@@ -800,7 +835,7 @@ async fn test_get_module_tree_with_unknown_crate() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_crate_overview_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "find_crate_overview",
@@ -823,7 +858,7 @@ async fn test_query_graph_crate_overview_template() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_crate_dependencies_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "find_crate_dependencies",
@@ -841,7 +876,7 @@ async fn test_query_graph_crate_dependencies_template() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_crate_dependents_template() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "find_crate_dependents",
@@ -859,7 +894,7 @@ async fn test_query_graph_crate_dependents_template() {
 #[tokio::test]
 #[ignore]
 async fn test_query_graph_template_missing_crate_name() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "find_crate_overview"
@@ -879,7 +914,7 @@ async fn test_query_graph_template_missing_crate_name() {
 #[tokio::test]
 #[ignore]
 async fn test_consistency_with_crate_filter() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
         .query(&[("crate", "rustbrain_common")])
         .send()
@@ -898,7 +933,7 @@ async fn test_consistency_with_crate_filter() {
 async fn test_workspace_zero_items_search() {
     // Create a workspace that may not have indexed yet
     let name = format!("ws-empty-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -916,7 +951,7 @@ async fn test_workspace_zero_items_search() {
 
     // Search on a workspace that is not yet ready should return empty, not error
     // (This tests the graceful handling of incomplete workspaces)
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({
             "query": "test query",
@@ -941,7 +976,7 @@ async fn test_workspace_zero_items_search() {
 #[ignore]
 async fn test_workspace_create_with_git_suffix() {
     let name = format!("test-git-suffix-{}", uuid_v4());
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -962,7 +997,7 @@ async fn test_workspace_create_with_git_suffix() {
 #[ignore]
 async fn test_workspace_create_without_optional_name() {
     // Name is optional — should derive from repo slug
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git"
@@ -981,7 +1016,7 @@ async fn test_workspace_create_without_optional_name() {
     let workspace_id = body["id"].as_str().unwrap();
 
     // Verify the workspace has a name (derived from repo slug)
-    let get_resp = client()
+    let get_resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}", workspace_id))
         .send()
         .await
@@ -1007,7 +1042,7 @@ async fn test_workspace_create_without_optional_name() {
 #[ignore]
 async fn test_workspace_diff_returns_patch_or_clean() {
     let name = format!("ws-diff-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1025,7 +1060,7 @@ async fn test_workspace_diff_returns_patch_or_clean() {
     // Wait for ready (or accept current state)
     let _ = wait_for_workspace_status(&ws_id, "ready", 30).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}/diff", ws_id))
         .send()
         .await
@@ -1067,7 +1102,7 @@ async fn test_workspace_diff_nonexistent_workspace_404() {
 #[ignore]
 async fn test_workspace_commit_empty_message_400() {
     let name = format!("ws-commit-empty-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1082,7 +1117,7 @@ async fn test_workspace_commit_empty_message_400() {
         .unwrap()
         .to_string();
 
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/commit", ws_id))
         .json(&json!({
             "message": ""
@@ -1100,7 +1135,7 @@ async fn test_workspace_commit_empty_message_400() {
 #[ignore]
 async fn test_workspace_commit_whitespace_message_400() {
     let name = format!("ws-commit-ws-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1115,7 +1150,7 @@ async fn test_workspace_commit_whitespace_message_400() {
         .unwrap()
         .to_string();
 
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/commit", ws_id))
         .json(&json!({
             "message": "   "
@@ -1137,7 +1172,7 @@ async fn test_workspace_commit_whitespace_message_400() {
 #[ignore]
 async fn test_workspace_commit_nothing_to_commit_400() {
     let name = format!("ws-commit-clean-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1155,7 +1190,7 @@ async fn test_workspace_commit_nothing_to_commit_400() {
     // Wait for ready so the workspace is cloned
     let _ = wait_for_workspace_status(&ws_id, "ready", 30).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/commit", ws_id))
         .json(&json!({
             "message": "test commit on clean workspace"
@@ -1179,7 +1214,7 @@ async fn test_workspace_commit_nothing_to_commit_400() {
 #[ignore]
 async fn test_workspace_reset_returns_head_sha() {
     let name = format!("ws-reset-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1196,7 +1231,7 @@ async fn test_workspace_reset_returns_head_sha() {
 
     let _ = wait_for_workspace_status(&ws_id, "ready", 30).await;
 
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/workspaces/{}/reset", ws_id))
         .send()
         .await
@@ -1242,7 +1277,7 @@ async fn test_workspace_reset_nonexistent_workspace_404() {
 #[ignore]
 async fn test_workspace_stats_returns_all_fields() {
     let name = format!("ws-stats-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1257,7 +1292,7 @@ async fn test_workspace_stats_returns_all_fields() {
         .unwrap()
         .to_string();
 
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/{}/stats", ws_id))
         .send()
         .await
@@ -1327,7 +1362,7 @@ async fn test_workspace_stats_returns_all_fields() {
 #[ignore]
 async fn test_workspace_stream_nonexistent_execution_404() {
     let name = format!("ws-stream-{}", uuid_v4());
-    let create_resp = client()
+    let create_resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
         .json(&json!({
             "github_url": "https://github.com/jarnura/rust-brain.git",
@@ -1343,7 +1378,7 @@ async fn test_workspace_stream_nonexistent_execution_404() {
         .to_string();
 
     let fake_exec_id = "00000000-0000-0000-0000-000000000000";
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!(
             "{BASE}/workspaces/{}/stream?execution_id={}",
             ws_id, fake_exec_id

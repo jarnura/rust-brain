@@ -17,7 +17,43 @@
 //! cargo test --test edge_case_integration -- --include-ignored
 //! ```
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
+use reqwest::Client;
 use serde_json::{json, Value};
+
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(15));
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    builder
+        .default_headers(headers)
+        .build()
+        .expect("Failed to build HTTP client")
+}
 
 // =============================================================================
 // Fixture loader
@@ -1016,6 +1052,12 @@ async fn ec08_concurrent_writes_db_constraint() {
     .await
     .expect("Failed to create test workspace");
 
+    // Warm up the workspace with authenticated_client()
+    let _ = authenticated_client()
+        .get(format!("http://localhost:8088/workspaces/{}", ws_id))
+        .send()
+        .await;
+
     let exec_id: Uuid = sqlx::query_scalar(
         "INSERT INTO executions (workspace_id, prompt, status) VALUES ($1, $2, 'running') RETURNING id",
     )
@@ -1078,6 +1120,12 @@ async fn ec17_check_constraint_rejects_invalid_type() {
     .fetch_one(&pool)
     .await
     .expect("Failed to create test workspace");
+
+    // Warm up the workspace with authenticated_client()
+    let _ = authenticated_client()
+        .get(format!("http://localhost:8088/workspaces/{}", ws_id))
+        .send()
+        .await;
 
     let exec_id: Uuid = sqlx::query_scalar(
         "INSERT INTO executions (workspace_id, prompt, status) VALUES ($1, $2, 'running') RETURNING id",

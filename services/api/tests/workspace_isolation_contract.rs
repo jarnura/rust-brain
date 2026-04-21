@@ -16,6 +16,7 @@
 //! The unit-level validation tests (51 in workspace_label.rs, 23+ in graph_templates.rs)
 //! cover the internal logic without needing a server.
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -29,6 +30,61 @@ fn client() -> Client {
         .expect("Failed to build HTTP client")
 }
 
+fn default_workspace_id() -> String {
+    std::env::var("RUSTBRAIN_TEST_WORKSPACE_ID")
+        .unwrap_or_else(|_| "4e863a9c-b3fe-49a0-ace7-255440922c31".to_string())
+}
+
+fn authenticated_client() -> Client {
+    let builder = Client::builder().timeout(std::time::Duration::from_secs(10));
+
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    builder
+        .default_headers(headers)
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+fn client_with_workspace() -> Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    if let Ok(key) = std::env::var("RUSTBRAIN_TEST_API_KEY") {
+        if !key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
+            );
+        }
+    }
+
+    headers.insert(
+        "X-Workspace-Id",
+        default_workspace_id()
+            .parse()
+            .expect("Invalid workspace ID header value"),
+    );
+
+    Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .default_headers(headers)
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
 // =============================================================================
 // 1. Missing Workspace Header → 400
 // =============================================================================
@@ -36,7 +92,7 @@ fn client() -> Client {
 #[tokio::test]
 #[ignore]
 async fn query_graph_without_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .json(&json!({
             "query_name": "find_functions_by_name",
@@ -64,7 +120,7 @@ async fn query_graph_without_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn get_module_tree_without_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
         .query(&[("crate_name", "rustbrain_api")])
         .send()
@@ -82,7 +138,7 @@ async fn get_module_tree_without_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn get_callers_without_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_callers"))
         .query(&[("fqn", "crate::main"), ("depth", "1")])
         .send()
@@ -100,7 +156,7 @@ async fn get_callers_without_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn get_trait_impls_without_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_trait_impls"))
         .query(&[("trait_name", "Clone"), ("limit", "10")])
         .send()
@@ -118,7 +174,7 @@ async fn get_trait_impls_without_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn find_usages_of_type_without_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_usages_of_type"))
         .query(&[("type_name", "String"), ("limit", "10")])
         .send()
@@ -136,7 +192,7 @@ async fn find_usages_of_type_without_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn search_semantic_without_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
         .json(&json!({"query": "test", "limit": 5}))
         .send()
@@ -158,7 +214,7 @@ async fn search_semantic_without_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_with_special_chars_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "evil;workspace")
         .json(&json!({
@@ -180,7 +236,7 @@ async fn query_graph_with_special_chars_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_with_empty_workspace_returns_400() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "")
         .json(&json!({
@@ -206,7 +262,7 @@ async fn query_graph_with_empty_workspace_returns_400() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_create_cypher() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -235,7 +291,7 @@ async fn query_graph_rejects_create_cypher() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_delete_cypher() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -251,7 +307,7 @@ async fn query_graph_rejects_delete_cypher() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_merge_cypher() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -267,7 +323,7 @@ async fn query_graph_rejects_merge_cypher() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_set_cypher() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -283,7 +339,7 @@ async fn query_graph_rejects_set_cypher() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_remove_cypher() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -299,7 +355,7 @@ async fn query_graph_rejects_remove_cypher() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_apoc_cypher_run() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -315,7 +371,7 @@ async fn query_graph_rejects_apoc_cypher_run() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_apoc_create_node() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -331,7 +387,7 @@ async fn query_graph_rejects_apoc_create_node() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_apoc_do_when() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -347,7 +403,7 @@ async fn query_graph_rejects_apoc_do_when() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_detach_delete() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -363,7 +419,7 @@ async fn query_graph_rejects_detach_delete() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_apoc_periodic_iterate() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -379,7 +435,7 @@ async fn query_graph_rejects_apoc_periodic_iterate() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_apoc_periodic_commit() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -395,7 +451,7 @@ async fn query_graph_rejects_apoc_periodic_commit() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_rejects_apoc_refactor() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -415,7 +471,7 @@ async fn query_graph_rejects_apoc_refactor() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_strips_workspace_label_from_parameters() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -441,7 +497,7 @@ async fn query_graph_strips_workspace_label_from_parameters() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_strips_workspace_id_from_parameters() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -470,7 +526,7 @@ async fn query_graph_strips_workspace_id_from_parameters() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_accepts_readonly_match_return() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -490,7 +546,7 @@ async fn query_graph_accepts_readonly_match_return() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_accepts_template_query_with_workspace() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
@@ -515,7 +571,7 @@ async fn query_graph_accepts_template_query_with_workspace() {
 #[tokio::test]
 #[ignore]
 async fn query_graph_accepts_apoc_path_expand() {
-    let resp = client()
+    let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
         .header("X-Workspace-Id", "abc123def456")
         .json(&json!({
