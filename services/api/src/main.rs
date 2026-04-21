@@ -44,6 +44,39 @@ use config::{redact_url, Config};
 use docker::DockerClient;
 use state::{AppState, Metrics};
 
+/// Validates that all critical schema columns exist in Postgres.
+///
+/// Fails fast with a clear error message if any required column is missing,
+/// pointing the operator to run pending migrations.
+async fn validate_schema(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let required = &[
+        ("agent_events", "seq"),
+        ("agent_events", "content_hash"),
+        ("executions", "runtime_info"),
+        ("workspaces", "id"),
+    ];
+    for (table, column) in required {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns \
+             WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            anyhow::bail!(
+                "SCHEMA VALIDATION FAILED: column {}.{} is missing. \
+                 Run pending migrations (sqlx migrate run --source services/api/migrations)",
+                table,
+                column
+            );
+        }
+    }
+    tracing::info!("Schema validation passed: all required columns present");
+    Ok(())
+}
+
 /// Redirect /playground to /playground/ for static file serving
 async fn playground_redirect() -> Redirect {
     Redirect::permanent("/playground/")
@@ -77,6 +110,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     info!("Connected to Postgres");
+
+    validate_schema(&pg_pool).await?;
 
     // Connect to Neo4j via Bolt protocol
     info!("Connecting to Neo4j: {}", redact_url(&config.neo4j_uri));
