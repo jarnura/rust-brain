@@ -8,7 +8,7 @@
 //! | GET  | `/executions/:id/events` | [`stream_events`] | SSE stream of agent events |
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -28,6 +28,7 @@ use crate::execution::{
     create_execution, get_agent_event_by_seq, get_execution as db_get_execution,
     list_agent_events_after_seq, list_executions as db_list_executions, CreateExecutionParams,
 };
+use crate::middleware::auth::{require_write_access, ApiKeyContext};
 use crate::state::AppState;
 use crate::workspace::get_workspace;
 
@@ -83,9 +84,11 @@ pub struct ExecuteResponse {
 /// or stream `GET /executions/:id/events` for live event updates.
 pub async fn execute_workspace(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(workspace_id): Path<Uuid>,
     Json(req): Json<ExecuteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_write_access(&ctx)?;
     if req.prompt.trim().is_empty() {
         return Err(AppError::BadRequest("prompt must not be empty".into()));
     }

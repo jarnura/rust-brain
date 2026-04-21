@@ -4,7 +4,7 @@
 //! in the workspace clone directory and return the resulting commit SHA.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::middleware::auth::{require_write_access, ApiKeyContext};
 use crate::state::AppState;
 use crate::workspace::get_workspace as db_get_workspace;
 
@@ -45,9 +46,11 @@ pub struct CommitResponse {
 /// not yet cloned or there is nothing to commit.
 pub async fn workspace_commit(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(workspace_id): Path<Uuid>,
     Json(req): Json<CommitRequest>,
 ) -> Result<Json<CommitResponse>, AppError> {
+    require_write_access(&ctx)?;
     if req.message.trim().is_empty() {
         return Err(AppError::BadRequest(
             "commit message must not be empty".to_string(),

@@ -16,7 +16,6 @@ use axum::{
     middleware::Next,
 };
 use chrono::Utc;
-use governor::clock::{Clock, DefaultClock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -87,6 +86,28 @@ pub fn hash_key(key: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Rejects requests from tiers without chat access (readonly).
+pub fn require_chat_access(ctx: &ApiKeyContext) -> Result<(), AppError> {
+    if !ctx.tier.can_chat() {
+        Err(AppError::Unauthorized(
+            "Chat access requires standard or admin tier".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Rejects requests from tiers without write access (non-admin).
+pub fn require_write_access(ctx: &ApiKeyContext) -> Result<(), AppError> {
+    if !ctx.tier.can_write() {
+        Err(AppError::Unauthorized(
+            "Write operations require admin tier".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Routes that bypass authentication entirely (always public).
 fn is_public_route(path: &str, method: &str) -> bool {
     matches!(path, "/health" | "/metrics" | "/health/consistency") && method == "GET"
@@ -101,7 +122,8 @@ fn is_public_route(path: &str, method: &str) -> bool {
 /// 4. SHA-256 hash the key, query `api_keys` table.
 /// 5. Reject expired, inactive, or non-existent keys with 401.
 /// 6. Attach `ApiKeyContext` to request extensions.
-/// 7. Update `last_used_at` asynchronously (fire-and-forget).
+/// 7. Per-key rate limiting with headers (ADR-007).
+/// 8. Update `last_used_at` asynchronously (fire-and-forget).
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request<Body>,
@@ -192,33 +214,41 @@ pub async fn auth_middleware(
 
     // 7. Per-key rate limiting
     let key_id_str = context.key_id.clone();
-    match state.rate_limiter.check_key(&key_id_str) {
-        Ok(snapshot) => {
-            let mut response = next.run(req).await;
-            let headers = response.headers_mut();
-            headers.insert(
-                "x-ratelimit-limit",
-                snapshot.quota().burst_size().get().into(),
-            );
-            headers.insert(
-                "x-ratelimit-remaining",
-                snapshot.remaining_burst_capacity().into(),
-            );
-            Ok(response)
-        }
-        Err(negative) => {
-            let wait_time = negative
-                .wait_time_from(DefaultClock::default().now())
-                .as_secs();
-            warn!(
-                key_id = %key_id_str,
-                wait_time_secs = wait_time,
-                "Rate limit exceeded"
-            );
-            Err(AppError::RateLimited {
-                retry_after_secs: wait_time,
-            })
-        }
+    let result = state
+        .rate_limiter
+        .check(&key_id_str, context.rate_limit_per_minute);
+
+    if result.allowed {
+        let mut response = next.run(req).await;
+        let headers = response.headers_mut();
+        headers.insert("x-ratelimit-limit", result.limit.into());
+        headers.insert("x-ratelimit-remaining", result.remaining.into());
+        headers.insert("x-ratelimit-reset", result.reset_at_secs.into());
+
+        // 8. Update last_used_at asynchronously
+        let pool = state.pg_pool.clone();
+        let kid = key_id_str.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sqlx::query("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1")
+                .bind(&kid)
+                .execute(&pool)
+                .await
+            {
+                debug!(key_id = %kid, error = %e, "Failed to update last_used_at");
+            }
+        });
+
+        Ok(response)
+    } else {
+        let retry_after = 60 - (std::time::Instant::now().elapsed().as_secs() % 60).max(1);
+        warn!(
+            key_id = %key_id_str,
+            limit = result.limit,
+            "Rate limit exceeded"
+        );
+        Err(AppError::RateLimited {
+            retry_after_secs: retry_after,
+        })
     }
 }
 

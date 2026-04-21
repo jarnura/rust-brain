@@ -10,4 +10,5 @@ members = [
 ]
 exclude = [
     "target-repo",
+    "tools/stress-gen",
 ]

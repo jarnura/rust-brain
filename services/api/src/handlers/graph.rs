@@ -490,12 +490,33 @@ const CYPHER_WRITE_TOKENS: &[&str] = &["create", "delete", "set", "remove", "mer
 /// Validates that a raw Cypher string is read-only.
 ///
 /// Rejects:
+/// - Queries not starting with an allowed keyword (MATCH, OPTIONAL MATCH, CALL { MATCH, WITH, UNWIND)
 /// - Queries containing DML write keywords (CREATE, DELETE, SET, REMOVE, MERGE)
 /// - CALL of any APOC procedure not in [`APOC_READONLY_NAMESPACES`]
 /// - CALL of any APOC procedure in [`APOC_PLANNER_REENTRY_PREFIXES`]
 fn validate_cypher(query: &str) -> Result<(), AppError> {
     let stripped = super::workspace_label::strip_comments(query)?;
     let query_lower = super::workspace_label::normalize_whitespace(&stripped.to_lowercase());
+    let trimmed = query_lower.trim_start();
+
+    let allowed_starts = [
+        "match ",
+        "optional match ",
+        "call { match ",
+        "call ",
+        "with ",
+        "unwind ",
+    ];
+    let starts_allowed = allowed_starts
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix));
+
+    if !starts_allowed {
+        return Err(AppError::BadRequest(
+            "Query must start with one of: MATCH, OPTIONAL MATCH, CALL { MATCH, WITH, UNWIND"
+                .to_string(),
+        ));
+    }
 
     // First check: reject planner-reentry APOC procedures
     if query_lower.contains("call apoc.") {
@@ -876,5 +897,41 @@ mod tests {
         let err = validate_cypher("CALL /* sneaky */ apoc.cypher.run('MATCH (n) RETURN n', {})")
             .unwrap_err();
         assert!(err.to_string().contains("apoc.cypher.run"));
+    }
+
+    #[test]
+    fn test_allowlist_rejects_unknown_start() {
+        let err = validate_cypher("RETURN 1").unwrap_err();
+        assert!(err.to_string().contains("must start with"));
+    }
+
+    #[test]
+    fn test_allowlist_allows_match() {
+        assert!(validate_cypher("MATCH (n) RETURN n").is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_allows_optional_match() {
+        assert!(validate_cypher("OPTIONAL MATCH (n) RETURN n").is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_allows_with() {
+        assert!(validate_cypher("WITH 1 AS x RETURN x").is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_allows_unwind() {
+        assert!(validate_cypher("UNWIND [1,2,3] AS x RETURN x").is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_allows_call_subquery() {
+        assert!(validate_cypher("CALL { MATCH (n) RETURN n } RETURN n").is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_rejects_return() {
+        assert!(validate_cypher("RETURN 42").is_err());
     }
 }

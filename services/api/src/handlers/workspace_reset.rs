@@ -5,7 +5,7 @@
 //! uncommitted changes, then mark any running execution as `aborted`.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     Json,
 };
 use serde::Serialize;
@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::errors::AppError;
+use crate::middleware::auth::{require_write_access, ApiKeyContext};
 use crate::state::AppState;
 use crate::workspace::get_workspace as db_get_workspace;
 
@@ -39,8 +40,10 @@ pub struct ResetResponse {
 /// untracked files.  Also aborts any running execution for the workspace.
 pub async fn workspace_reset(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(workspace_id): Path<Uuid>,
 ) -> Result<Json<ResetResponse>, AppError> {
+    require_write_access(&ctx)?;
     let workspace = db_get_workspace(&state.workspace_manager.pool, workspace_id)
         .await
         .map_err(|e| AppError::Database(format!("Failed to fetch workspace: {}", e)))?

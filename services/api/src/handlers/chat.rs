@@ -1,7 +1,7 @@
 //! Chat handlers — OpenCode streaming & sessions.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, Sse},
@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error};
 
 use crate::errors::AppError;
+use crate::middleware::auth::{require_chat_access, ApiKeyContext};
 use crate::opencode;
 use crate::state::AppState;
 
@@ -102,8 +103,10 @@ pub struct ChatResponse {
 
 pub async fn chat_handler(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, AppError> {
+    require_chat_access(&ctx)?;
     debug!("Chat request: {:?}", req.message);
 
     // Check if OpenCode is reachable before attempting to create a session
@@ -186,9 +189,11 @@ pub async fn chat_handler(
 ///   session.status (idle after busy)            → "complete" {message}
 pub async fn chat_stream_handler(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let base_url = state.opencode_client.base_url().to_string();
+    let tier_denied = require_chat_access(&ctx).is_err();
 
     let initial_cursor = headers
         .get("Last-Event-ID")
@@ -197,6 +202,13 @@ pub async fn chat_stream_handler(
         .unwrap_or(0);
 
     let stream = async_stream::stream! {
+        if tier_denied {
+            let data_str = serde_json::json!({"error": "Chat access requires standard or admin tier"}).to_string();
+            yield Ok(Event::default().event("error").data(data_str));
+            yield Ok(Event::default().event("done").data("{\"source\":\"opencode\"}"));
+            return;
+        }
+
         if initial_cursor > 0 {
             let buffered = {
                 let buf = CHAT_STREAM_BUFFER.lock().await;
@@ -489,8 +501,10 @@ pub struct ChatSendRequest {
 /// Results arrive via the SSE stream.
 pub async fn chat_send_handler(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Json(req): Json<ChatSendRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_chat_access(&ctx)?;
     let message_id = state
         .opencode_client
         .send_message_async(&req.session_id, &req.message)
@@ -525,8 +539,10 @@ pub struct CreateSessionRequest {
 
 pub async fn chat_sessions_create(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<opencode::Session>, AppError> {
+    require_chat_access(&ctx)?;
     let session = state
         .opencode_client
         .create_session(req.title.as_deref())
@@ -537,7 +553,9 @@ pub async fn chat_sessions_create(
 
 pub async fn chat_sessions_list(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
 ) -> Result<Json<Vec<opencode::Session>>, AppError> {
+    require_chat_access(&ctx)?;
     let sessions = state
         .opencode_client
         .list_sessions()
@@ -554,8 +572,10 @@ pub struct SessionDetail {
 
 pub async fn chat_sessions_get(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionDetail>, AppError> {
+    require_chat_access(&ctx)?;
     let session = state
         .opencode_client
         .get_session(&id)
@@ -571,8 +591,10 @@ pub async fn chat_sessions_get(
 
 pub async fn chat_sessions_delete(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_chat_access(&ctx)?;
     state
         .opencode_client
         .delete_session(&id)
@@ -589,9 +611,11 @@ pub struct ForkSessionRequest {
 
 pub async fn chat_sessions_fork(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(id): Path<String>,
     Json(req): Json<ForkSessionRequest>,
 ) -> Result<Json<opencode::Session>, AppError> {
+    require_chat_access(&ctx)?;
     let session = state
         .opencode_client
         .fork_session(&id, req.message_id.as_deref())
@@ -602,8 +626,10 @@ pub async fn chat_sessions_fork(
 
 pub async fn chat_sessions_abort(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_chat_access(&ctx)?;
     state
         .opencode_client
         .abort_session(&id)

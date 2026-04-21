@@ -23,13 +23,10 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use governor::middleware::StateInformationMiddleware;
-use governor::{Quota, RateLimiter};
 use neo4rs::Graph;
 use rustbrain_common::logging::init_logging_with_directives;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
@@ -42,7 +39,7 @@ const QUERY_BODY_LIMIT: usize = 1024 * 1024;
 
 use config::{redact_url, Config};
 use docker::DockerClient;
-use state::{AppState, KeyRateLimiter, Metrics};
+use state::{AppState, Metrics};
 
 /// Validates that all critical schema columns exist in Postgres.
 ///
@@ -133,6 +130,26 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Bootstrap internal API key for MCP service if configured
+    if let Some(ref internal_key) = config.internal_api_key {
+        let key_hash = middleware::auth::hash_key(internal_key);
+        let existing: Option<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM api_keys WHERE key_hash = $1")
+                .bind(&key_hash)
+                .fetch_optional(&pg_pool)
+                .await?;
+        if existing.is_none() {
+            sqlx::query(
+                "INSERT INTO api_keys (key_hash, name, tier, rate_limit_per_minute) \
+                 VALUES ($1, 'internal-mcp', 'admin', 1000)",
+            )
+            .bind(&key_hash)
+            .execute(&pg_pool)
+            .await?;
+            info!("Bootstrapped internal MCP API key");
+        }
+    }
+
     // Connect to Neo4j via Bolt protocol
     info!("Connecting to Neo4j: {}", redact_url(&config.neo4j_uri));
     let neo4j_graph = Graph::new(
@@ -165,15 +182,7 @@ async fn main() -> anyhow::Result<()> {
 
     let start_time = std::time::Instant::now();
 
-    // Create per-key rate limiter: 120 req/min burst cap per API key
-    let rate_limiter: Arc<KeyRateLimiter> = Arc::new(
-        RateLimiter::keyed(
-            Quota::with_period(Duration::from_secs(60))
-                .unwrap()
-                .allow_burst(NonZeroU32::new(120).unwrap()),
-        )
-        .with_middleware::<StateInformationMiddleware>(),
-    );
+    let rate_limiter = Arc::new(middleware::PerKeyRateLimiter::new());
 
     let state = AppState {
         config: config.clone(),

@@ -7,24 +7,19 @@
 use crate::config::Config;
 use crate::docker::DockerClient;
 use crate::metrics::WorkspaceGauges;
+use crate::middleware::PerKeyRateLimiter;
 use crate::opencode::OpenCodeClient;
 use crate::workspace::WorkspaceManager;
-use governor::clock::DefaultClock;
-use governor::middleware::StateInformationMiddleware;
-use governor::state::keyed::DefaultKeyedStateStore;
-use governor::RateLimiter;
 use neo4rs::Graph;
 use prometheus::Registry;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Per-key rate limiter type used by the auth middleware.
+/// Per-key rate limiter using fixed-window token buckets.
 ///
-/// Keys are API key IDs (strings). The limiter enforces a per-minute quota
-/// with burst capacity, tracked via `governor::StateInformationMiddleware`
-/// so that `x-ratelimit-*` headers can be set on responses.
-pub type KeyRateLimiter =
-    RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock, StateInformationMiddleware>;
+/// Each API key gets its own bucket keyed by key ID, with the rate limit
+/// configured in the `api_keys` table. See [`crate::middleware::rate_limit`].
+pub type KeyRateLimiter = PerKeyRateLimiter;
 
 /// Shared application state available to all Axum handlers.
 ///

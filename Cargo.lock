@@ -2495,6 +2495,7 @@ dependencies = [
  "rustbrain-common",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "syn 2.0.117",
  "tempfile",

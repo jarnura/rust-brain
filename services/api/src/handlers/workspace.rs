@@ -11,7 +11,7 @@
 //! | GET | `/workspaces/:id/files` | [`list_files`] | Directory tree |
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -27,6 +27,7 @@ use crate::execution::models::{
     abort_executions_for_workspace, list_running_executions_for_workspace,
 };
 use crate::github::GithubClient;
+use crate::middleware::auth::{require_write_access, ApiKeyContext};
 use crate::state::AppState;
 use crate::workspace::{
     create_workspace as db_create_workspace, get_workspace as db_get_workspace, lifecycle,
@@ -126,8 +127,10 @@ fn schema_name_from_id(id: Uuid) -> String {
 /// Returns `202 Accepted` immediately. Poll `GET /workspaces/:id` for progress.
 pub async fn create_workspace(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    require_write_access(&ctx)?;
     validate_github_url(&req.github_url)?;
 
     let name = req
@@ -241,8 +244,10 @@ pub async fn get_workspace(
 /// Returns `204 No Content` on success, `404` if not found.
 pub async fn delete_workspace(
     State(state): State<AppState>,
+    Extension(ctx): Extension<ApiKeyContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
+    require_write_access(&ctx)?;
     let pool = &state.workspace_manager.pool;
 
     let workspace = db_get_workspace(pool, id)
