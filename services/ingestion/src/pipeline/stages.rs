@@ -2202,6 +2202,75 @@ impl TypecheckStage {
     pub fn new() -> Self {
         Self {}
     }
+
+    async fn load_items_from_database(
+        pool: &sqlx::PgPool,
+        crate_name: Option<&str>,
+    ) -> Result<Vec<ParsedItemInfo>> {
+        let query = if let Some(crate_name) = crate_name {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses,
+                       attributes, generated_by
+                FROM extracted_items
+                WHERE crate_name = $1
+                ORDER BY fqn
+                "#,
+            )
+            .bind(crate_name)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses,
+                       attributes, generated_by
+                FROM extracted_items
+                ORDER BY fqn
+                "#,
+            )
+        };
+
+        let rows = query
+            .fetch_all(pool)
+            .await
+            .context("Failed to query extracted_items for typecheck stage")?;
+
+        let items = rows
+            .into_iter()
+            .map(|row| {
+                let generic_params_json: serde_json::Value = row.get("generic_params");
+                let where_clauses_json: serde_json::Value = row.get("where_clauses");
+                let attributes_json: serde_json::Value = row.get("attributes");
+                ParsedItemInfo {
+                    fqn: row.get("fqn"),
+                    item_type: row.get("item_type"),
+                    name: row.get("name"),
+                    visibility: row
+                        .get::<Option<String>, _>("visibility")
+                        .unwrap_or_default(),
+                    signature: row
+                        .get::<Option<String>, _>("signature")
+                        .unwrap_or_default(),
+                    generic_params: serde_json::from_value(generic_params_json)
+                        .unwrap_or_default(),
+                    where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
+                    attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
+                    doc_comment: row
+                        .get::<Option<String>, _>("doc_comment")
+                        .unwrap_or_default(),
+                    start_line: row.get::<i32, _>("start_line") as usize,
+                    end_line: row.get::<i32, _>("end_line") as usize,
+                    body_source: row
+                        .get::<Option<String>, _>("body_source")
+                        .unwrap_or_default(),
+                    generated_by: row.get("generated_by"),
+                }
+            })
+            .collect();
+
+        Ok(items)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2224,22 +2293,36 @@ impl PipelineStage for TypecheckStage {
         }
 
         let state = ctx.state.read().await;
-        let parsed_items: Vec<ParsedItemInfo> =
+        let mut parsed_items: Vec<ParsedItemInfo> =
             state.parsed_items.values().flatten().cloned().collect();
         let expanded_sources = state.expanded_sources.clone();
         let source_files: Vec<SourceFileInfo> = state.source_files.clone();
         drop(state);
-
-        if parsed_items.is_empty() {
-            info!("Typecheck stage skipped: no parsed items");
-            return Ok(StageResult::skipped("typecheck"));
-        }
 
         let pool = ctx
             .config
             .create_pg_pool(2)
             .await
             .context("Failed to connect to database for typecheck stage")?;
+
+        if parsed_items.is_empty() {
+            info!("No parsed items in state, loading from database for typecheck stage...");
+            match Self::load_items_from_database(&pool, ctx.config.crate_name.as_deref()).await {
+                Ok(items) if !items.is_empty() => {
+                    info!("Loaded {} items from database for typecheck", items.len());
+                    parsed_items = items;
+                }
+                Ok(_) => {
+                    info!("Typecheck stage skipped: no parsed items");
+                    return Ok(StageResult::skipped("typecheck"));
+                }
+                Err(e) => {
+                    warn!("Failed to load items from database for typecheck: {}", e);
+                    info!("Typecheck stage skipped: no parsed items");
+                    return Ok(StageResult::skipped("typecheck"));
+                }
+            }
+        }
 
         let service = TypeResolutionService::new(pool);
 
@@ -2382,6 +2465,75 @@ impl ExtractStage {
     pub fn new() -> Self {
         Self {}
     }
+
+    async fn load_items_from_database(
+        pool: &sqlx::PgPool,
+        crate_name: Option<&str>,
+    ) -> Result<Vec<ParsedItemInfo>> {
+        let query = if let Some(crate_name) = crate_name {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses,
+                       attributes, generated_by
+                FROM extracted_items
+                WHERE crate_name = $1
+                ORDER BY fqn
+                "#,
+            )
+            .bind(crate_name)
+        } else {
+            sqlx::query(
+                r#"
+                SELECT item_type, fqn, name, visibility, signature, doc_comment,
+                       start_line, end_line, body_source, generic_params, where_clauses,
+                       attributes, generated_by
+                FROM extracted_items
+                ORDER BY fqn
+                "#,
+            )
+        };
+
+        let rows = query
+            .fetch_all(pool)
+            .await
+            .context("Failed to query extracted_items for extract stage")?;
+
+        let items = rows
+            .into_iter()
+            .map(|row| {
+                let generic_params_json: serde_json::Value = row.get("generic_params");
+                let where_clauses_json: serde_json::Value = row.get("where_clauses");
+                let attributes_json: serde_json::Value = row.get("attributes");
+                ParsedItemInfo {
+                    fqn: row.get("fqn"),
+                    item_type: row.get("item_type"),
+                    name: row.get("name"),
+                    visibility: row
+                        .get::<Option<String>, _>("visibility")
+                        .unwrap_or_default(),
+                    signature: row
+                        .get::<Option<String>, _>("signature")
+                        .unwrap_or_default(),
+                    generic_params: serde_json::from_value(generic_params_json)
+                        .unwrap_or_default(),
+                    where_clauses: serde_json::from_value(where_clauses_json).unwrap_or_default(),
+                    attributes: serde_json::from_value(attributes_json).unwrap_or_default(),
+                    doc_comment: row
+                        .get::<Option<String>, _>("doc_comment")
+                        .unwrap_or_default(),
+                    start_line: row.get::<i32, _>("start_line") as usize,
+                    end_line: row.get::<i32, _>("end_line") as usize,
+                    body_source: row
+                        .get::<Option<String>, _>("body_source")
+                        .unwrap_or_default(),
+                    generated_by: row.get("generated_by"),
+                }
+            })
+            .collect();
+
+        Ok(items)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2409,21 +2561,35 @@ impl PipelineStage for ExtractStage {
         }
 
         let state = ctx.state.read().await;
-        let parsed_items: Vec<ParsedItemInfo> =
+        let mut parsed_items: Vec<ParsedItemInfo> =
             state.parsed_items.values().flatten().cloned().collect();
         let source_files: Vec<SourceFileInfo> = state.source_files.clone();
         drop(state);
-
-        if parsed_items.is_empty() {
-            info!("Extract stage skipped: no parsed items");
-            return Ok(StageResult::skipped("extract"));
-        }
 
         let pool = ctx
             .config
             .create_pg_pool(5)
             .await
             .context("Failed to connect to database for extract stage")?;
+
+        if parsed_items.is_empty() {
+            info!("No parsed items in state, loading from database for extract stage...");
+            match Self::load_items_from_database(&pool, ctx.config.crate_name.as_deref()).await {
+                Ok(items) if !items.is_empty() => {
+                    info!("Loaded {} items from database for extract", items.len());
+                    parsed_items = items;
+                }
+                Ok(_) => {
+                    info!("Extract stage skipped: no parsed items");
+                    return Ok(StageResult::skipped("extract"));
+                }
+                Err(e) => {
+                    warn!("Failed to load items from database for extract: {}", e);
+                    info!("Extract stage skipped: no parsed items");
+                    return Ok(StageResult::skipped("extract"));
+                }
+            }
+        }
 
         // Build a map from file path to source file info for linking
         let file_map: HashMap<PathBuf, &SourceFileInfo> = source_files
@@ -3201,7 +3367,7 @@ impl PipelineStage for GraphStage {
                             *line,
                             "",
                             Vec::new(),
-                            true, // is_static_dispatch
+                            "static",
                         ));
                         calls_count += 1;
                     }
@@ -3229,7 +3395,7 @@ impl PipelineStage for GraphStage {
                                 *line,
                                 "",
                                 Vec::new(),
-                                false, // is_static_dispatch = false for method calls
+                                "dynamic",
                             ));
                             calls_count += 1;
                         }
