@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jarnura/rust-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/jarnura/rust-brain/actions/workflows/ci.yml)
 
-A production-grade Rust code intelligence platform. Ingests Rust codebases and builds a queryable knowledge graph with semantic search, call graph traversal, trait resolution, and monomorphization tracking.
+A production-grade Rust code intelligence platform with multi-tenant workspace isolation. Ingests Rust codebases and builds a queryable knowledge graph with semantic search, call graph traversal, trait resolution, and monomorphization tracking. Each workspace gets isolated storage across Postgres, Neo4j, and Qdrant.
 
 ## Architecture
 
@@ -199,7 +199,7 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `POST /tools/chat/sessions/:id/fork` | Fork a session |
 | `POST /tools/chat/sessions/:id/abort` | Abort streaming session |
 
-### Workspace (8 endpoints)
+### Workspace (9 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -212,6 +212,7 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `GET /workspaces/:id/diff` | Get uncommitted changes |
 | `POST /workspaces/:id/commit` | Commit changes |
 | `POST /workspaces/:id/reset` | Discard changes |
+| `GET /workspaces/:id/stats` | Per-workspace stats (counts, consistency, isolation) |
 
 ### Execution (4 endpoints)
 
@@ -222,15 +223,45 @@ Postgres (raw source, git blame)                          Postgres (extracted it
 | `GET /executions/:id` | Get execution status |
 | `GET /executions/:id/events` | SSE stream of agent events |
 
-### System (5 endpoints)
+### System (6 endpoints)
 
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Service health with per-store counts |
+| `GET /health/consistency` | Cross-store consistency health |
 | `GET /metrics` | Prometheus metrics |
 | `GET /api/snapshot` | Snapshot info |
 | `GET /api/consistency` | Cross-store consistency check |
 | `GET /api/ingestion/progress` | Ingestion progress |
+
+### Artifacts (4 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/artifacts` | Create artifact |
+| `GET /api/artifacts` | List artifacts (with filters) |
+| `GET /api/artifacts/:id` | Get artifact by ID |
+| `PUT /api/artifacts/:id` | Update artifact status/confidence |
+
+### Tasks (4 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/tasks` | Create task |
+| `GET /api/tasks` | List tasks (with filters) |
+| `GET /api/tasks/:id` | Get task by ID |
+| `PUT /api/tasks/:id` | Update task status |
+
+### Validator & Benchmarker (5 endpoints)
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /validator/runs` | List validator runs |
+| `GET /validator/runs/:id` | Get validator run details |
+| `GET /benchmarker/suites` | List eval suites |
+| `GET /benchmarker/runs` | List benchmark runs |
+| `POST /benchmarker/runs` | Trigger benchmark |
+| `GET /benchmarker/runs/:id` | Get benchmark run details |
 
 ## Key Files
 
@@ -249,10 +280,12 @@ The playground UI at **http://localhost:8088/playground** provides interactive e
 - **Query Playground** (`playground.html`): 7 query types (semantic, function, callers, trait impls, type usages, module tree, Cypher) with JSON/table view toggle
 - **Audit Trail** (`audit.html`): Known issues and system audit information
 - **Gap Analysis** (`gaps.html`): Feature completeness tracking
+- **Agent Trace**: Typed event model with collapsible event groups, ToolCallCard rendering, JSON syntax highlighting, and transcript navigation for monitoring multi-agent executions
+- **Workspace Stats**: Per-workspace resource monitoring with stats header and workspace switcher
 
 ### Editor Playground
 
-The Workspace API enables an **Editor Playground** workflow: create isolated workspaces from GitHub repos, run AI agents against them, and review/commit the results. Each workspace is sandboxed with its own Docker volume and Postgres schema.
+The Workspace API enables an **Editor Playground** workflow: create isolated workspaces from GitHub repos, run AI agents against them, and review/commit the results. Each workspace is sandboxed with its own Docker volume, Postgres schema, and Qdrant collection — full multi-tenant isolation across all three data stores.
 
 ```bash
 # Quick start: create workspace → execute → review
@@ -285,6 +318,8 @@ See [docs/opencode-integration.md](./docs/opencode-integration.md) for architect
 - **Monorepo-first**: FQN scheme and graph schema support multi-repo with zero schema changes
 - **Streaming responses**: SSE-based MCP transport for real-time tool invocations in IDEs
 - **Model flexibility**: LiteLLM routing supports Anthropic, OpenAI, local models with transparent fallbacks
+- **Multi-tenant isolation**: Each workspace gets isolated Postgres schemas, Neo4j labels, and Qdrant collections — zero cross-workspace data leakage with continuous audit monitoring
+- **SSE reconnection with backfill**: Cursor-based event storage enables gap-free reconnection for MCP and chat streams — no data loss on network interruptions
 
 ## CI/CD
 

@@ -1,6 +1,6 @@
 # rust-brain Known Issues and Limitations
 
-**Last Updated:** 2026-04-10  
+**Last Updated:** 2026-04-21  
 **Status:** Living document — updated as issues are resolved or discovered
 
 ---
@@ -231,9 +231,11 @@ rust-brain is a production-grade Rust code intelligence platform, but like any c
 
 **Missing:**
 - No API key validation
-- No rate limiting
-- No request size limits
+- ~~No rate limiting~~ Rate limiting added in v0.4.0 (basic)
+- ~~No request size limits~~ Request limits added in v0.4.0 (basic)
 - Minimal input validation
+
+**Progress in v0.4.0:** Basic rate limiting and request limits added. Cypher injection hardened with template registry. Full authentication still pending.
 
 **Recommendation:** Add reverse proxy with auth for production deployments.
 
@@ -260,6 +262,8 @@ rust-brain is a production-grade Rust code intelligence platform, but like any c
 **Problem:** The `POST /tools/query_graph` endpoint accepts raw Cypher queries. Pattern-based filtering blocks WRITE operations but sophisticated injection may bypass it.
 
 **Current filter:** Blocks CREATE, MERGE, DELETE, SET, REMOVE, DROP
+
+**Progress in v0.4.0:** Cypher template registry added (RUSA-196) for safe predefined queries. `apoc.graph.fromCypher` bypass closed (RUSA-198). Comment handling hardened. Raw Cypher endpoint still available — use template registry for production workloads.
 
 ---
 
@@ -390,14 +394,17 @@ rust-brain is a production-grade Rust code intelligence platform, but like any c
 
 ## Resolution Timeline
 
-| Issue | Target Release |
-|-------|---------------|
-| ISSUE-002 (v1/v2 feature mixing) | v0.3.0 |
-| ISSUE-003 (trait impl calls) | v0.3.0 |
-| Incremental ingestion | v0.4.0 |
-| Query planner | v0.5.0 |
-| Auth/rate limiting | v0.4.0 |
-| Confidence scoring | v0.3.0 |
+| Issue | Target Release | Notes |
+|-------|---------------|-------|
+| ISSUE-002 (v1/v2 feature mixing) | v0.5.0 | Deferred — feature propagation pre-patching added as partial mitigation |
+| ISSUE-003 (trait impl calls) | v0.5.0 | Deferred |
+| Incremental ingestion | v0.5.0 | Deferred from v0.4.0 |
+| Query planner | v0.6.0 | |
+| Auth/rate limiting | v0.5.0 | Deferred from v0.4.0 — Cypher template registry added as security hardening |
+| Confidence scoring | v0.5.0 | Deferred from v0.3.0 |
+| Multi-tenancy isolation | **v0.4.0** ✅ | Delivered — per-workspace Postgres schema, Neo4j labels, Qdrant collections |
+| Cross-workspace leak detection | **v0.4.0** ✅ | Delivered — rustbrain-audit service with Prometheus alerting |
+| SSE reconnection with backfill | **v0.4.0** ✅ | Delivered — cursor-based reconnection for MCP and chat streams |
 
 ---
 

@@ -81,7 +81,6 @@ GRAFANA_PASSWORD=rustbrain
 # AI Models
 EMBEDDING_MODEL=qwen3-embedding:4b
 EMBEDDING_DIMENSIONS=2560
-CODE_MODEL=codellama:7b
 
 # Performance tuning
 EMBED_BATCH_SIZE=32
@@ -141,17 +140,17 @@ Tool API             ✓ OK
 
 ## Quick Start with Snapshot (Recommended)
 
-Skip the full ingestion pipeline and restore a pre-built snapshot with 219K items from [hyperswitch](https://github.com/juspay/hyperswitch):
+Skip the full ingestion pipeline and restore a pre-built snapshot with 284K items from [hyperswitch](https://github.com/juspay/hyperswitch):
 
 ```bash
-# First time — downloads ~3 GB, restores all 3 databases
+# First time — downloads ~1.9 GB, restores all 3 databases
 ./scripts/run-with-snapshot.sh
 ```
 
-This takes 5-10 minutes and gives you a fully populated system with:
-- 219K code items in PostgreSQL
-- 302K nodes + 590K relationships in Neo4j
-- 219K vector embeddings in Qdrant
+This takes 2-7 minutes and gives you a fully populated system with:
+- 284K code items in PostgreSQL
+- 365K nodes + 366K relationships in Neo4j
+- 284K vector embeddings in Qdrant
 
 **Upgrading to a new snapshot version:**
 ```bash
@@ -255,7 +254,7 @@ Expected response:
 {
   "status": "healthy",
   "timestamp": "2026-03-14T10:30:00Z",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "dependencies": {
     "postgres": {"status": "healthy", "latency_ms": 5},
     "neo4j": {"status": "healthy", "latency_ms": 12},
@@ -369,7 +368,7 @@ curl -X POST http://localhost:8088/tools/query_graph \
 
 ## Editor Playground
 
-The Editor Playground lets you create isolated workspaces from GitHub repositories, run AI agents against them, and review the results — all through the API or the playground UI.
+The Editor Playground lets you create isolated workspaces from GitHub repositories, run AI agents against them, and review the results — all through the API or the playground UI. Each workspace is fully isolated with its own Postgres schema, Neo4j label partition, and Qdrant collection (multi-tenant data isolation).
 
 ### Prerequisites
 
@@ -419,7 +418,10 @@ curl -X POST http://localhost:8088/workspaces/<workspace-id>/commit \
 # Or discard all changes:
 curl -X POST http://localhost:8088/workspaces/<workspace-id>/reset
 
-# 8. Clean up when done
+# 8. Check workspace stats (item counts, consistency, isolation)
+curl http://localhost:8088/workspaces/<workspace-id>/stats | jq .
+
+# 9. Clean up when done
 curl -X DELETE http://localhost:8088/workspaces/<workspace-id>
 ```
 
@@ -429,9 +431,11 @@ When you `POST /workspaces/:id/execute`, the API:
 
 1. Spawns an ephemeral OpenCode container with the workspace volume mounted
 2. The orchestrator agent dispatches sub-agents through phases: researching → planning → developing
-3. Agent events (reasoning, tool calls, file edits) are stored in Postgres and streamed via SSE
+3. Agent events (reasoning, tool calls, file edits) are stored in Postgres with per-execution sequence numbers and streamed via SSE
 4. When the agent finishes (or times out), the container is stopped
 5. The diff summary is recorded on the execution record
+
+SSE streams support cursor-based reconnection: if the connection drops, reconnect with the last received sequence number to receive any missed events without data loss.
 
 ### Execution Timeouts
 
@@ -448,7 +452,11 @@ curl -X POST http://localhost:8088/workspaces/<workspace-id>/execute \
 Each workspace gets its own:
 - **Docker volume** for the cloned source code (default 10 GB)
 - **Postgres schema** for extracted code items (e.g. `ws_abc123456789`)
+- **Qdrant collection** for workspace-scoped vector search
+- **Neo4j label partition** for workspace-scoped graph queries
 - **Execution containers** that are isolated from other workspaces
+
+The `rustbrain-audit` service continuously monitors for cross-workspace data leaks and raises Prometheus alerts if isolation is violated.
 
 See [Workspace Volumes](./workspace-volumes.md) for volume management details, and [Architecture](./architecture.md#editor-playground) for the full architecture diagram.
 
@@ -475,8 +483,9 @@ sudo lsof -i :11434 # Ollama
 # Check memory usage
 docker stats rustbrain-ollama
 
-# Use smaller quantized model (edit .env)
-CODE_MODEL=codellama:7b-instruct-q4_0
+# Use smaller embedding model (edit .env)
+EMBEDDING_MODEL=qwen3-embedding:4b
+EMBEDDING_DIMENSIONS=2560
 ```
 
 ### Reset Everything
@@ -496,3 +505,4 @@ bash scripts/start.sh
 - Explore the [Architecture](./architecture.md) to understand how it works
 - Set up [MCP integration](./mcp-setup.md) for Claude Code or other MCP clients
 - Check [Future Scope](./future-scope.md) for planned features
+- Review [Architecture Decision Records](./adr/) for key design decisions (ADR-001 through ADR-006)
