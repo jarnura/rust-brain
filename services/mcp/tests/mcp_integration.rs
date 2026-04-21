@@ -207,7 +207,7 @@ async fn invoke_tool(tool_name: &str, arguments: Value) -> Value {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_health() {
     let resp = client()
         .get(format!("{MCP_BASE}/health"))
@@ -224,7 +224,7 @@ async fn test_mcp_health() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_initialize_and_list_tools() {
     let client = authenticated_client();
 
@@ -392,7 +392,7 @@ async fn test_mcp_initialize_and_list_tools() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_search_code() {
     let result = invoke_tool("search_code", json!({"query": "parse rust", "limit": 3})).await;
     // Result should be a JSON-RPC response object (may have result or error field)
@@ -404,7 +404,7 @@ async fn test_mcp_tool_search_code() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_get_function() {
     // Use a known-missing FQN; should return a not-found message, not a server error
     let result = invoke_tool("get_function", json!({"fqn": "nonexistent::fn"})).await;
@@ -418,28 +418,28 @@ async fn test_mcp_tool_get_function() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_get_callers() {
     let result = invoke_tool("get_callers", json!({"fqn": "nonexistent::fn", "depth": 1})).await;
     assert!(result.is_object());
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_get_trait_impls() {
     let result = invoke_tool("get_trait_impls", json!({"trait_name": "Display"})).await;
     assert!(result.is_object());
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_find_type_usages() {
     let result = invoke_tool("find_type_usages", json!({"type_name": "String"})).await;
     assert!(result.is_object());
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_get_module_tree() {
     let result = invoke_tool(
         "get_module_tree",
@@ -450,7 +450,7 @@ async fn test_mcp_tool_get_module_tree() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_query_graph_read_only() {
     let result = invoke_tool(
         "query_graph",
@@ -469,7 +469,7 @@ async fn test_mcp_tool_query_graph_read_only() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_query_graph_rejects_write() {
     let result = invoke_tool("query_graph", json!({"cypher": "CREATE (n:Evil) RETURN n"})).await;
     // MCP tools surface errors as result.isError=true with content text,
@@ -486,14 +486,14 @@ async fn test_mcp_tool_query_graph_rejects_write() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_find_calls_with_type() {
     let result = invoke_tool("find_calls_with_type", json!({"type_name": "String"})).await;
     assert!(result.is_object());
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_find_trait_impls_for_type() {
     // Parameter is type_name, not type_fqn
     let result = invoke_tool("find_trait_impls_for_type", json!({"type_name": "String"})).await;
@@ -501,7 +501,7 @@ async fn test_mcp_tool_find_trait_impls_for_type() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_pg_query_select() {
     let result = invoke_tool("pg_query", json!({"query": "SELECT 1 AS n"})).await;
     assert!(result.is_object());
@@ -516,7 +516,7 @@ async fn test_mcp_tool_pg_query_select() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_pg_query_rejects_write() {
     let result = invoke_tool(
         "pg_query",
@@ -536,7 +536,7 @@ async fn test_mcp_tool_pg_query_rejects_write() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_context_store() {
     // context_store: set and get a value
     let result = invoke_tool(
@@ -548,7 +548,7 @@ async fn test_mcp_tool_context_store() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_status_check() {
     let result = invoke_tool("status_check", json!({})).await;
     assert!(result.is_object());
@@ -563,7 +563,7 @@ async fn test_mcp_tool_status_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_task_update() {
     // Use a non-existent task ID; should return not-found, not a crash
     let result = invoke_tool(
@@ -575,7 +575,7 @@ async fn test_mcp_tool_task_update() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_tool_aggregate_search() {
     let result = invoke_tool("aggregate_search", json!({"query": "function", "limit": 3})).await;
     assert!(result.is_object());
@@ -589,7 +589,7 @@ async fn test_mcp_tool_aggregate_search() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test mcp_integration -- --include-ignored"]
 async fn test_mcp_unknown_tool_returns_error() {
     let result = invoke_tool("this_tool_does_not_exist", json!({})).await;
     if !result.is_null() {

@@ -1031,7 +1031,7 @@ fn ec17_unknown_event_type_check_constraint_rejects() {
 /// EC08 (DB version): Verify UNIQUE (execution_id, seq) constraint
 /// prevents duplicate events under concurrent writes.
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test edge_case_integration -- --include-ignored"]
 async fn ec08_concurrent_writes_db_constraint() {
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -1101,7 +1101,7 @@ async fn ec08_concurrent_writes_db_constraint() {
 
 /// EC17 (DB version): Verify CHECK constraint rejects invalid event_type.
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test edge_case_integration -- --include-ignored"]
 async fn ec17_check_constraint_rejects_invalid_type() {
     use sqlx::PgPool;
     use uuid::Uuid;

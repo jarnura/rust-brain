@@ -77,7 +77,7 @@ fn has_key(v: &Value, key: &str) -> bool {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_health_returns_healthy() {
     let resp = client()
         .get(format!("{BASE}/health"))
@@ -98,7 +98,7 @@ async fn test_health_returns_healthy() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_metrics_endpoint() {
     let resp = client()
         .get(format!("{BASE}/metrics"))
@@ -113,7 +113,7 @@ async fn test_metrics_endpoint() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_snapshot_endpoint() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/snapshot"))
@@ -132,7 +132,7 @@ async fn test_snapshot_endpoint() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_search_semantic_happy_path() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -152,7 +152,7 @@ async fn test_search_semantic_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_search_semantic_missing_query() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -170,7 +170,7 @@ async fn test_search_semantic_missing_query() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_search_semantic_empty_query_returns_results() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -188,7 +188,7 @@ async fn test_search_semantic_empty_query_returns_results() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_aggregate_search_happy_path() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/aggregate_search"))
@@ -203,7 +203,7 @@ async fn test_aggregate_search_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_aggregate_search_missing_query() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/aggregate_search"))
@@ -224,7 +224,7 @@ async fn test_aggregate_search_missing_query() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_search_docs_happy_path() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_docs"))
@@ -249,7 +249,7 @@ async fn test_search_docs_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_search_docs_missing_query() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_docs"))
@@ -266,7 +266,7 @@ async fn test_search_docs_missing_query() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_search_docs_with_score_threshold() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_docs"))
@@ -289,7 +289,7 @@ async fn test_search_docs_with_score_threshold() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_function_not_found() {
     let resp = authenticated_client()
         .get(format!(
@@ -305,7 +305,7 @@ async fn test_get_function_not_found() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_function_missing_fqn_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_function"))
@@ -325,7 +325,7 @@ async fn test_get_function_missing_fqn_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_callers_unknown_fqn_returns_empty() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_callers?fqn=nonexistent::fn"))
@@ -342,7 +342,7 @@ async fn test_get_callers_unknown_fqn_returns_empty() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_callers_missing_fqn_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_callers"))
@@ -362,7 +362,7 @@ async fn test_get_callers_missing_fqn_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_trait_impls_happy_path() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_trait_impls?trait_name=Display"))
@@ -377,7 +377,7 @@ async fn test_get_trait_impls_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_trait_impls_missing_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_trait_impls"))
@@ -397,7 +397,7 @@ async fn test_get_trait_impls_missing_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_find_usages_of_type_happy_path() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_usages_of_type?type_name=String"))
@@ -412,7 +412,7 @@ async fn test_find_usages_of_type_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_find_usages_of_type_missing_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_usages_of_type"))
@@ -432,7 +432,7 @@ async fn test_find_usages_of_type_missing_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_module_tree_happy_path() {
     let resp = authenticated_client()
         .get(format!(
@@ -449,7 +449,7 @@ async fn test_get_module_tree_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_get_module_tree_missing_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
@@ -469,7 +469,7 @@ async fn test_get_module_tree_missing_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_query_graph_read_only_happy_path() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -484,7 +484,7 @@ async fn test_query_graph_read_only_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_query_graph_rejects_write_cypher() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -499,7 +499,7 @@ async fn test_query_graph_rejects_write_cypher() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_query_graph_both_fields_missing() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -522,7 +522,7 @@ async fn test_query_graph_both_fields_missing() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_find_calls_with_type_happy_path() {
     let resp = authenticated_client()
         .get(format!(
@@ -538,7 +538,7 @@ async fn test_find_calls_with_type_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_find_calls_with_type_missing_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_calls_with_type"))
@@ -558,7 +558,7 @@ async fn test_find_calls_with_type_missing_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_find_trait_impls_for_type_happy_path() {
     // Parameter is `type_name`, not `type_fqn`
     let resp = authenticated_client()
@@ -575,7 +575,7 @@ async fn test_find_trait_impls_for_type_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_find_trait_impls_for_type_missing_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_trait_impls_for_type"))
@@ -595,7 +595,7 @@ async fn test_find_trait_impls_for_type_missing_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_pg_query_select_happy_path() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
@@ -612,7 +612,7 @@ async fn test_pg_query_select_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_pg_query_rejects_insert() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
@@ -627,7 +627,7 @@ async fn test_pg_query_rejects_insert() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_pg_query_rejects_drop() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
@@ -640,7 +640,7 @@ async fn test_pg_query_rejects_drop() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_pg_query_rejects_system_tables() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
@@ -653,7 +653,7 @@ async fn test_pg_query_rejects_system_tables() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_pg_query_missing_query_field() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/pg_query"))
@@ -674,7 +674,7 @@ async fn test_pg_query_missing_query_field() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_ingestion_progress() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
@@ -693,7 +693,7 @@ async fn test_ingestion_progress() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_artifacts_crud_lifecycle() {
     let client = authenticated_client();
     let artifact_id = format!("test-artifact-{}", uuid_v4());
@@ -780,7 +780,7 @@ async fn test_artifacts_crud_lifecycle() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_tasks_crud_lifecycle() {
     let client = authenticated_client();
     let task_id = format!("test-task-{}", uuid_v4());
@@ -889,7 +889,7 @@ async fn test_tasks_crud_lifecycle() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_chat_happy_path() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/chat"))
@@ -904,7 +904,7 @@ async fn test_chat_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_chat_missing_message() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/chat"))
@@ -925,7 +925,7 @@ async fn test_chat_missing_message() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_chat_stream_is_sse() {
     // Just verify the endpoint accepts a GET with a message parameter and starts streaming
     let resp = authenticated_client()
@@ -948,7 +948,7 @@ async fn test_chat_stream_is_sse() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_chat_stream_post_returns_405() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/chat/stream"))
@@ -970,7 +970,7 @@ async fn test_chat_stream_post_returns_405() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test api_integration -- --include-ignored"]
 async fn test_chat_sessions_lifecycle() {
     let client = authenticated_client();
 
@@ -1109,7 +1109,7 @@ async fn wait_for_workspace_ready(workspace_id: &str) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires workspace execution engine and provisioned workspace; not available in standard CI"]
 async fn test_execute_class_a_simple_query() {
     // CLASS A: "What does PipelineRunner do?" → orchestrator → explorer
     let workspace_id = create_test_workspace().await;
@@ -1138,7 +1138,7 @@ async fn test_execute_class_a_simple_query() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires workspace execution engine and provisioned workspace; not available in standard CI"]
 async fn test_execution_lifecycle_and_agent_dispatch() {
     // Test full lifecycle: pending → running → completed
     // And verify agent_dispatch events are emitted
@@ -1217,7 +1217,7 @@ async fn test_execution_lifecycle_and_agent_dispatch() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires workspace execution engine and provisioned workspace; not available in standard CI"]
 async fn test_execute_rejects_empty_prompt() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_ready(&workspace_id).await;
@@ -1235,7 +1235,7 @@ async fn test_execute_rejects_empty_prompt() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires workspace execution engine and provisioned workspace; not available in standard CI"]
 async fn test_execution_sse_stream() {
     // Test SSE stream for agent events
     let workspace_id = create_test_workspace().await;

@@ -85,7 +85,7 @@ fn uuid_v4() -> String {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_health_returns_store_counts() {
     let resp = client()
         .get(format!("{BASE}/health"))
@@ -134,7 +134,7 @@ async fn test_health_returns_store_counts() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_health_uptime_increases() {
     let client = client();
 
@@ -175,7 +175,7 @@ async fn test_health_uptime_increases() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_health_status_healthy_or_degraded() {
     let resp = client()
         .get(format!("{BASE}/health"))
@@ -195,7 +195,7 @@ async fn test_health_status_healthy_or_degraded() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_health_version_present() {
     let resp = client()
         .get(format!("{BASE}/health"))
@@ -219,7 +219,7 @@ async fn test_health_version_present() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_metrics_prometheus_format() {
     let resp = client()
         .get(format!("{BASE}/metrics"))
@@ -244,7 +244,7 @@ async fn test_metrics_prometheus_format() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_metrics_content_type() {
     let resp = client()
         .get(format!("{BASE}/metrics"))
@@ -268,7 +268,7 @@ async fn test_metrics_content_type() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_metrics_records_requests() {
     let client = client();
 
@@ -301,7 +301,7 @@ async fn test_metrics_records_requests() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_consistency_summary_report() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
@@ -344,7 +344,7 @@ async fn test_consistency_summary_report() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_consistency_full_detail() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
@@ -365,7 +365,7 @@ async fn test_consistency_full_detail() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_consistency_with_crate_filter() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?crate=rustbrain_common"))
@@ -383,7 +383,7 @@ async fn test_consistency_with_crate_filter() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_consistency_invalid_detail_param() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=invalid"))
@@ -404,7 +404,7 @@ async fn test_consistency_invalid_detail_param() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_health_consistency_returns_status() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -435,7 +435,7 @@ async fn test_health_consistency_returns_status() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_health_consistency_crate_summaries() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -476,7 +476,7 @@ async fn test_health_consistency_crate_summaries() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_ingestion_progress_structure() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
@@ -502,7 +502,7 @@ async fn test_ingestion_progress_structure() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_ingestion_progress_stages() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
@@ -528,7 +528,7 @@ async fn test_ingestion_progress_stages() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_ingestion_progress_items_non_negative() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/ingestion/progress"))
@@ -559,7 +559,7 @@ async fn test_ingestion_progress_items_non_negative() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_count_by_label_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -584,7 +584,7 @@ async fn test_count_by_label_template() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_count_by_label_invalid_label() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -603,7 +603,7 @@ async fn test_count_by_label_invalid_label() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_find_crate_overview_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -628,7 +628,7 @@ async fn test_find_crate_overview_template() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_count_total_nodes_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -650,7 +650,7 @@ async fn test_count_total_nodes_template() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_count_total_relationships_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -739,7 +739,7 @@ async fn cleanup_workspace(workspace_id: &str) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_index_progress_field() {
     // Create workspace
     let workspace_id = create_test_workspace().await;
@@ -785,7 +785,7 @@ async fn test_workspace_index_progress_field() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_list_includes_status() {
     // Create a workspace to ensure there's at least one in the list
     let workspace_id = create_test_workspace().await;
@@ -821,7 +821,7 @@ async fn test_workspace_list_includes_status() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_happy_path() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -889,7 +889,7 @@ async fn test_workspace_stats_happy_path() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_consistency_computation() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -953,7 +953,7 @@ async fn test_workspace_stats_consistency_computation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_isolation_fields() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -999,7 +999,7 @@ async fn test_workspace_stats_isolation_fields() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_optional_fields() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -1037,7 +1037,7 @@ async fn test_workspace_stats_optional_fields() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_404_nonexistent() {
     let fake_id = Uuid::new_v4().to_string();
 
@@ -1056,7 +1056,7 @@ async fn test_workspace_stats_404_nonexistent() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_invalid_uuid() {
     let resp = client()
         .get(format!("{BASE}/workspaces/not-a-valid-uuid/stats"))
@@ -1072,7 +1072,7 @@ async fn test_workspace_stats_invalid_uuid() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_prometheus_gauges() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -1103,7 +1103,7 @@ async fn test_workspace_stats_prometheus_gauges() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_middleware_labels() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -1137,7 +1137,7 @@ async fn test_workspace_stats_middleware_labels() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_workspace_stats_repeated_calls_consistent() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -1185,7 +1185,7 @@ async fn test_workspace_stats_repeated_calls_consistent() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_cardinality_endpoint_label_collapsing() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -1223,7 +1223,7 @@ async fn test_cardinality_endpoint_label_collapsing() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_cardinality_workspace_label_none_when_absent() {
     let _ = client()
         .get(format!("{BASE}/health"))
@@ -1261,7 +1261,7 @@ async fn test_cardinality_workspace_label_none_when_absent() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_cardinality_workspace_label_from_header() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;
@@ -1300,7 +1300,7 @@ async fn test_cardinality_workspace_label_from_header() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_metrics_integration -- --include-ignored"]
 async fn test_cardinality_no_raw_uuid_in_endpoint_labels() {
     let workspace_id = create_test_workspace().await;
     wait_for_workspace_status(&workspace_id, "ready", 90).await;

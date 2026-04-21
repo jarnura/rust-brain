@@ -49,7 +49,7 @@ const INTELLIGENCE_ENDPOINTS: &[&str] = &[
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_search_semantic_workspace_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("e2e-iso-search", GITHUB_URL).await;
 
@@ -104,7 +104,7 @@ async fn test_e2e_search_semantic_workspace_isolation() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_pg_query_workspace_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("e2e-iso-pg", GITHUB_URL).await;
 
@@ -162,7 +162,7 @@ async fn test_e2e_pg_query_workspace_isolation() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_cross_store_consistency_per_workspace() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("e2e-iso-xstore", GITHUB_URL).await;
 
@@ -197,7 +197,7 @@ async fn test_e2e_cross_store_consistency_per_workspace() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_all_intelligence_endpoints_workspace_a() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("e2e-iso-all-a", GITHUB_URL).await;
 
@@ -311,7 +311,7 @@ async fn test_e2e_all_intelligence_endpoints_workspace_a() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_all_intelligence_endpoints_workspace_b() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("e2e-iso-all-b", GITHUB_URL).await;
 
@@ -360,7 +360,7 @@ async fn test_e2e_all_intelligence_endpoints_workspace_b() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_delete_workspace_does_not_affect_other() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("e2e-iso-del", GITHUB_URL).await;
 
@@ -399,7 +399,7 @@ async fn test_e2e_delete_workspace_does_not_affect_other() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace physical isolation not yet implemented"]
 async fn test_e2e_recreate_workspace_with_same_name() {
     let name = format!("e2e-recreate-{}", uuid_v4());
 

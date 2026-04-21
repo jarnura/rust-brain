@@ -87,7 +87,7 @@ fn uuid_v4() -> String {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_create_returns_202() {
     let name = format!("test-crud-{}", uuid_v4());
     let resp = authenticated_client()
@@ -116,7 +116,7 @@ async fn test_workspace_create_returns_202() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_create_rejects_invalid_github_url() {
     let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
@@ -132,7 +132,7 @@ async fn test_workspace_create_rejects_invalid_github_url() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_create_rejects_missing_url() {
     let resp = authenticated_client()
         .post(format!("{BASE}/workspaces"))
@@ -151,7 +151,7 @@ async fn test_workspace_create_rejects_missing_url() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_list_returns_array() {
     let resp = authenticated_client()
         .get(format!("{BASE}/workspaces"))
@@ -165,7 +165,7 @@ async fn test_workspace_list_returns_array() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_get_existing() {
     // Create a workspace first
     let name = format!("test-get-{}", uuid_v4());
@@ -200,7 +200,7 @@ async fn test_workspace_get_existing() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_get_nonexistent_returns_404() {
     let fake_id = "00000000-0000-0000-0000-000000000000";
     let resp = authenticated_client()
@@ -213,7 +213,7 @@ async fn test_workspace_get_nonexistent_returns_404() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_get_invalid_uuid_returns_400_or_404() {
     let resp = authenticated_client()
         .get(format!("{BASE}/workspaces/not-a-uuid"))
@@ -229,7 +229,7 @@ async fn test_workspace_get_invalid_uuid_returns_400_or_404() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_delete_returns_204() {
     // Create a workspace
     let name = format!("test-delete-{}", uuid_v4());
@@ -274,7 +274,7 @@ async fn test_workspace_delete_returns_204() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_delete_nonexistent_returns_404_or_204() {
     let fake_id = "00000000-0000-0000-0000-000000000000";
     let resp = authenticated_client()
@@ -292,7 +292,7 @@ async fn test_workspace_delete_nonexistent_returns_404_or_204() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_delete_idempotent() {
     // Create a workspace
     let name = format!("test-idempotent-{}", uuid_v4());
@@ -331,7 +331,7 @@ async fn test_workspace_delete_idempotent() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_lifecycle_cloning_to_ready() {
     let name = format!("test-lifecycle-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -393,7 +393,7 @@ async fn test_workspace_lifecycle_cloning_to_ready() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_schema_name_format() {
     let name = format!("test-schema-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -447,7 +447,7 @@ async fn test_workspace_schema_name_format() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_files_endpoint() {
     // Create workspace and wait for it to be ready
     let name = format!("test-files-{}", uuid_v4());
@@ -592,7 +592,7 @@ async fn cleanup_workspace(workspace_id: &str) {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182: per-workspace Qdrant collections and Postgres read-path middleware not yet implemented"]
 async fn test_workspace_search_qdrant_isolation() {
     // Create two workspaces and wait for indexing to complete
     let (ws_a, ws_b) = create_two_workspaces().await;
@@ -637,7 +637,7 @@ async fn test_workspace_search_qdrant_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182: per-workspace Qdrant collections and Postgres read-path middleware not yet implemented"]
 async fn test_workspace_search_postgres_isolation() {
     // Create two workspaces and wait for indexing
     let (ws_a, ws_b) = create_two_workspaces().await;
@@ -674,7 +674,7 @@ async fn test_workspace_search_postgres_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182: per-workspace Qdrant collections and Postgres read-path middleware not yet implemented"]
 async fn test_workspace_cross_store_consistency() {
     // Create workspace and wait for ready
     let name = format!("ws-consistency-{}", uuid_v4());
@@ -723,7 +723,7 @@ async fn test_workspace_cross_store_consistency() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_search_semantic_with_crate_filter() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -754,7 +754,7 @@ async fn test_search_semantic_with_crate_filter() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_search_semantic_with_nonexistent_crate_filter() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -779,7 +779,7 @@ async fn test_search_semantic_with_nonexistent_crate_filter() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_search_semantic_without_crate_filter() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -796,7 +796,7 @@ async fn test_search_semantic_without_crate_filter() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_get_module_tree_with_valid_crate() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
@@ -815,7 +815,7 @@ async fn test_get_module_tree_with_valid_crate() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_get_module_tree_with_unknown_crate() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
@@ -833,7 +833,7 @@ async fn test_get_module_tree_with_unknown_crate() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_query_graph_crate_overview_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -856,7 +856,7 @@ async fn test_query_graph_crate_overview_template() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_query_graph_crate_dependencies_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -874,7 +874,7 @@ async fn test_query_graph_crate_dependencies_template() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_query_graph_crate_dependents_template() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -892,7 +892,7 @@ async fn test_query_graph_crate_dependents_template() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_query_graph_template_missing_crate_name() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -912,7 +912,7 @@ async fn test_query_graph_template_missing_crate_name() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_consistency_with_crate_filter() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
@@ -929,7 +929,7 @@ async fn test_consistency_with_crate_filter() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_zero_items_search() {
     // Create a workspace that may not have indexed yet
     let name = format!("ws-empty-{}", uuid_v4());
@@ -973,7 +973,7 @@ async fn test_workspace_zero_items_search() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_create_with_git_suffix() {
     let name = format!("test-git-suffix-{}", uuid_v4());
     let resp = authenticated_client()
@@ -994,7 +994,7 @@ async fn test_workspace_create_with_git_suffix() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_create_without_optional_name() {
     // Name is optional — should derive from repo slug
     let resp = authenticated_client()
@@ -1039,7 +1039,7 @@ async fn test_workspace_create_without_optional_name() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_diff_returns_patch_or_clean() {
     let name = format!("ws-diff-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -1086,7 +1086,7 @@ async fn test_workspace_diff_returns_patch_or_clean() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_diff_nonexistent_workspace_404() {
     let fake_id = "00000000-0000-0000-0000-000000000000";
     let resp = client()
@@ -1099,7 +1099,7 @@ async fn test_workspace_diff_nonexistent_workspace_404() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_commit_empty_message_400() {
     let name = format!("ws-commit-empty-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -1132,7 +1132,7 @@ async fn test_workspace_commit_empty_message_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_commit_whitespace_message_400() {
     let name = format!("ws-commit-ws-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -1169,7 +1169,7 @@ async fn test_workspace_commit_whitespace_message_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_commit_nothing_to_commit_400() {
     let name = format!("ws-commit-clean-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -1211,7 +1211,7 @@ async fn test_workspace_commit_nothing_to_commit_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_reset_returns_head_sha() {
     let name = format!("ws-reset-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -1257,7 +1257,7 @@ async fn test_workspace_reset_returns_head_sha() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_reset_nonexistent_workspace_404() {
     let fake_id = "00000000-0000-0000-0000-000000000000";
     let resp = client()
@@ -1274,7 +1274,7 @@ async fn test_workspace_reset_nonexistent_workspace_404() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_stats_returns_all_fields() {
     let name = format!("ws-stats-{}", uuid_v4());
     let create_resp = authenticated_client()
@@ -1359,7 +1359,7 @@ async fn test_workspace_stats_returns_all_fields() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_integration -- --include-ignored"]
 async fn test_workspace_stream_nonexistent_execution_404() {
     let name = format!("ws-stream-{}", uuid_v4());
     let create_resp = authenticated_client()

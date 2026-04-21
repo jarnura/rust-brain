@@ -76,7 +76,7 @@ fn has_key(v: &Value, key: &str) -> bool {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_endpoint_returns_200() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
@@ -88,7 +88,7 @@ async fn test_consistency_endpoint_returns_200() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_response_schema() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
@@ -127,7 +127,7 @@ async fn test_consistency_response_schema() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_with_crate_filter() {
     let resp = client()
         .get(format!("{BASE}/api/consistency?crate=rustbrain_common"))
@@ -141,7 +141,7 @@ async fn test_consistency_with_crate_filter() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_detail_full_includes_discrepancies() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=full"))
@@ -165,7 +165,7 @@ async fn test_consistency_detail_full_includes_discrepancies() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_detail_summary_omits_discrepancies() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency?detail=summary"))
@@ -184,7 +184,7 @@ async fn test_consistency_detail_summary_omits_discrepancies() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_unknown_crate_returns_zero_counts() {
     let resp = authenticated_client()
         .get(format!(
@@ -203,7 +203,7 @@ async fn test_consistency_unknown_crate_returns_zero_counts() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_status_values() {
     // Verify status field only returns "consistent" or "inconsistent"
     let resp = authenticated_client()
@@ -228,7 +228,7 @@ async fn test_consistency_status_values() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_health_consistency_returns_valid_status() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -245,7 +245,7 @@ async fn test_health_consistency_returns_valid_status() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_health_consistency_response_schema() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -263,7 +263,7 @@ async fn test_health_consistency_response_schema() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_health_consistency_200_when_all_consistent() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -282,7 +282,7 @@ async fn test_health_consistency_200_when_all_consistent() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_health_consistency_503_when_inconsistent() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -312,7 +312,7 @@ async fn test_health_consistency_503_when_inconsistent() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_health_consistency_per_crate_schema() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -348,7 +348,7 @@ async fn test_health_consistency_per_crate_schema() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_health_consistency_empty_when_no_data() {
     let resp = client()
         .get(format!("{BASE}/health/consistency"))
@@ -372,7 +372,7 @@ async fn test_health_consistency_empty_when_no_data() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fully populated Qdrant vector store from a complete ingestion run; pass with live stack + snapshot data"]
 async fn test_cross_store_counts_match_after_ingestion() {
     // Verify that after a full ingestion run, all three stores have equal
     // counts per ADR-004's consistency definition.
@@ -404,7 +404,7 @@ async fn test_cross_store_counts_match_after_ingestion() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fully populated Qdrant vector store from a complete ingestion run; pass with live stack + snapshot data"]
 async fn test_fqn_sets_match_across_stores() {
     // Using detail=full, verify that FQN sets are identical across all stores.
     // This is the core cross-store consistency guarantee from ADR-004.
@@ -450,7 +450,7 @@ async fn test_fqn_sets_match_across_stores() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fully populated Qdrant vector store from a complete ingestion run; pass with live stack + snapshot data"]
 async fn test_per_crate_consistency_check() {
     // Test that per-crate consistency checks return correct crate-scoped data.
     // First, get list of crates from health endpoint.
@@ -489,7 +489,7 @@ async fn test_per_crate_consistency_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_recommendation_is_actionable() {
     // When stores are inconsistent, the recommendation must mention which
     // stage to re-run, per ADR-004's output format.
@@ -527,7 +527,7 @@ async fn test_consistency_recommendation_is_actionable() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fully populated Qdrant vector store from a complete ingestion run; pass with live stack + snapshot data"]
 async fn test_per_crate_counts_sum_to_total() {
     // Verify that per-crate counts from /health/consistency sum up to the
     // total counts from /api/consistency?crate=all.
@@ -569,7 +569,7 @@ async fn test_per_crate_counts_sum_to_total() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fully populated Qdrant vector store from a complete ingestion run; pass with live stack + snapshot data"]
 async fn test_idempotency_consistency_after_reingestion() {
     // After running ingestion with idempotent writes (ON CONFLICT DO UPDATE,
     // MERGE, upsert), the consistency check should still show consistent.
@@ -607,7 +607,7 @@ async fn test_idempotency_consistency_after_reingestion() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fully populated Qdrant vector store from a complete ingestion run; pass with live stack + snapshot data"]
 async fn test_idempotency_no_orphaned_data() {
     // After idempotent writes, there should be no orphaned data in Neo4j
     // or Qdrant (items not in Postgres). This validates that idempotent
@@ -648,7 +648,7 @@ async fn test_idempotency_no_orphaned_data() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_detects_zero_neo4j_as_inconsistent() {
     // If Neo4j count is 0 but Postgres has data, the report should flag
     // "Graph stage has not been run" in the recommendation.
@@ -694,7 +694,7 @@ async fn test_consistency_detects_zero_neo4j_as_inconsistent() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_detects_zero_qdrant_as_inconsistent() {
     // If Qdrant count is 0 but Postgres has data, the report should flag
     // "Embed stage has not been run" in the recommendation.
@@ -737,7 +737,7 @@ async fn test_consistency_detects_zero_qdrant_as_inconsistent() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_detects_partial_neo4j_data() {
     // If Neo4j has fewer items than Postgres, the detail=full response
     // should list the missing FQNs in in_postgres_not_neo4j.
@@ -773,7 +773,7 @@ async fn test_consistency_detects_partial_neo4j_data() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_detects_partial_qdrant_data() {
     // If Qdrant has fewer items than Postgres, the detail=full response
     // should list the missing FQNs in in_postgres_not_qdrant.
@@ -812,7 +812,7 @@ async fn test_consistency_detects_partial_qdrant_data() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_timestamp_is_iso8601() {
     let resp = authenticated_client()
         .get(format!("{BASE}/api/consistency"))
@@ -838,7 +838,7 @@ async fn test_consistency_timestamp_is_iso8601() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test consistency_integration -- --include-ignored"]
 async fn test_consistency_all_crates_scope() {
     // When no crate filter is provided, crate_name should be "all"
     let resp = authenticated_client()

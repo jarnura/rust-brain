@@ -51,7 +51,7 @@ const ALL_TEMPLATES: &[&str] = &[
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_functions_by_name_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-fn", GITHUB_URL).await;
 
@@ -99,7 +99,7 @@ async fn test_find_functions_by_name_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_callers_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-callers", GITHUB_URL).await;
 
@@ -127,7 +127,7 @@ async fn test_find_callers_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_callees_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-callees", GITHUB_URL).await;
 
@@ -154,7 +154,7 @@ async fn test_find_callees_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_trait_implementations_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-trait", GITHUB_URL).await;
 
@@ -181,7 +181,7 @@ async fn test_find_trait_implementations_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_by_fqn_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-fqn", GITHUB_URL).await;
 
@@ -210,7 +210,7 @@ async fn test_find_by_fqn_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_neighbors_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-neighbor", GITHUB_URL).await;
 
@@ -237,7 +237,7 @@ async fn test_find_neighbors_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_nodes_by_label_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-label", GITHUB_URL).await;
 
@@ -264,7 +264,7 @@ async fn test_find_nodes_by_label_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_module_contents_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-mod", GITHUB_URL).await;
 
@@ -291,7 +291,7 @@ async fn test_find_module_contents_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_count_by_label_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-count", GITHUB_URL).await;
 
@@ -319,7 +319,7 @@ async fn test_count_by_label_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_crate_overview_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-overview", GITHUB_URL).await;
 
@@ -341,7 +341,7 @@ async fn test_find_crate_overview_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_crate_dependencies_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-dep", GITHUB_URL).await;
 
@@ -363,7 +363,7 @@ async fn test_find_crate_dependencies_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_crate_dependents_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-depnd", GITHUB_URL).await;
 
@@ -389,7 +389,7 @@ async fn test_find_crate_dependents_isolation() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_get_callers_direct_endpoint_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-dir-call", GITHUB_URL).await;
 
@@ -414,7 +414,7 @@ async fn test_get_callers_direct_endpoint_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_get_module_tree_direct_endpoint_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-dir-mod", GITHUB_URL).await;
 
@@ -439,7 +439,7 @@ async fn test_get_module_tree_direct_endpoint_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_get_trait_impls_direct_endpoint_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-dir-trait", GITHUB_URL).await;
 
@@ -458,7 +458,7 @@ async fn test_get_trait_impls_direct_endpoint_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_find_usages_of_type_direct_endpoint_isolation() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-dir-type", GITHUB_URL).await;
 
@@ -481,7 +481,7 @@ async fn test_find_usages_of_type_direct_endpoint_isolation() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_query_graph_without_workspace_returns_400() {
     // Query without X-Workspace-Id header should return 400
     // (no silent fallback to all data)
@@ -504,7 +504,7 @@ async fn test_query_graph_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_query_graph_with_nonexistent_workspace_returns_empty() {
     // A valid-but-nonexistent workspace ID passes WorkspaceContext::new() validation
     // (alphanumeric + hyphens) but the Workspace_000000000000 label matches no nodes.
@@ -541,7 +541,7 @@ async fn test_query_graph_with_nonexistent_workspace_returns_empty() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_query_graph_with_malformed_workspace_returns_400() {
     // Semicolons and other special characters fail WorkspaceContext::new() validation
     let resp = client()
@@ -564,7 +564,7 @@ async fn test_query_graph_with_malformed_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_get_module_tree_without_workspace_returns_400() {
     let resp = client()
         .get(format!("{BASE}/tools/get_module_tree"))
@@ -587,7 +587,7 @@ async fn test_get_module_tree_without_workspace_returns_400() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_query_graph_user_cypher_cannot_enumerate_other_workspace() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-cypher", GITHUB_URL).await;
 
@@ -620,7 +620,7 @@ async fn test_query_graph_user_cypher_cannot_enumerate_other_workspace() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "blocked on RUSA-181/RUSA-182/RUSA-199: workspace-scoped Neo4j isolation not yet implemented"]
 async fn test_concurrent_queries_no_cross_contamination() {
     let (ws_a, ws_b) = provision_two_ready_workspaces("neo4j-iso-conc", GITHUB_URL).await;
 

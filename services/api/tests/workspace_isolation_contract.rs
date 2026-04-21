@@ -90,7 +90,7 @@ fn client_with_workspace() -> Client {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_without_workspace_returns_400() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -118,7 +118,7 @@ async fn query_graph_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn get_module_tree_without_workspace_returns_400() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_module_tree"))
@@ -136,7 +136,7 @@ async fn get_module_tree_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn get_callers_without_workspace_returns_400() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_callers"))
@@ -154,7 +154,7 @@ async fn get_callers_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn get_trait_impls_without_workspace_returns_400() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/get_trait_impls"))
@@ -172,7 +172,7 @@ async fn get_trait_impls_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn find_usages_of_type_without_workspace_returns_400() {
     let resp = authenticated_client()
         .get(format!("{BASE}/tools/find_usages_of_type"))
@@ -190,7 +190,7 @@ async fn find_usages_of_type_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "server bug: returns HTTP 500 instead of 400 for missing X-Workspace-Id on search_semantic; fix server before enabling"]
 async fn search_semantic_without_workspace_returns_400() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
@@ -212,7 +212,7 @@ async fn search_semantic_without_workspace_returns_400() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_with_special_chars_workspace_returns_400() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -234,7 +234,7 @@ async fn query_graph_with_special_chars_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_with_empty_workspace_returns_400() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -260,7 +260,7 @@ async fn query_graph_with_empty_workspace_returns_400() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_create_cypher() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -289,7 +289,7 @@ async fn query_graph_rejects_create_cypher() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_delete_cypher() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -305,7 +305,7 @@ async fn query_graph_rejects_delete_cypher() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_merge_cypher() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -321,7 +321,7 @@ async fn query_graph_rejects_merge_cypher() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_set_cypher() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -337,7 +337,7 @@ async fn query_graph_rejects_set_cypher() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_remove_cypher() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -353,7 +353,7 @@ async fn query_graph_rejects_remove_cypher() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_apoc_cypher_run() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -369,7 +369,7 @@ async fn query_graph_rejects_apoc_cypher_run() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_apoc_create_node() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -385,7 +385,7 @@ async fn query_graph_rejects_apoc_create_node() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_apoc_do_when() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -401,7 +401,7 @@ async fn query_graph_rejects_apoc_do_when() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_detach_delete() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -417,7 +417,7 @@ async fn query_graph_rejects_detach_delete() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_apoc_periodic_iterate() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -433,7 +433,7 @@ async fn query_graph_rejects_apoc_periodic_iterate() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_apoc_periodic_commit() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -449,7 +449,7 @@ async fn query_graph_rejects_apoc_periodic_commit() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_rejects_apoc_refactor() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -469,7 +469,7 @@ async fn query_graph_rejects_apoc_refactor() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_strips_workspace_label_from_parameters() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -495,7 +495,7 @@ async fn query_graph_strips_workspace_label_from_parameters() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_strips_workspace_id_from_parameters() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -524,7 +524,7 @@ async fn query_graph_strips_workspace_id_from_parameters() {
 // =============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_accepts_readonly_match_return() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -544,7 +544,7 @@ async fn query_graph_accepts_readonly_match_return() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_accepts_template_query_with_workspace() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))
@@ -569,7 +569,7 @@ async fn query_graph_accepts_template_query_with_workspace() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn query_graph_accepts_apoc_path_expand() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/query_graph"))

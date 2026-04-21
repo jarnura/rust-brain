@@ -148,7 +148,7 @@ async fn list_events_after_seq(pool: &PgPool, execution_id: Uuid, after_seq: i64
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack with Postgres; run with: cargo test --test event_storage_integration -- --include-ignored"]
 async fn seq_monotonically_increasing_per_execution() {
     let pool = test_pool().await;
     let exec_id = create_test_execution(&pool).await;
@@ -179,7 +179,7 @@ async fn seq_monotonically_increasing_per_execution() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack with Postgres; run with: cargo test --test event_storage_integration -- --include-ignored"]
 async fn cursor_read_returns_exact_events_after_cursor() {
     let pool = test_pool().await;
     let exec_id = create_test_execution(&pool).await;
@@ -227,7 +227,7 @@ async fn cursor_read_returns_exact_events_after_cursor() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack with Postgres; run with: cargo test --test event_storage_integration -- --include-ignored"]
 async fn no_gaps_in_seq_numbers() {
     let pool = test_pool().await;
     let exec_id = create_test_execution(&pool).await;
@@ -257,7 +257,7 @@ async fn no_gaps_in_seq_numbers() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack with Postgres; run with: cargo test --test event_storage_integration -- --include-ignored"]
 async fn seq_is_per_execution_not_global() {
     let pool = test_pool().await;
     let exec_a = create_test_execution(&pool).await;
@@ -284,7 +284,7 @@ async fn seq_is_per_execution_not_global() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack with Postgres; run with: cargo test --test event_storage_integration -- --include-ignored"]
 async fn cursor_read_from_zero_returns_all_events() {
     let pool = test_pool().await;
     let exec_id = create_test_execution(&pool).await;
@@ -298,7 +298,7 @@ async fn cursor_read_from_zero_returns_all_events() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "integration test — needs live docker-compose stack with Postgres; run with: cargo test --test event_storage_integration -- --include-ignored"]
 async fn cursor_read_past_last_returns_empty() {
     let pool = test_pool().await;
     let exec_id = create_test_execution(&pool).await;
