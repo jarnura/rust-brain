@@ -332,6 +332,46 @@ docker compose exec neo4j cat /conf/neo4j.conf | grep memory
    docker compose up -d neo4j
    ```
 
+4. **Neo4j password drift (RUSA-314):**
+   `NEO4J_AUTH` is now derived from `NEO4J_USER`/`NEO4J_PASSWORD` in docker-compose.yml
+   to prevent the two variables from drifting out of sync. Do NOT set `NEO4J_AUTH` separately
+   in `.env` — the compose file constructs it as `${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD}`.
+   If the healthcheck fails with an auth error, verify `NEO4J_PASSWORD` matches the
+   password Neo4j was initialized with:
+   ```bash
+   # Test connection with current password
+    docker exec rustbrain-neo4j cypher-shell -u neo4j -p "$NEO4J_PASSWORD" "RETURN 1"
+    ```
+
+### 2.5. pgweb Unhealthy
+
+**Symptoms:**
+- `docker compose ps` shows `rustbrain-pgweb` as `unhealthy`
+- Pgweb itself works (HTTP 200 on `:8085`) but healthcheck keeps failing
+
+**Root cause:**
+The `sosedoff/pgweb` image does not include `wget`. The healthcheck was changed from
+`wget` to `curl -sf` (RUSA-314) since `curl` is available at `/usr/bin/curl`.
+
+**Diagnosis:**
+```bash
+# Check health detail
+docker inspect rustbrain-pgweb --format '{{json .State.Health}}' | python3 -m json.tool
+
+# If output shows "wget: not found", the container predates the healthcheck fix
+docker compose up -d --force-recreate pgweb
+```
+
+**Fix:**
+```bash
+# Recreate pgweb with the fixed healthcheck
+docker compose up -d pgweb
+
+# Verify after 30 seconds
+docker ps --filter name=rustbrain-pgweb --format "{{.Status}}"
+# Should show: Up X seconds (healthy)
+```
+
 ### 3. Ollama Out of Memory
 
 **Symptoms:**

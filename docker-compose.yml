@@ -47,7 +47,7 @@ services:
     environment:
       PGWEB_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8081/ || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -73,7 +73,9 @@ services:
       - ./configs/neo4j/neo4j.conf:/conf/neo4j.conf
       - ./scripts/init-neo4j.cypher:/var/lib/neo4j/import/init.cypher
     environment:
-      NEO4J_AUTH: ${NEO4J_AUTH}
+      # NEO4J_AUTH is derived from NEO4J_USER and NEO4J_PASSWORD to prevent password drift.
+      # Never set NEO4J_AUTH separately — always keep NEO4J_USER and NEO4J_PASSWORD in sync.
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD}
       NEO4J_PLUGINS: '["apoc"]'
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD} 'RETURN 1' || exit 1"]
