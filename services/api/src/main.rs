@@ -52,7 +52,7 @@ async fn validate_schema(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     let required = &[
         ("agent_events", "seq"),
         ("agent_events", "content_hash"),
-        ("executions", "runtime_info"),
+        ("executions", "volume_name"),
         ("workspaces", "id"),
     ];
     for (table, column) in required {
