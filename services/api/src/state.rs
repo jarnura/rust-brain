@@ -9,10 +9,22 @@ use crate::docker::DockerClient;
 use crate::metrics::WorkspaceGauges;
 use crate::opencode::OpenCodeClient;
 use crate::workspace::WorkspaceManager;
+use governor::clock::DefaultClock;
+use governor::middleware::StateInformationMiddleware;
+use governor::state::keyed::DefaultKeyedStateStore;
+use governor::RateLimiter;
 use neo4rs::Graph;
 use prometheus::Registry;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Per-key rate limiter type used by the auth middleware.
+///
+/// Keys are API key IDs (strings). The limiter enforces a per-minute quota
+/// with burst capacity, tracked via `governor::StateInformationMiddleware`
+/// so that `x-ratelimit-*` headers can be set on responses.
+pub type KeyRateLimiter =
+    RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock, StateInformationMiddleware>;
 
 /// Shared application state available to all Axum handlers.
 ///
@@ -38,6 +50,8 @@ pub struct AppState {
     pub docker: DockerClient,
     /// Process start time for uptime calculation
     pub start_time: Instant,
+    /// Per-key rate limiter keyed by API key ID
+    pub rate_limiter: Arc<KeyRateLimiter>,
 }
 
 /// Prometheus metrics for API request tracking.

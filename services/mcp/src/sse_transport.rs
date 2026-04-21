@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,14 +25,17 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio::sync::{mpsc, Mutex, RwLock, Semaphore};
+use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info, warn};
 
 use crate::client::OpenCodeClient;
 use crate::config::Config;
 use crate::server::McpServer;
+
+#[cfg(feature = "prometheus")]
+use prometheus::{IntCounter, Opts, Registry};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,6 +51,10 @@ const MAX_SSE_FRAME_SIZE: usize = 64 * 1024; // 64 KiB
 /// Maximum number of recent JSON-RPC request IDs tracked per session for
 /// duplicate detection.  Oldest entries are evicted when the window is full.
 const DEDUP_WINDOW_SIZE: usize = 256;
+
+/// Maximum number of concurrent SSE sessions.  New connections that would
+/// exceed this limit receive HTTP 503 Service Unavailable.
+const MAX_CONCURRENT_SESSIONS: usize = 1000;
 
 /// Time after which an inactive session is eligible for cleanup.
 const SESSION_TTL: Duration = Duration::from_secs(300);
@@ -121,6 +128,10 @@ impl EventBuffer {
     fn latest_seq(&self) -> u64 {
         self.events.last().map(|e| e.seq).unwrap_or(0)
     }
+
+    fn oldest_seq(&self) -> u64 {
+        self.events.first().map(|e| e.seq).unwrap_or(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,19 +143,33 @@ struct AppState {
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     config: Config,
     opencode_client: OpenCodeClient,
+    /// Semaphore limiting concurrent SSE sessions to [`MAX_CONCURRENT_SESSIONS`].
+    session_semaphore: Semaphore,
+    /// Global count of events dropped due to full channels across all sessions.
+    global_events_dropped: AtomicUsize,
+    /// Prometheus counter for dropped SSE events.
+    #[cfg(feature = "prometheus")]
+    sse_drops_counter: IntCounter,
+    /// Prometheus registry for metrics exposition.
+    /// Stored to keep registered counters alive; read indirectly via `sse_drops_counter`.
+    #[cfg(feature = "prometheus")]
+    #[allow(dead_code)]
+    metrics_registry: Registry,
 }
 
 /// Per-connection session — owns an MCP server instance, SSE sender, and event buffer.
 struct Session {
     server: Mutex<McpServer>,
     /// Sender wrapped in Mutex so it can be replaced on reconnect.
-    tx: Mutex<mpsc::UnboundedSender<Result<Event, Infallible>>>,
+    tx: Mutex<mpsc::Sender<Result<Event, Infallible>>>,
     /// Bounded event buffer for cursor-based backfill.
     event_buffer: Mutex<EventBuffer>,
     /// Recent JSON-RPC request IDs processed by this session, for dedup.
     recent_request_ids: Mutex<Vec<String>>,
     /// Timestamp of last activity, used for TTL cleanup.
     last_active: std::sync::Mutex<std::time::Instant>,
+    /// Count of events dropped because the SSE channel was full.
+    events_dropped: AtomicU64,
 }
 
 impl Session {
@@ -197,10 +222,26 @@ pub async fn run_sse_server(config: Config) -> anyhow::Result<()> {
     let port = config.port;
     let opencode_client = OpenCodeClient::new(&config)?;
 
+    #[cfg(feature = "prometheus")]
+    let metrics_registry = Registry::new();
+    #[cfg(feature = "prometheus")]
+    let sse_drops_counter = IntCounter::with_opts(Opts::new(
+        "rustbrain_mcp_sse_drops_total",
+        "Total number of SSE events dropped due to full channel",
+    ))?;
+    #[cfg(feature = "prometheus")]
+    metrics_registry.register(Box::new(sse_drops_counter.clone()))?;
+
     let state = Arc::new(AppState {
         sessions: RwLock::new(HashMap::new()),
         config,
         opencode_client,
+        session_semaphore: Semaphore::new(MAX_CONCURRENT_SESSIONS),
+        global_events_dropped: AtomicUsize::new(0),
+        #[cfg(feature = "prometheus")]
+        sse_drops_counter,
+        #[cfg(feature = "prometheus")]
+        metrics_registry,
     });
 
     let cleanup_state = state.clone();
@@ -255,6 +296,7 @@ async fn cleanup_stale_sessions(state: &Arc<AppState>) {
         for id in &to_remove {
             sessions.remove(id);
         }
+        state.session_semaphore.add_permits(to_remove.len());
         info!("Cleaned up {} stale session(s)", to_remove.len());
     }
 }
@@ -341,7 +383,8 @@ async fn sse_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SseQuery>,
     headers: HeaderMap,
-) -> Sse<UnboundedReceiverStream<Result<Event, Infallible>>> {
+) -> Result<Sse<ReceiverStream<Result<Event, Infallible>>>, (axum::http::StatusCode, &'static str)>
+{
     let cursor_from_header = headers
         .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
@@ -356,7 +399,7 @@ async fn sse_handler(
         };
 
         if let Some(session) = session {
-            return reconnect_session(session, session_id.clone(), cursor, &state).await;
+            return Ok(reconnect_session(session, session_id.clone(), cursor, &state).await);
         }
 
         warn!(
@@ -365,15 +408,22 @@ async fn sse_handler(
         );
     }
 
-    new_session(&state).await
+    let permit = state.session_semaphore.try_acquire().map_err(|_| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Too many concurrent SSE connections",
+        )
+    })?;
+    permit.forget();
+
+    Ok(new_session(&state).await)
 }
 
 /// Create a brand-new SSE session.
-async fn new_session(
-    state: &Arc<AppState>,
-) -> Sse<UnboundedReceiverStream<Result<Event, Infallible>>> {
+async fn new_session(state: &Arc<AppState>) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
     let session_id = generate_session_id();
-    let (tx, rx) = mpsc::unbounded_channel();
+    let channel_capacity = state.config.sse_channel_capacity;
+    let (tx, rx) = mpsc::channel(channel_capacity);
 
     let server =
         McpServer::new(state.config.clone()).expect("Failed to create MCP server for session");
@@ -384,6 +434,7 @@ async fn new_session(
         event_buffer: Mutex::new(EventBuffer::new(EVENT_BUFFER_CAPACITY)),
         recent_request_ids: Mutex::new(Vec::with_capacity(DEDUP_WINDOW_SIZE)),
         last_active: std::sync::Mutex::new(std::time::Instant::now()),
+        events_dropped: AtomicU64::new(0),
     });
 
     state
@@ -401,12 +452,14 @@ async fn new_session(
             format!("/message?sessionId={session_id}"),
         )
     };
-    let _ = tx.send(Ok(Event::default()
-        .id(seq.to_string())
-        .event("endpoint")
-        .data(format!("/message?sessionId={session_id}"))));
+    let _ = tx
+        .send(Ok(Event::default()
+            .id(seq.to_string())
+            .event("endpoint")
+            .data(format!("/message?sessionId={session_id}"))))
+        .await;
 
-    let stream = UnboundedReceiverStream::new(rx);
+    let stream = ReceiverStream::new(rx);
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -420,14 +473,14 @@ async fn reconnect_session(
     session_id: String,
     cursor: Option<u64>,
     _state: &Arc<AppState>,
-) -> Sse<UnboundedReceiverStream<Result<Event, Infallible>>> {
+) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
     session.touch();
     info!(
         "SSE reconnect for session {}, cursor={:?}",
         session_id, cursor
     );
 
-    let (new_tx, new_rx) = mpsc::unbounded_channel();
+    let (new_tx, new_rx) = mpsc::channel(_state.config.sse_channel_capacity);
 
     {
         let mut tx = session.tx.lock().await;
@@ -435,10 +488,27 @@ async fn reconnect_session(
     }
 
     if let Some(after_seq) = cursor {
-        let buffered = {
+        let (buffered, oldest) = {
             let buf = session.event_buffer.lock().await;
-            buf.events_after(after_seq)
+            (buf.events_after(after_seq), buf.oldest_seq())
         };
+
+        if oldest > 0 && after_seq + 1 < oldest {
+            let gap_start = after_seq + 1;
+            let gap_end = oldest - 1;
+            warn!(
+                "Gap detected for session {}: events [{}..{}] evicted from buffer",
+                session_id, gap_start, gap_end
+            );
+            let gap_data = serde_json::json!({
+                "gap_start": gap_start,
+                "gap_end": gap_end,
+                "count": gap_end - gap_start + 1,
+            });
+            let _ = new_tx
+                .send(Ok(Event::default().event("gap").data(gap_data.to_string())))
+                .await;
+        }
 
         if !buffered.is_empty() {
             info!(
@@ -448,15 +518,17 @@ async fn reconnect_session(
                 after_seq
             );
             for ev in &buffered {
-                let _ = new_tx.send(Ok(Event::default()
-                    .id(ev.seq.to_string())
-                    .event(&ev.event_type)
-                    .data(&ev.data)));
+                let _ = new_tx
+                    .send(Ok(Event::default()
+                        .id(ev.seq.to_string())
+                        .event(&ev.event_type)
+                        .data(&ev.data)))
+                    .await;
             }
         }
     }
 
-    let stream = UnboundedReceiverStream::new(new_rx);
+    let stream = ReceiverStream::new(new_rx);
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -552,16 +624,32 @@ async fn message_handler(
 
     let send_result = {
         let tx = session.tx.lock().await;
-        tx.send(Ok(Event::default()
+        tx.try_send(Ok(Event::default()
             .id(seq.to_string())
             .event("message")
             .data(response_json)))
     };
 
-    if send_result.is_err() {
-        info!("Session {} disconnected, cleaning up", session_id);
-        state.sessions.write().await.remove(session_id);
-        return axum::http::StatusCode::GONE;
+    match send_result {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            session.events_dropped.fetch_add(1, Ordering::Relaxed);
+            state.global_events_dropped.fetch_add(1, Ordering::Relaxed);
+            #[cfg(feature = "prometheus")]
+            state.sse_drops_counter.inc();
+            warn!(
+                "SSE channel full for session {}, dropping event (session_dropped: {}, global_dropped: {})",
+                session_id,
+                session.events_dropped.load(Ordering::Relaxed),
+                state.global_events_dropped.load(Ordering::Relaxed)
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            info!("Session {} disconnected, cleaning up", session_id);
+            state.sessions.write().await.remove(session_id);
+            state.session_semaphore.add_permits(1);
+            return axum::http::StatusCode::GONE;
+        }
     }
 
     axum::http::StatusCode::ACCEPTED
@@ -571,11 +659,28 @@ async fn message_handler(
 async fn health_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let opencode_healthy = state.opencode_client.health_check().await.unwrap_or(false);
 
+    let active_sessions = state.sessions.read().await.len();
+    let available_permits = state.session_semaphore.available_permits();
+    let global_dropped = state.global_events_dropped.load(Ordering::Relaxed);
+
+    let mut sse_json = serde_json::json!({
+        "active_sessions": active_sessions,
+        "available_connections": available_permits,
+        "max_connections": MAX_CONCURRENT_SESSIONS,
+        "global_events_dropped": global_dropped,
+    });
+
+    #[cfg(feature = "prometheus")]
+    {
+        sse_json["prometheus_drops_total"] = state.sse_drops_counter.get().into();
+    }
+
     Json(serde_json::json!({
         "status": "ok",
         "opencode": {
             "healthy": opencode_healthy
-        }
+        },
+        "sse": sse_json,
     }))
 }
 
@@ -718,7 +823,7 @@ mod tests {
         let mut buf = EventBuffer::new(100);
         buf.push("test".to_string(), "data".to_string());
 
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(256);
         let session = Session {
             server: Mutex::new(
                 McpServer::new(Config::default()).expect("Failed to create MCP server"),
@@ -729,20 +834,16 @@ mod tests {
             last_active: std::sync::Mutex::new(
                 std::time::Instant::now() - Duration::from_secs(100),
             ),
+            events_dropped: AtomicU64::new(0),
         };
 
-        // Before touch, last_active should be old
-        {
-            let instant = session.last_active.lock().unwrap();
-            assert!(instant.elapsed() > Duration::from_secs(50));
-        }
+        let elapsed_before = session.last_active.lock().unwrap().elapsed();
+        assert!(elapsed_before > Duration::from_secs(50));
 
         session.touch();
 
-        {
-            let instant = session.last_active.lock().unwrap();
-            assert!(instant.elapsed() < Duration::from_secs(5));
-        }
+        let elapsed_after = session.last_active.lock().unwrap().elapsed();
+        assert!(elapsed_after < Duration::from_secs(5));
     }
 
     #[test]
@@ -750,7 +851,7 @@ mod tests {
         let mut buf = EventBuffer::new(100);
         buf.push("test".to_string(), "data".to_string());
 
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(256);
         let session = Arc::new(Session {
             server: Mutex::new(
                 McpServer::new(Config::default()).expect("Failed to create MCP server"),
@@ -761,6 +862,7 @@ mod tests {
             last_active: std::sync::Mutex::new(
                 std::time::Instant::now() - Duration::from_secs(600),
             ),
+            events_dropped: AtomicU64::new(0),
         });
 
         let now = std::time::Instant::now();
@@ -918,5 +1020,131 @@ mod tests {
         let json = "x".repeat(MAX_SSE_FRAME_SIZE + 1);
         let result = enforce_frame_limit(json, &None);
         assert!(result.contains("_truncated"));
+    }
+
+    // === Backpressure Tests ===
+
+    #[test]
+    fn event_buffer_oldest_seq_empty() {
+        let buf = EventBuffer::new(100);
+        assert_eq!(buf.oldest_seq(), 0);
+    }
+
+    #[test]
+    fn event_buffer_oldest_seq_after_push() {
+        let mut buf = EventBuffer::new(100);
+        buf.push("a".to_string(), "1".to_string());
+        buf.push("b".to_string(), "2".to_string());
+        assert_eq!(buf.oldest_seq(), 1);
+    }
+
+    #[test]
+    fn event_buffer_oldest_seq_after_eviction() {
+        let mut buf = EventBuffer::new(2);
+        buf.push("a".to_string(), "1".to_string());
+        buf.push("b".to_string(), "2".to_string());
+        buf.push("c".to_string(), "3".to_string());
+        assert_eq!(buf.oldest_seq(), 2);
+    }
+
+    #[test]
+    fn bounded_channel_try_send_drops_on_full() {
+        let (tx, rx) = mpsc::channel::<i32>(2);
+        assert!(tx.try_send(1).is_ok());
+        assert!(tx.try_send(2).is_ok());
+        assert!(matches!(
+            tx.try_send(3),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+        drop(rx);
+    }
+
+    #[test]
+    fn session_events_dropped_counter_increments() {
+        let (tx, _rx) = mpsc::channel(256);
+        let session = Session {
+            server: Mutex::new(
+                McpServer::new(Config::default()).expect("Failed to create MCP server"),
+            ),
+            tx: Mutex::new(tx),
+            event_buffer: Mutex::new(EventBuffer::new(EVENT_BUFFER_CAPACITY)),
+            recent_request_ids: Mutex::new(Vec::new()),
+            last_active: std::sync::Mutex::new(std::time::Instant::now()),
+            events_dropped: AtomicU64::new(0),
+        };
+
+        assert_eq!(session.events_dropped.load(Ordering::Relaxed), 0);
+        session.events_dropped.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(session.events_dropped.load(Ordering::Relaxed), 1);
+        session.events_dropped.fetch_add(5, Ordering::Relaxed);
+        assert_eq!(session.events_dropped.load(Ordering::Relaxed), 6);
+    }
+
+    #[tokio::test]
+    async fn bounded_channel_try_send_detects_closed() {
+        let (tx, rx) = mpsc::channel::<i32>(2);
+        drop(rx);
+        assert!(matches!(
+            tx.try_send(1),
+            Err(mpsc::error::TrySendError::Closed(_))
+        ));
+    }
+
+    #[test]
+    fn gap_detection_when_cursor_below_oldest() {
+        let mut buf = EventBuffer::new(3);
+        buf.push("a".to_string(), "1".to_string());
+        buf.push("b".to_string(), "2".to_string());
+        buf.push("c".to_string(), "3".to_string());
+        buf.push("d".to_string(), "4".to_string());
+        let oldest = buf.oldest_seq();
+        assert_eq!(oldest, 2);
+        let after_cursor = buf.events_after(0);
+        assert_eq!(after_cursor.len(), 3);
+        assert_eq!(after_cursor[0].seq, 2);
+        let gap_start = 1;
+        let gap_end = oldest - 1;
+        assert_eq!(gap_start, 1);
+        assert_eq!(gap_end, 1);
+        assert_eq!(gap_end - gap_start + 1, 1);
+    }
+
+    #[test]
+    fn gap_detection_no_gap_when_cursor_in_range() {
+        let mut buf = EventBuffer::new(100);
+        buf.push("a".to_string(), "1".to_string());
+        buf.push("b".to_string(), "2".to_string());
+        buf.push("c".to_string(), "3".to_string());
+        let oldest = buf.oldest_seq();
+        assert_eq!(oldest, 1);
+        let after_cursor = buf.events_after(1);
+        assert_eq!(after_cursor.len(), 2);
+        let after_seq = 1;
+        assert!(oldest == 0 || after_seq + 1 >= oldest);
+    }
+
+    #[test]
+    fn semaphore_connection_limit() {
+        let sem = Semaphore::new(2);
+        let p1 = sem.try_acquire().unwrap();
+        let p2 = sem.try_acquire().unwrap();
+        assert!(sem.try_acquire().is_err());
+        drop(p1);
+        assert!(sem.try_acquire().is_ok());
+        drop(p2);
+    }
+
+    #[test]
+    fn semaphore_permit_forget_does_not_release() {
+        let sem = Semaphore::new(2);
+        let p1 = sem.try_acquire().unwrap();
+        p1.forget();
+        assert_eq!(sem.available_permits(), 1);
+        let p2 = sem.try_acquire().unwrap();
+        assert!(sem.try_acquire().is_err());
+        drop(p2);
+        assert_eq!(sem.available_permits(), 1);
+        sem.add_permits(1);
+        assert_eq!(sem.available_permits(), 2);
     }
 }

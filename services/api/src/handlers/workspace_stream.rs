@@ -18,6 +18,8 @@ use axum::{
     },
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -27,6 +29,8 @@ use crate::state::AppState;
 use crate::workspace::get_workspace as db_get_workspace;
 
 const SSE_MAX_FRAME_BYTES: usize = 64 * 1024;
+const SSE_CHANNEL_CAPACITY: usize = 256;
+const SSE_WRITE_TIMEOUT_SECS: u64 = 5;
 
 fn truncate_sse_event(data: &str, event_seq: i64) -> String {
     if data.len() <= SSE_MAX_FRAME_BYTES {
@@ -144,9 +148,12 @@ pub async fn stream_workspace(
             .unwrap_or(0)
     });
 
-    let event_stream = async_stream::stream! {
+    let (tx, rx) = mpsc::channel(SSE_CHANNEL_CAPACITY);
+
+    tokio::spawn(async move {
         let mut last_seq: i64 = initial_seq;
         let mut interval = tokio::time::interval(Duration::from_millis(500));
+        let write_timeout = Duration::from_secs(SSE_WRITE_TIMEOUT_SECS);
 
         loop {
             interval.tick().await;
@@ -159,12 +166,26 @@ pub async fn stream_workspace(
                         match serde_json::to_string(&payload) {
                             Ok(data) => {
                                 let truncated_data = truncate_sse_event(&data, last_seq);
-                                yield Ok::<Event, Infallible>(
+                                let sse_event = Ok::<Event, Infallible>(
                                     Event::default()
                                         .id(last_seq.to_string())
                                         .event("agent_event")
-                                        .data(truncated_data)
+                                        .data(truncated_data),
                                 );
+
+                                match tokio::time::timeout(write_timeout, tx.send(sse_event)).await
+                                {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(_)) => return,
+                                    Err(_) => {
+                                        warn!(
+                                            execution_id = %exec_id,
+                                            "SSE write timeout ({}s) for execution {}, closing stream",
+                                            SSE_WRITE_TIMEOUT_SECS, exec_id
+                                        );
+                                        return;
+                                    }
+                                }
                             }
                             Err(e) => {
                                 warn!(execution_id = %exec_id, error = %e, "Failed to serialize agent event");
@@ -184,11 +205,8 @@ pub async fn stream_workspace(
                         "execution_id": exec_id,
                         "status": ex.status,
                     });
-                    yield Ok(
-                        Event::default()
-                            .event("done")
-                            .data(done_data.to_string())
-                    );
+                    let done_event = Ok(Event::default().event("done").data(done_data.to_string()));
+                    let _ = tokio::time::timeout(write_timeout, tx.send(done_event)).await;
                     break;
                 }
                 Ok(None) => {
@@ -197,9 +215,9 @@ pub async fn stream_workspace(
                 _ => {}
             }
         }
-    };
+    });
 
-    Ok(Sse::new(event_stream).keep_alive(
+    Ok(Sse::new(ReceiverStream::new(rx)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keepalive"),

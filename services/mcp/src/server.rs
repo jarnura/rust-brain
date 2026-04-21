@@ -452,6 +452,9 @@ mod tests {
             opencode_auth_user: None,
             opencode_auth_pass: None,
             workspace_id: None,
+            internal_api_key: None,
+            #[cfg(feature = "sse")]
+            sse_channel_capacity: 256,
         }
     }
 

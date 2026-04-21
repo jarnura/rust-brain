@@ -29,6 +29,7 @@
 //! | `--opencode-host` | `http://opencode:4096` | `OPENCODE_HOST` |
 //! | `--opencode-auth-user` | — | `OPENCODE_AUTH_USER` |
 //! | `--opencode-auth-pass` | — | `OPENCODE_AUTH_PASS` |
+//! | `--sse-channel-capacity` *(sse feature)* | `256` | `MCP_SSE_CHANNEL_CAPACITY` |
 
 use clap::Parser;
 use tracing::{debug, info};
@@ -102,6 +103,17 @@ pub struct Config {
     /// Workspace ID for workspace-scoped API endpoints
     #[arg(long, env = "WORKSPACE_ID")]
     pub workspace_id: Option<String>,
+
+    /// Internal API key for authenticating with the rust-brain API.
+    /// Must match a key in the `api_keys` table with `admin` tier.
+    #[arg(long, env = "RUSTBRAIN_INTERNAL_API_KEY")]
+    pub internal_api_key: Option<String>,
+
+    /// SSE channel capacity per session (bounded mpsc channel size).
+    /// When full, new events are dropped and the drop counter is incremented.
+    #[cfg(feature = "sse")]
+    #[arg(long, env = "MCP_SSE_CHANNEL_CAPACITY", default_value = "256")]
+    pub sse_channel_capacity: usize,
 }
 
 impl Default for Config {
@@ -118,6 +130,9 @@ impl Default for Config {
             opencode_auth_user: None,
             opencode_auth_pass: None,
             workspace_id: None,
+            internal_api_key: None,
+            #[cfg(feature = "sse")]
+            sse_channel_capacity: 256,
         }
     }
 }
@@ -180,6 +195,8 @@ mod tests {
         assert_eq!(config.max_search_results, 50);
         assert_eq!(config.default_search_limit, 10);
         assert_eq!(config.workspace_id, None);
+        #[cfg(feature = "sse")]
+        assert_eq!(config.sse_channel_capacity, 256);
     }
 
     #[test]

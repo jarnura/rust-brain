@@ -33,6 +33,7 @@ tokio-stream = "0.1"
 # SSE support
 axum = { version = "0.7", features = ["json"], optional = true }
 tower-http = { version = "0.5", features = ["cors"], optional = true }
+prometheus = { version = "0.13", optional = true }
 
 # URL encoding
 url = "2.5"
@@ -40,7 +41,7 @@ url = "2.5"
 [features]
 default = ["stdio"]
 stdio = []
-sse = ["axum", "tower-http", "tokio-stream/sync"]
+sse = ["axum", "tower-http", "tokio-stream/sync", "prometheus"]
 
 [dev-dependencies]
 # HTTP mocking for tests

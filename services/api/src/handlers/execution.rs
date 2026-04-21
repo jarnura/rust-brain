@@ -132,8 +132,12 @@ pub async fn execute_workspace(
         ready_timeout_secs: state.config.opencode_ready_timeout_secs,
         opencode_config_host_path: state.config.opencode_config_host_path.clone(),
         mcp_sse_url: Some(state.config.mcp_sse_url.clone()),
-        litellm_api_key: std::env::var("LITELLM_API_KEY").ok().filter(|s| !s.is_empty()),
-        openai_api_key: std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty()),
+        litellm_api_key: std::env::var("LITELLM_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        openai_api_key: std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
         opencode_server_password: std::env::var("OPENCODE_SERVER_PASSWORD")
             .ok()
             .filter(|s| !s.is_empty()),

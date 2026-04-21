@@ -23,6 +23,7 @@ pub mod graph_templates;
 pub mod health;
 pub mod ingestion;
 pub mod items;
+pub mod keys;
 pub mod pg_query;
 pub mod playground;
 pub mod search;

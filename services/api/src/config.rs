@@ -123,6 +123,21 @@ pub struct Config {
     /// Defaults to `http://mcp-sse:3001/sse` (Docker-network reachable).
     /// Override via `MCP_SSE_URL`.
     pub mcp_sse_url: String,
+    /// Disable API key authentication entirely for local development.
+    ///
+    /// When `true`, all requests bypass auth and receive a synthetic admin context.
+    /// Override via `RUSTBRAIN_AUTH_DISABLED`. Defaults to `false`.
+    pub auth_disabled: bool,
+    /// Internal API key used by the MCP service to authenticate with the API.
+    ///
+    /// Must match a key in the `api_keys` table with `admin` tier.
+    /// Override via `RUSTBRAIN_INTERNAL_API_KEY`.
+    pub internal_api_key: Option<String>,
+    /// Bootstrap admin API key created on first startup if no keys exist.
+    ///
+    /// The value itself becomes the key (prefixed with `rb_live_` if not already).
+    /// Override via `RUSTBRAIN_BOOTSTRAP_KEY`.
+    pub bootstrap_key: Option<String>,
 }
 
 impl Config {
@@ -153,6 +168,9 @@ impl Config {
     /// | `OPENCODE_READY_TIMEOUT_SECS` | no | `60` |
     /// | `OPENCODE_CONFIG_HOST_PATH` | no | _(none)_ |
     /// | `MCP_SSE_URL` | no | `http://mcp-sse:3001/sse` |
+    /// | `RUSTBRAIN_AUTH_DISABLED` | no | `false` |
+    /// | `RUSTBRAIN_INTERNAL_API_KEY` | no | _(none)_ |
+    /// | `RUSTBRAIN_BOOTSTRAP_KEY` | no | _(none)_ |
     ///
     /// # Panics
     ///
@@ -212,6 +230,15 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             mcp_sse_url: std::env::var("MCP_SSE_URL")
                 .unwrap_or_else(|_| "http://mcp-sse:3001/sse".to_string()),
+            auth_disabled: std::env::var("RUSTBRAIN_AUTH_DISABLED")
+                .map(|s| s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+            internal_api_key: std::env::var("RUSTBRAIN_INTERNAL_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            bootstrap_key: std::env::var("RUSTBRAIN_BOOTSTRAP_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
@@ -248,11 +275,17 @@ mod tests {
             opencode_ready_timeout_secs: 60,
             opencode_config_host_path: Some("/opt/rustbrain/configs/opencode".to_string()),
             mcp_sse_url: "http://mcp-sse:3001/sse".to_string(),
+            auth_disabled: false,
+            internal_api_key: None,
+            bootstrap_key: None,
         };
 
         assert_eq!(config.embedding_dimensions, 768);
         assert_eq!(config.port, 8080);
         assert_eq!(config.embedding_model, "nomic-embed-text");
+        assert!(!config.auth_disabled);
+        assert!(config.internal_api_key.is_none());
+        assert!(config.bootstrap_key.is_none());
         assert_eq!(
             config.opencode_config_host_path.as_deref(),
             Some("/opt/rustbrain/configs/opencode")

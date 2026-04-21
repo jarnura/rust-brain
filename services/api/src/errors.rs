@@ -63,6 +63,10 @@ pub enum AppError {
     Internal(String),
     /// Operation conflicts with existing resource state (HTTP 409)
     Conflict(String),
+    /// Authentication failed — missing or invalid API key (HTTP 401)
+    Unauthorized(String),
+    /// Rate limit exceeded (HTTP 429)
+    RateLimited { retry_after_secs: u64 },
 }
 
 impl fmt::Display for AppError {
@@ -77,6 +81,10 @@ impl fmt::Display for AppError {
             AppError::BadRequest(msg) => write!(f, "Bad request: {}", msg),
             AppError::Internal(msg) => write!(f, "Internal error: {}", msg),
             AppError::Conflict(msg) => write!(f, "Conflict: {}", msg),
+            AppError::Unauthorized(msg) => write!(f, "Unauthorized: {}", msg),
+            AppError::RateLimited { retry_after_secs } => {
+                write!(f, "Rate limited: retry after {}s", retry_after_secs)
+            }
         }
     }
 }
@@ -95,6 +103,15 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, "BAD_REQUEST"),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, "INTERNAL_ERROR"),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg, "CONFLICT"),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg, "UNAUTHORIZED"),
+            AppError::RateLimited { retry_after_secs } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Rate limit exceeded. Retry after {} seconds.",
+                    retry_after_secs
+                ),
+                "RATE_LIMITED",
+            ),
         };
 
         let body = Json(ApiError {
@@ -144,6 +161,17 @@ mod tests {
             AppError::Conflict("duplicate".to_string()).to_string(),
             "Conflict: duplicate"
         );
+        assert_eq!(
+            AppError::Unauthorized("bad key".to_string()).to_string(),
+            "Unauthorized: bad key"
+        );
+        assert_eq!(
+            AppError::RateLimited {
+                retry_after_secs: 30
+            }
+            .to_string(),
+            "Rate limited: retry after 30s"
+        );
     }
 
     #[test]
@@ -172,6 +200,16 @@ mod tests {
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
             (AppError::Conflict("err".into()), StatusCode::CONFLICT),
+            (
+                AppError::Unauthorized("err".into()),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                AppError::RateLimited {
+                    retry_after_secs: 60,
+                },
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
             (AppError::NotFound("err".into()), StatusCode::NOT_FOUND),
             (AppError::BadRequest("err".into()), StatusCode::BAD_REQUEST),
         ];

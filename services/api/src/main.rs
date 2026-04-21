@@ -20,15 +20,18 @@ pub mod workspace;
 use axum::{
     extract::DefaultBodyLimit,
     response::Redirect,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
+use governor::middleware::StateInformationMiddleware;
+use governor::{Quota, RateLimiter};
 use neo4rs::Graph;
 use rustbrain_common::logging::init_logging_with_directives;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::sync::Arc;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -37,12 +40,9 @@ use tracing::{info, Level};
 /// Body size limit for query/write endpoints: 1 MiB.
 const QUERY_BODY_LIMIT: usize = 1024 * 1024;
 
-/// Rate limit burst size for embedding endpoints (requests per second per IP).
-const EMBEDDING_RATE_PER_SEC: u64 = 10;
-
 use config::{redact_url, Config};
 use docker::DockerClient;
-use state::{AppState, Metrics};
+use state::{AppState, KeyRateLimiter, Metrics};
 
 /// Validates that all critical schema columns exist in Postgres.
 ///
@@ -113,6 +113,26 @@ async fn main() -> anyhow::Result<()> {
 
     validate_schema(&pg_pool).await?;
 
+    // Bootstrap admin API key if RUSTBRAIN_BOOTSTRAP_KEY is set and no keys exist
+    if let Some(ref bootstrap_key) = config.bootstrap_key {
+        let key_hash = middleware::auth::hash_key(bootstrap_key);
+        let existing: Option<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM api_keys WHERE key_hash = $1")
+                .bind(&key_hash)
+                .fetch_optional(&pg_pool)
+                .await?;
+        if existing.is_none() {
+            sqlx::query(
+                "INSERT INTO api_keys (key_hash, name, tier, rate_limit_per_minute) \
+                 VALUES ($1, 'bootstrap-admin', 'admin', 120)",
+            )
+            .bind(&key_hash)
+            .execute(&pg_pool)
+            .await?;
+            info!("Bootstrapped admin API key");
+        }
+    }
+
     // Connect to Neo4j via Bolt protocol
     info!("Connecting to Neo4j: {}", redact_url(&config.neo4j_uri));
     let neo4j_graph = Graph::new(
@@ -125,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create HTTP client (for Qdrant/Ollama)
     let http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(Duration::from_secs(30))
         .build()?;
 
     // Create metrics
@@ -145,6 +165,16 @@ async fn main() -> anyhow::Result<()> {
 
     let start_time = std::time::Instant::now();
 
+    // Create per-key rate limiter: 120 req/min burst cap per API key
+    let rate_limiter: Arc<KeyRateLimiter> = Arc::new(
+        RateLimiter::keyed(
+            Quota::with_period(Duration::from_secs(60))
+                .unwrap()
+                .allow_burst(NonZeroU32::new(120).unwrap()),
+        )
+        .with_middleware::<StateInformationMiddleware>(),
+    );
+
     let state = AppState {
         config: config.clone(),
         pg_pool,
@@ -155,41 +185,18 @@ async fn main() -> anyhow::Result<()> {
         workspace_manager: workspace_manager.clone(),
         docker: docker.clone(),
         start_time,
+        rate_limiter,
     };
 
     // Start timeout sweeper for stale execution containers
     execution::start_sweeper(
         workspace_manager.pool.clone(),
         docker,
-        std::time::Duration::from_secs(30),
+        Duration::from_secs(30),
     );
 
     // Start workspace gauge collector (periodic per-workspace resource metrics)
     metrics::start_workspace_gauge_collector(state.clone());
-
-    // Rate limiter: 10 req/s per IP, burst of 10 for embedding endpoints
-    let embedding_governor_config = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(EMBEDDING_RATE_PER_SEC)
-            .burst_size(EMBEDDING_RATE_PER_SEC as u32)
-            .finish()
-            .expect("valid governor config"),
-    );
-
-    // Embedding routes with per-IP rate limiting
-    let embedding_routes = Router::new()
-        .route(
-            "/tools/search_semantic",
-            post(handlers::search::search_semantic),
-        )
-        .route(
-            "/tools/aggregate_search",
-            post(handlers::search::aggregate_search),
-        )
-        .route("/tools/search_docs", post(handlers::search::search_docs))
-        .layer(GovernorLayer {
-            config: embedding_governor_config,
-        });
 
     // Build router
     let app = Router::new()
@@ -204,9 +211,16 @@ async fn main() -> anyhow::Result<()> {
             "/playground/",
             ServeDir::new("static").append_index_html_on_directories(true),
         )
-        // Embedding endpoints (rate-limited)
-        .merge(embedding_routes)
         // Code intelligence tools
+        .route(
+            "/tools/search_semantic",
+            post(handlers::search::search_semantic),
+        )
+        .route(
+            "/tools/aggregate_search",
+            post(handlers::search::aggregate_search),
+        )
+        .route("/tools/search_docs", post(handlers::search::search_docs))
         .route("/tools/chat", post(handlers::chat::chat_handler))
         .route(
             "/tools/chat/stream",
@@ -239,6 +253,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/query_graph", post(handlers::graph::query_graph))
         // Read-only SQL query
         .route("/tools/pg_query", post(handlers::pg_query::pg_query))
+        // API key management (admin only)
+        .route(
+            "/api/keys",
+            post(handlers::keys::create_key).get(handlers::keys::list_keys),
+        )
+        .route(
+            "/api/keys/:id",
+            delete(handlers::keys::revoke_key).patch(handlers::keys::update_key),
+        )
         // Artifacts CRUD
         .route(
             "/api/artifacts",
@@ -361,6 +384,10 @@ async fn main() -> anyhow::Result<()> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::auth_middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::workspace_metrics,

@@ -12,6 +12,7 @@ use tracing::{debug, info, instrument, warn};
 pub struct ApiClient {
     client: Client,
     base_url: String,
+    internal_api_key: Option<String>,
 }
 
 impl ApiClient {
@@ -31,7 +32,17 @@ impl ApiClient {
         Ok(Self {
             client,
             base_url: config.api_base_url.clone(),
+            internal_api_key: config.internal_api_key.clone(),
         })
+    }
+
+    /// Add Bearer authentication header if internal API key is configured.
+    fn with_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(ref key) = self.internal_api_key {
+            request.bearer_auth(key)
+        } else {
+            request
+        }
     }
 
     /// Make a GET request to the API
@@ -40,7 +51,11 @@ impl ApiClient {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         debug!("GET {}", url);
 
-        let response = self.client.get(&url).send().await.map_err(McpError::Http)?;
+        let response = self
+            .with_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(McpError::Http)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -62,9 +77,7 @@ impl ApiClient {
         debug!("POST {} {:?}", url, body);
 
         let response = self
-            .client
-            .post(&url)
-            .json(body)
+            .with_auth(self.client.post(&url).json(body))
             .send()
             .await
             .map_err(McpError::Http)?;
@@ -89,9 +102,7 @@ impl ApiClient {
         debug!("PUT {} {:?}", url, body);
 
         let response = self
-            .client
-            .put(&url)
-            .json(body)
+            .with_auth(self.client.put(&url).json(body))
             .send()
             .await
             .map_err(McpError::Http)?;
@@ -120,8 +131,11 @@ impl ApiClient {
         if let Some(ws_id) = workspace_id {
             request = request.header("X-Workspace-Id", ws_id);
         }
-
-        let response = request.send().await.map_err(McpError::Http)?;
+        let response = self
+            .with_auth(request)
+            .send()
+            .await
+            .map_err(McpError::Http)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -147,8 +161,11 @@ impl ApiClient {
         if let Some(ws_id) = workspace_id {
             request = request.header("X-Workspace-Id", ws_id);
         }
-
-        let response = request.send().await.map_err(McpError::Http)?;
+        let response = self
+            .with_auth(request)
+            .send()
+            .await
+            .map_err(McpError::Http)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -235,6 +252,7 @@ impl OpenCodeClient {
     }
 
     /// Check if OpenCode is healthy
+    #[cfg(feature = "sse")]
     #[instrument(skip(self))]
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/health", self.host.trim_end_matches('/'));
@@ -276,6 +294,9 @@ mod tests {
             opencode_auth_user: None,
             opencode_auth_pass: None,
             workspace_id: None,
+            internal_api_key: None,
+            #[cfg(feature = "sse")]
+            sse_channel_capacity: 256,
         }
     }
 
@@ -499,5 +520,23 @@ mod tests {
         let result = client.get::<serde_json::Value>("/test").await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), McpError::Http(_)));
+    }
+
+    #[test]
+    fn test_client_stores_internal_api_key() {
+        let mut config = test_config("http://localhost:8088");
+        config.internal_api_key = Some("rb_live_test_key_1234".to_string());
+        let client = ApiClient::new(&config).unwrap();
+        assert_eq!(
+            client.internal_api_key.as_deref(),
+            Some("rb_live_test_key_1234")
+        );
+    }
+
+    #[test]
+    fn test_client_no_internal_api_key() {
+        let config = test_config("http://localhost:8088");
+        let client = ApiClient::new(&config).unwrap();
+        assert!(client.internal_api_key.is_none());
     }
 }
