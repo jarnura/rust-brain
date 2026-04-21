@@ -113,7 +113,7 @@ fn is_public_route(path: &str, method: &str) -> bool {
     if method != "GET" {
         return false;
     }
-    matches!(path, "/health" | "/metrics" | "/health/consistency") || path.starts_with("/playground")
+    matches!(path, "/" | "/health" | "/metrics" | "/health/consistency") || path.starts_with("/playground")
 }
 
 /// Axum middleware that enforces API key authentication.
@@ -326,6 +326,7 @@ mod tests {
 
     #[test]
     fn test_is_public_route() {
+        assert!(is_public_route("/", "GET"));
         assert!(is_public_route("/health", "GET"));
         assert!(is_public_route("/metrics", "GET"));
         assert!(is_public_route("/health/consistency", "GET"));

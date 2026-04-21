@@ -79,6 +79,10 @@ async fn playground_redirect() -> Redirect {
     Redirect::permanent("/playground/")
 }
 
+async fn root_redirect() -> Redirect {
+    Redirect::permanent("/playground/")
+}
+
 /// Serve the legacy vanilla JS playground
 async fn classic_playground() -> axum::response::Html<&'static str> {
     let html = include_str!("../static/classic.html");
@@ -209,6 +213,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Build router
     let app = Router::new()
+        // Root redirects to playground
+        .route("/", get(root_redirect))
         // Health & metrics
         .route("/health", get(handlers::health::health))
         .route("/metrics", get(handlers::health::metrics_handler))
