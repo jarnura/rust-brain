@@ -41,6 +41,14 @@ use crate::server::McpServer;
 /// Maximum number of events retained per session for backfill on reconnect.
 const EVENT_BUFFER_CAPACITY: usize = 1000;
 
+/// Maximum size (bytes) of a single SSE event data payload.
+/// Events exceeding this limit are truncated with a notice.
+const MAX_SSE_FRAME_SIZE: usize = 64 * 1024; // 64 KiB
+
+/// Maximum number of recent JSON-RPC request IDs tracked per session for
+/// duplicate detection.  Oldest entries are evicted when the window is full.
+const DEDUP_WINDOW_SIZE: usize = 256;
+
 /// Time after which an inactive session is eligible for cleanup.
 const SESSION_TTL: Duration = Duration::from_secs(300);
 
@@ -133,6 +141,8 @@ struct Session {
     tx: Mutex<mpsc::UnboundedSender<Result<Event, Infallible>>>,
     /// Bounded event buffer for cursor-based backfill.
     event_buffer: Mutex<EventBuffer>,
+    /// Recent JSON-RPC request IDs processed by this session, for dedup.
+    recent_request_ids: Mutex<Vec<String>>,
     /// Timestamp of last activity, used for TTL cleanup.
     last_active: std::sync::Mutex<std::time::Instant>,
 }
@@ -250,6 +260,70 @@ async fn cleanup_stale_sessions(state: &Arc<AppState>) {
 }
 
 // ---------------------------------------------------------------------------
+// Dedup helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the `id` field from a JSON-RPC request body as a string key.
+/// Returns `None` for notifications (requests without an `id` field).
+fn extract_request_id(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value.get("id").map(|id| id.to_string())
+}
+
+/// Check whether `request_id` was already seen in `recent_ids`.
+/// If new, the ID is recorded and `false` is returned.
+/// If duplicate, `true` is returned and the set is left unchanged.
+fn check_and_record_duplicate(recent_ids: &mut Vec<String>, request_id: &str) -> bool {
+    if recent_ids.iter().any(|id| id == request_id) {
+        return true;
+    }
+    recent_ids.push(request_id.to_string());
+    if recent_ids.len() > DEDUP_WINDOW_SIZE {
+        recent_ids.remove(0);
+    }
+    false
+}
+
+/// If `json` exceeds `MAX_SSE_FRAME_SIZE`, replace it with a truncated error
+/// response preserving the original request `id`.  Otherwise return `json` as-is.
+fn enforce_frame_limit(json: String, original_id: &Option<crate::server::Id>) -> String {
+    if json.len() <= MAX_SSE_FRAME_SIZE {
+        return json;
+    }
+
+    let original_size = json.len();
+    warn!(
+        "SSE frame oversized ({} bytes > {} limit), truncating",
+        original_size, MAX_SSE_FRAME_SIZE
+    );
+
+    let truncated = crate::server::JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: original_id.clone(),
+        result: Some(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "[Response truncated: {} bytes exceeded {} byte limit. \
+                     Refine your query to reduce the result set.]",
+                    original_size, MAX_SSE_FRAME_SIZE
+                )
+            }],
+            "isError": true,
+            "_truncated": true
+        })),
+        error: None,
+    };
+
+    serde_json::to_string(&truncated).unwrap_or_else(|_| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":null,"result":{{"content":[{{"type":"text","text":"Response truncated ({} bytes)"}}],"isError":true,"_truncated":true}}}}"#,
+            original_size
+        )
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -308,6 +382,7 @@ async fn new_session(
         server: Mutex::new(server),
         tx: Mutex::new(tx.clone()),
         event_buffer: Mutex::new(EventBuffer::new(EVENT_BUFFER_CAPACITY)),
+        recent_request_ids: Mutex::new(Vec::with_capacity(DEDUP_WINDOW_SIZE)),
         last_active: std::sync::Mutex::new(std::time::Instant::now()),
     });
 
@@ -391,6 +466,13 @@ async fn reconnect_session(
 
 /// `POST /message?sessionId=<id>` — Receives a JSON-RPC request, processes it
 /// through the session's `McpServer`, and pushes the response onto the SSE stream.
+///
+/// Deduplication: if the request carries an `id` that was already processed in
+/// this session, the request is silently skipped (HTTP 202, no new SSE event).
+///
+/// Frame limiting: if the serialized response exceeds `MAX_SSE_FRAME_SIZE`, it
+/// is replaced with a truncated error response so the client always receives a
+/// valid, size-bounded event.
 async fn message_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<MessageQuery>,
@@ -414,18 +496,32 @@ async fn message_handler(
     session.touch();
     debug!("Message for session {}: {}", session_id, body);
 
+    if let Some(request_id) = extract_request_id(&body) {
+        let mut recent_ids = session.recent_request_ids.lock().await;
+        if check_and_record_duplicate(&mut recent_ids, &request_id) {
+            warn!(
+                "Duplicate request ID {} in session {}, skipping",
+                request_id, session_id
+            );
+            return axum::http::StatusCode::ACCEPTED;
+        }
+    }
+
     let mut server = session.server.lock().await;
     let response = server.handle_message(&body).await;
     drop(server);
 
     let response_json = match response {
-        Ok(Some(r)) => match serde_json::to_string(&r) {
-            Ok(json) => json,
-            Err(e) => {
-                error!("Serialization error: {}", e);
-                return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+        Ok(Some(r)) => {
+            let id = r.id.clone();
+            match serde_json::to_string(&r) {
+                Ok(json) => enforce_frame_limit(json, &id),
+                Err(e) => {
+                    error!("Serialization error: {}", e);
+                    return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+                }
             }
-        },
+        }
         Ok(None) => return axum::http::StatusCode::ACCEPTED,
         Err(e) => {
             error!("Error handling message: {}", e);
@@ -629,6 +725,7 @@ mod tests {
             ),
             tx: Mutex::new(tx),
             event_buffer: Mutex::new(buf),
+            recent_request_ids: Mutex::new(Vec::new()),
             last_active: std::sync::Mutex::new(
                 std::time::Instant::now() - Duration::from_secs(100),
             ),
@@ -660,6 +757,7 @@ mod tests {
             ),
             tx: Mutex::new(tx),
             event_buffer: Mutex::new(buf),
+            recent_request_ids: Mutex::new(Vec::new()),
             last_active: std::sync::Mutex::new(
                 std::time::Instant::now() - Duration::from_secs(600),
             ),
@@ -672,5 +770,153 @@ mod tests {
             .map(|instant| now.duration_since(*instant) > SESSION_TTL)
             .unwrap_or(false);
         assert!(is_stale);
+    }
+
+    // === extract_request_id Tests ===
+
+    #[test]
+    fn extract_request_id_numeric() {
+        let body = r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{}}"#;
+        assert_eq!(extract_request_id(body), Some("42".to_string()));
+    }
+
+    #[test]
+    fn extract_request_id_string() {
+        let body = r#"{"jsonrpc":"2.0","id":"abc-123","method":"ping"}"#;
+        assert_eq!(extract_request_id(body), Some(r#""abc-123""#.to_string()));
+    }
+
+    #[test]
+    fn extract_request_id_notification_returns_none() {
+        let body = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert_eq!(extract_request_id(body), None);
+    }
+
+    #[test]
+    fn extract_request_id_invalid_json_returns_none() {
+        assert_eq!(extract_request_id("not json"), None);
+    }
+
+    #[test]
+    fn extract_request_id_null_id_returns_some() {
+        let body = r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#;
+        assert_eq!(extract_request_id(body), Some("null".to_string()));
+    }
+
+    // === Dedup Window Tests ===
+
+    #[test]
+    fn dedup_new_id_returns_false() {
+        let mut recent = Vec::new();
+        assert!(!check_and_record_duplicate(&mut recent, "1"));
+        assert_eq!(recent.len(), 1);
+    }
+
+    #[test]
+    fn dedup_duplicate_id_returns_true() {
+        let mut recent = Vec::new();
+        check_and_record_duplicate(&mut recent, "1");
+        assert!(check_and_record_duplicate(&mut recent, "1"));
+        assert_eq!(recent.len(), 1);
+    }
+
+    #[test]
+    fn dedup_different_ids_both_recorded() {
+        let mut recent = Vec::new();
+        assert!(!check_and_record_duplicate(&mut recent, "1"));
+        assert!(!check_and_record_duplicate(&mut recent, "2"));
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn dedup_window_evicts_oldest() {
+        let mut recent = Vec::new();
+        for i in 0..=DEDUP_WINDOW_SIZE {
+            check_and_record_duplicate(&mut recent, &i.to_string());
+        }
+        assert_eq!(recent.len(), DEDUP_WINDOW_SIZE);
+        // Oldest ID "0" should have been evicted, so it's no longer a duplicate
+        assert!(!check_and_record_duplicate(&mut recent, "0"));
+    }
+
+    #[test]
+    fn dedup_window_still_detects_recent_duplicate() {
+        let mut recent = Vec::new();
+        for i in 0..DEDUP_WINDOW_SIZE {
+            check_and_record_duplicate(&mut recent, &i.to_string());
+        }
+        // The most recent ID should still be detected as duplicate
+        let last_id = (DEDUP_WINDOW_SIZE - 1).to_string();
+        assert!(check_and_record_duplicate(&mut recent, &last_id));
+    }
+
+    // === Frame Size Limiting Tests ===
+
+    #[test]
+    fn enforce_frame_limit_under_limit_passes_through() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.to_string();
+        let id = Some(crate::server::Id::Number(1));
+        let result = enforce_frame_limit(json.clone(), &id);
+        assert_eq!(result, json);
+    }
+
+    #[test]
+    fn enforce_frame_limit_oversize_truncates() {
+        let large_data = "x".repeat(MAX_SSE_FRAME_SIZE + 1000);
+        let json = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":"{}"}}]}}}}"#,
+            large_data
+        );
+        let id = Some(crate::server::Id::Number(1));
+        let result = enforce_frame_limit(json.clone(), &id);
+
+        // Result should be smaller than original
+        assert!(result.len() < json.len());
+        // Result should contain truncation indicator
+        assert!(result.contains("_truncated"));
+        assert!(result.contains("isError"));
+        // Result should be valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["id"], 1);
+    }
+
+    #[test]
+    fn enforce_frame_limit_preserves_id() {
+        let large_data = "x".repeat(MAX_SSE_FRAME_SIZE + 100);
+        let json = format!(
+            r#"{{"jsonrpc":"2.0","id":"my-req","result":{{"content":[{{"type":"text","text":"{}"}}]}}}}"#,
+            large_data
+        );
+        let id = Some(crate::server::Id::String("my-req".to_string()));
+        let result = enforce_frame_limit(json, &id);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["id"], "my-req");
+    }
+
+    #[test]
+    fn enforce_frame_limit_none_id() {
+        let large_data = "x".repeat(MAX_SSE_FRAME_SIZE + 100);
+        let json = format!(
+            r#"{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{}"}}]}}}}"#,
+            large_data
+        );
+        let result = enforce_frame_limit(json, &None);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed["id"].is_null());
+    }
+
+    #[test]
+    fn enforce_frame_limit_exactly_at_limit() {
+        let json = "x".repeat(MAX_SSE_FRAME_SIZE);
+        let result = enforce_frame_limit(json.clone(), &None);
+        assert_eq!(result, json);
+    }
+
+    #[test]
+    fn enforce_frame_limit_one_byte_over() {
+        let json = "x".repeat(MAX_SSE_FRAME_SIZE + 1);
+        let result = enforce_frame_limit(json, &None);
+        assert!(result.contains("_truncated"));
     }
 }
