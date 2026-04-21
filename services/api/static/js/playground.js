@@ -36,6 +36,7 @@ const TABS = [
   { id: 'modules',   label: 'Modules',   icon: '⊟', key: '8' },
   { id: 'audit',     label: 'Audit',     icon: '≡', key: '9' },
   { id: 'gaps',      label: 'Gaps',      icon: '△', key: '0' },
+  { id: 'apitester', label: 'API Tester',icon: '⚙', key: 'A' },
 ];
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -357,6 +358,7 @@ async function initPlayground() {
     modules:   () => import('./components/module-tree.js'),
     audit:     () => import('./components/audit.js'),
     gaps:      () => import('./components/gaps.js'),
+    apitester: () => import('./components/api-tester.js'),
   };
 
   document.addEventListener('playground:tab-change', async ({ detail: { tab } }) => {
