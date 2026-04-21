@@ -10,6 +10,7 @@ Operational guide for starting, stopping, monitoring, and troubleshooting the ru
 | Stop all services | `bash scripts/stop.sh` |
 | Health check | `bash scripts/healthcheck.sh` |
 | Apply SQL migrations | `bash scripts/apply-migrations.sh` |
+| Apply devops migrations | `bash scripts/apply-devops-migrations.sh` |
 | E2E smoke test | `bash scripts/smoke-test.sh` |
 | View logs | `docker-compose logs -f [service]` |
 | Reset all data | `docker-compose down -v && bash scripts/start.sh` |
@@ -32,6 +33,7 @@ The startup script performs these phases:
 
 1. **Core Databases** — Starts Postgres, Neo4j, Qdrant, Ollama
 2. **Health Waits** — Waits for each service to be healthy
+2.5. **DevOps Migrations** — Applies numbered schema migrations from `scripts/migrations/` (tracked in `_devops_migrations` table)
 3. **SQL Migrations** — Applies pending migrations from `services/api/migrations/`
 4. **Qdrant Init** — Creates vector collections and indexes
 5. **Model Pull** — Downloads embedding and code models
@@ -936,21 +938,27 @@ curl http://localhost:8088/workspaces | python3 -m json.tool
 ### 17. SQL Migration Fails on Startup
 
 **Symptoms:**
-- `start.sh` fails at "Phase 3: Applying SQL Migrations"
+- `start.sh` fails at "Phase 2.5: Applying DevOps Migrations" or "Phase 3: Applying SQL Migrations"
 - Error: "Failed to apply: 20260421000002_agent_events_seq.sql"
 - API container starts but `validate_schema()` rejects with "SCHEMA VALIDATION FAILED"
 
 **Diagnosis:**
 ```bash
-# Check which migrations have been applied
+# Check devops migration status
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT version, description, success, applied_at FROM _devops_migrations ORDER BY version;"
+
+# Check sqlx migration status
 docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
   -c "SELECT version, description, success, installed_on FROM _sqlx_migrations ORDER BY version;"
 
-# Check for failed migrations
+# Check for failed migrations in either table
 docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
-  -c "SELECT version, description FROM _sqlx_migrations WHERE success = false;"
+  -c "SELECT 'devops' AS type, version, description FROM _devops_migrations WHERE success = false
+      UNION ALL SELECT 'sqlx', version, description FROM _sqlx_migrations WHERE success = false;"
 
-# Manually re-run the migration script
+# Manually re-run the migration scripts
+bash scripts/apply-devops-migrations.sh
 bash scripts/apply-migrations.sh
 ```
 
@@ -1008,6 +1016,20 @@ docker-compose up -d opencode
 ```
 
 **Note:** The warning is non-blocking — databases and the API server start normally. Only AI-powered features (OpenCode, chat) require valid API keys.
+
+**LITELLM_API_KEY format validation:**
+
+The OpenCode container's entrypoint (`configs/opencode/docker-entrypoint.sh`) validates `LITELLM_API_KEY` format at startup. The following checks are performed:
+
+| Check | Condition | Warning |
+|-------|-----------|---------|
+| Missing | Key not set or empty | "LITELLM_API_KEY is not set" |
+| Placeholder | Value is `your-api-key-here` | "LITELLM_API_KEY is still the placeholder value" |
+| Whitespace-only | Key contains only whitespace | "LITELLM_API_KEY is whitespace-only" |
+| Too short | Less than 8 characters | "LITELLM_API_KEY appears too short" |
+| Invalid characters | Contains characters other than `[A-Za-z0-9_-.]` | "LITELLM_API_KEY contains unexpected characters" |
+
+This validation is also non-blocking — the OpenCode server starts regardless, but logs warnings for invalid keys.
 
 ## Full Workspace Cleanup (Fresh Start)
 

@@ -91,6 +91,10 @@ for i in {1..60}; do
 done
 
 echo ""
+echo "=== Phase 2.5: Applying DevOps Migrations ==="
+bash scripts/apply-devops-migrations.sh
+
+echo ""
 echo "=== Phase 3: Applying SQL Migrations ==="
 bash scripts/apply-migrations.sh
 
