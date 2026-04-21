@@ -26,6 +26,23 @@ use crate::execution::{get_execution, list_agent_events_after_seq, AgentEvent};
 use crate::state::AppState;
 use crate::workspace::get_workspace as db_get_workspace;
 
+const SSE_MAX_FRAME_BYTES: usize = 64 * 1024;
+
+fn truncate_sse_event(data: &str, event_seq: i64) -> String {
+    if data.len() <= SSE_MAX_FRAME_BYTES {
+        return data.to_string();
+    }
+
+    let original_size = data.len();
+    let truncated = serde_json::json!({
+        "truncated": true,
+        "full_payload_seq": event_seq,
+        "original_size": original_size,
+        "message": format!("Event payload ({} bytes) exceeded {} byte SSE frame limit. Use GET /executions/{{id}}/events/{{seq}} to fetch the full payload.", original_size, SSE_MAX_FRAME_BYTES),
+    });
+    truncated.to_string()
+}
+
 // =============================================================================
 // Query params
 // =============================================================================
@@ -141,11 +158,12 @@ pub async fn stream_workspace(
                         let payload: SseAgentEvent = ev.into();
                         match serde_json::to_string(&payload) {
                             Ok(data) => {
+                                let truncated_data = truncate_sse_event(&data, last_seq);
                                 yield Ok::<Event, Infallible>(
                                     Event::default()
                                         .id(last_seq.to_string())
                                         .event("agent_event")
-                                        .data(data)
+                                        .data(truncated_data)
                                 );
                             }
                             Err(e) => {
@@ -263,5 +281,38 @@ mod tests {
         assert!(json["ts"].is_string());
         assert_eq!(json["phase"], "developing");
         assert_eq!(json["seq"], 7);
+    }
+
+    #[test]
+    fn truncate_sse_event_under_limit_passes_through() {
+        let data = r#"{"event_type":"tool_call","content":{"tool":"search"}}"#;
+        let result = truncate_sse_event(data, 1);
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn truncate_sse_event_over_limit_returns_truncated() {
+        let large = "x".repeat(SSE_MAX_FRAME_BYTES + 1000);
+        let data = format!(r#"{{"content":{{"text":"{}"}}}}"#, large);
+        let result = truncate_sse_event(&data, 5);
+        assert!(result.len() < data.len());
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["truncated"], true);
+        assert_eq!(parsed["full_payload_seq"], 5);
+    }
+
+    #[test]
+    fn truncate_sse_event_exactly_at_limit_passes() {
+        let data = "x".repeat(SSE_MAX_FRAME_BYTES);
+        let result = truncate_sse_event(&data, 1);
+        assert_eq!(result.len(), SSE_MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn truncate_sse_event_one_byte_over_truncates() {
+        let data = "x".repeat(SSE_MAX_FRAME_BYTES + 1);
+        let result = truncate_sse_event(&data, 1);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["truncated"], true);
     }
 }

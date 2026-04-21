@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -380,32 +381,60 @@ pub async fn abort_executions_for_workspace(
 // AgentEvent CRUD
 // =============================================================================
 
-/// Insert a single agent event with monotonic seq assignment.
+/// Insert a single agent event with monotonic seq assignment and content dedup.
 ///
 /// Seq is computed as `COALESCE(MAX(seq), 0) + 1` within the same execution,
 /// guaranteeing monotonically increasing per-execution sequence numbers.
 /// The `UNIQUE (execution_id, seq)` constraint provides a safety net against
 /// races in concurrent-write scenarios.
+///
+/// Content dedup: SHA-256 of `(execution_id, event_type, content)` is computed
+/// and stored in `content_hash`. A `UNIQUE (execution_id, content_hash)`
+/// constraint prevents duplicate events from runner retries. On conflict the
+/// existing row is returned via a fallback SELECT.
 pub async fn insert_agent_event(
     pool: &PgPool,
     execution_id: Uuid,
     event_type: &str,
     content: serde_json::Value,
 ) -> anyhow::Result<AgentEvent> {
+    let content_hash = compute_content_hash(execution_id, event_type, &content);
+
     let row = sqlx::query_as::<_, AgentEvent>(
         r#"
-        INSERT INTO agent_events (execution_id, event_type, content, seq)
+        INSERT INTO agent_events (execution_id, event_type, content, seq, content_hash)
         VALUES ($1, $2, $3,
-            (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE execution_id = $1))
+            (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE execution_id = $1),
+            $4)
+        ON CONFLICT (execution_id, content_hash) DO NOTHING
         RETURNING id, execution_id, timestamp, event_type, content, seq
         "#,
     )
     .bind(execution_id)
     .bind(event_type)
     .bind(content)
+    .bind(content_hash.as_slice())
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(event) = row {
+        return Ok(event);
+    }
+
+    // ON CONFLICT — duplicate detected, fetch existing row
+    let existing = sqlx::query_as::<_, AgentEvent>(
+        r#"
+        SELECT id, execution_id, timestamp, event_type, content, seq
+        FROM agent_events
+        WHERE execution_id = $1 AND content_hash = $2
+        "#,
+    )
+    .bind(execution_id)
+    .bind(content_hash.as_slice())
     .fetch_one(pool)
     .await?;
-    Ok(row)
+
+    Ok(existing)
 }
 
 /// List all agent events for an execution, ordered by seq (chronological).
@@ -470,6 +499,38 @@ pub async fn list_agent_events_after_seq(
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+fn compute_content_hash(
+    execution_id: Uuid,
+    event_type: &str,
+    content: &serde_json::Value,
+) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(execution_id.as_bytes());
+    hasher.update(event_type.as_bytes());
+    hasher.update(content.to_string().as_bytes());
+    hasher.finalize().to_vec()
+}
+
+/// Fetch a single agent event by execution_id and seq number.
+pub async fn get_agent_event_by_seq(
+    pool: &PgPool,
+    execution_id: Uuid,
+    seq: i64,
+) -> anyhow::Result<Option<AgentEvent>> {
+    let row = sqlx::query_as::<_, AgentEvent>(
+        r#"
+        SELECT id, execution_id, timestamp, event_type, content, seq
+        FROM agent_events
+        WHERE execution_id = $1 AND seq = $2
+        "#,
+    )
+    .bind(execution_id)
+    .bind(seq)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 // =============================================================================
@@ -584,5 +645,40 @@ mod tests {
         for i in 1..events.len() {
             assert!(events[i].seq > events[i - 1].seq);
         }
+    }
+
+    #[test]
+    fn content_hash_deterministic() {
+        let id = Uuid::new_v4();
+        let content = serde_json::json!({"text": "hello"});
+        let h1 = compute_content_hash(id, "reasoning", &content);
+        let h2 = compute_content_hash(id, "reasoning", &content);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 32);
+    }
+
+    #[test]
+    fn content_hash_differs_on_event_type() {
+        let id = Uuid::new_v4();
+        let content = serde_json::json!({"text": "hello"});
+        let h1 = compute_content_hash(id, "reasoning", &content);
+        let h2 = compute_content_hash(id, "tool_call", &content);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn content_hash_differs_on_execution_id() {
+        let content = serde_json::json!({"text": "hello"});
+        let h1 = compute_content_hash(Uuid::new_v4(), "reasoning", &content);
+        let h2 = compute_content_hash(Uuid::new_v4(), "reasoning", &content);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn content_hash_differs_on_content() {
+        let id = Uuid::new_v4();
+        let h1 = compute_content_hash(id, "reasoning", &serde_json::json!({"text": "a"}));
+        let h2 = compute_content_hash(id, "reasoning", &serde_json::json!({"text": "b"}));
+        assert_ne!(h1, h2);
     }
 }

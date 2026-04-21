@@ -37,6 +37,7 @@ async-stream = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.8", features = ["v4", "serde"] }
 tracing = "0.1"
+sha2 = "0.10"
 
 # Metrics
 prometheus = "0.13"

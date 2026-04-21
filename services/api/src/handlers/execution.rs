@@ -22,11 +22,28 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::execution::runner::{run_execution, RunParams};
 use crate::execution::{
-    create_execution, get_execution as db_get_execution, list_agent_events_after_seq,
-    list_executions as db_list_executions, CreateExecutionParams,
+    create_execution, get_agent_event_by_seq, get_execution as db_get_execution,
+    list_agent_events_after_seq, list_executions as db_list_executions, CreateExecutionParams,
 };
 use crate::state::AppState;
 use crate::workspace::get_workspace;
+
+const SSE_MAX_FRAME_BYTES: usize = 64 * 1024;
+
+fn truncate_sse_event(data: &str, event_seq: i64) -> String {
+    if data.len() <= SSE_MAX_FRAME_BYTES {
+        return data.to_string();
+    }
+
+    let original_size = data.len();
+    let truncated = serde_json::json!({
+        "truncated": true,
+        "full_payload_seq": event_seq,
+        "original_size": original_size,
+        "message": format!("Event payload ({} bytes) exceeded {} byte SSE frame limit. Use GET /executions/{{id}}/events/{{seq}} to fetch the full payload.", original_size, SSE_MAX_FRAME_BYTES),
+    });
+    truncated.to_string()
+}
 
 // =============================================================================
 // Request / Response types
@@ -220,7 +237,7 @@ pub async fn stream_events(
             };
 
             for event in &events {
-                let data = serde_json::to_string(event).unwrap_or_default();
+                let data = truncate_sse_event(&serde_json::to_string(event).unwrap_or_default(), event.seq);
                 yield Ok(Event::default()
                     .id(event.seq.to_string())
                     .event("agent_event")
@@ -236,10 +253,9 @@ pub async fn stream_events(
                         "completed" | "failed" | "aborted" | "timeout"
                     );
                     if terminal {
-                        // Drain any remaining events before closing
                         if let Ok(remaining) = list_agent_events_after_seq(&pool, id, last_seq).await {
                             for event in &remaining {
-                                let data = serde_json::to_string(event).unwrap_or_default();
+                                let data = truncate_sse_event(&serde_json::to_string(event).unwrap_or_default(), event.seq);
                                 yield Ok(Event::default()
                                     .id(event.seq.to_string())
                                     .event("agent_event")
@@ -261,6 +277,23 @@ pub async fn stream_events(
     };
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// `GET /executions/:id/events/:seq` — fetch a single agent event by seq.
+///
+/// Returns the full untruncated event payload. This is the companion endpoint
+/// to the SSE frame size limit: when an SSE event is truncated (content replaced
+/// with `{truncated: true, full_payload_seq: <seq>}`), the client can fetch
+/// the complete content via this endpoint.
+pub async fn get_event_by_seq(
+    State(state): State<AppState>,
+    Path((id, seq)): Path<(Uuid, i64)>,
+) -> Result<Json<crate::execution::AgentEvent>, AppError> {
+    get_agent_event_by_seq(&state.workspace_manager.pool, id, seq)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to fetch event: {e}")))?
+        .map(Json)
+        .ok_or_else(|| AppError::NotFound(format!("Event {seq} not found for execution {id}")))
 }
 
 // =============================================================================
@@ -309,5 +342,39 @@ mod tests {
     fn stream_events_query_deserializes_cursor() {
         let q: StreamEventsQuery = serde_json::from_str(r#"{"last_event_id":42}"#).unwrap();
         assert_eq!(q.last_event_id, Some(42));
+    }
+
+    #[test]
+    fn truncate_sse_event_under_limit_passes_through() {
+        let data = r#"{"event_type":"reasoning","content":{"text":"hello"}}"#;
+        let result = truncate_sse_event(data, 1);
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn truncate_sse_event_over_limit_returns_truncated() {
+        let large = "x".repeat(SSE_MAX_FRAME_BYTES + 1000);
+        let data = format!(r#"{{"content":{{"text":"{}"}}}}"#, large);
+        let result = truncate_sse_event(&data, 42);
+        assert!(result.len() < data.len());
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["truncated"], true);
+        assert_eq!(parsed["full_payload_seq"], 42);
+        assert!(parsed["original_size"].as_u64().unwrap() > SSE_MAX_FRAME_BYTES as u64);
+    }
+
+    #[test]
+    fn truncate_sse_event_exactly_at_limit_passes() {
+        let data = "x".repeat(SSE_MAX_FRAME_BYTES);
+        let result = truncate_sse_event(&data, 1);
+        assert_eq!(result.len(), SSE_MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn truncate_sse_event_one_byte_over_truncates() {
+        let data = "x".repeat(SSE_MAX_FRAME_BYTES + 1);
+        let result = truncate_sse_event(&data, 1);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["truncated"], true);
     }
 }

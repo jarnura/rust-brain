@@ -297,6 +297,10 @@ async fn main() -> anyhow::Result<()> {
             "/executions/:id/events",
             get(handlers::execution::stream_events),
         )
+        .route(
+            "/executions/:id/events/:seq",
+            get(handlers::execution::get_event_by_seq),
+        )
         // Workspace git operations
         .route(
             "/workspaces/:id/stream",
