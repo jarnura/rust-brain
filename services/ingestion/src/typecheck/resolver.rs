@@ -1893,4 +1893,178 @@ mod tests {
             .collect();
         assert!(!mono.is_empty(), "Expected monomorphized method calls");
     }
+
+    // -----------------------------------------------------------------------
+    // Dispatch resolution: static vs trait dual-edge emission (RUSA-284)
+    //
+    // The syn-only resolver can determine the concrete receiver type only when
+    // self_type is known, i.e. inside an impl block where `self` is the receiver.
+    // Free functions that create local variables cannot be resolved without full
+    // rustc type inference. These tests cover the impl-block case.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_impl_self_call_emits_static_dispatch_edge() {
+        let resolver = TypeResolver::new();
+        // Wrapper calls self.dispatch() — inside impl FifoDispatcher the self_type
+        // is "FifoDispatcher", so the trait_method_index lookup for
+        // (FifoDispatcher, dispatch) should emit a Static-dispatch CALLS edge.
+        let source = r#"
+            pub trait Dispatcher {
+                fn dispatch(&self, item: &str) -> String;
+            }
+            pub struct FifoDispatcher;
+            impl Dispatcher for FifoDispatcher {
+                fn dispatch(&self, item: &str) -> String {
+                    format!("FIFO: {}", item)
+                }
+            }
+            impl FifoDispatcher {
+                pub fn process(&self, item: &str) -> String {
+                    self.dispatch(item)
+                }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "crate",
+            "crate::dispatch",
+            "dispatch.rs",
+            source,
+            &["crate::dispatch::FifoDispatcher::process".to_string()],
+        );
+
+        // self.dispatch() inside impl FifoDispatcher should resolve with Static dispatch
+        // because self_type == "FifoDispatcher" matches the trait_method_index key.
+        let static_sites: Vec<_> = result
+            .call_sites
+            .iter()
+            .filter(|s| matches!(s.dispatch, CallDispatch::Static))
+            .collect();
+        assert!(
+            !static_sites.is_empty(),
+            "Expected Static-dispatch edge from impl FifoDispatcher::process -> dispatch; all sites: {:?}",
+            result.call_sites.iter().map(|s| (&s.dispatch, &s.callee_fqn)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_static_dispatch_accompanied_by_trait_edge() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            pub trait Dispatcher {
+                fn dispatch(&self, item: &str) -> String;
+            }
+            pub struct FifoDispatcher;
+            impl Dispatcher for FifoDispatcher {
+                fn dispatch(&self, item: &str) -> String {
+                    format!("FIFO: {}", item)
+                }
+            }
+            impl FifoDispatcher {
+                pub fn process(&self, item: &str) -> String {
+                    self.dispatch(item)
+                }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "crate",
+            "crate::dispatch",
+            "dispatch.rs",
+            source,
+            &["crate::dispatch::FifoDispatcher::process".to_string()],
+        );
+
+        // When the Static edge is emitted, a Trait-dispatch edge to the trait method FQN
+        // must also be emitted so that graph traversal starting from the trait works.
+        let has_static = result
+            .call_sites
+            .iter()
+            .any(|s| matches!(s.dispatch, CallDispatch::Static));
+        let has_trait = result
+            .call_sites
+            .iter()
+            .any(|s| matches!(s.dispatch, CallDispatch::Trait));
+
+        if has_static {
+            assert!(
+                has_trait,
+                "When a Static edge is emitted, a companion Trait edge must also be emitted; \
+                 got: {:?}",
+                result
+                    .call_sites
+                    .iter()
+                    .map(|s| (&s.dispatch, &s.callee_fqn))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiple_trait_impls_each_get_static_edge_from_self() {
+        let resolver = TypeResolver::new();
+        // Each impl type has an extra method calling self.work() — both should
+        // get Static-dispatch edges because self_type is known in each impl block.
+        let source = r#"
+            pub trait Worker {
+                fn work(&self);
+            }
+            pub struct FastWorker;
+            pub struct SlowWorker;
+            impl Worker for FastWorker {
+                fn work(&self) {}
+            }
+            impl FastWorker {
+                pub fn run(&self) { self.work(); }
+            }
+            impl Worker for SlowWorker {
+                fn work(&self) {}
+            }
+            impl SlowWorker {
+                pub fn run(&self) { self.work(); }
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "crate",
+            "crate::worker",
+            "worker.rs",
+            source,
+            &[
+                "crate::worker::FastWorker::run".to_string(),
+                "crate::worker::SlowWorker::run".to_string(),
+            ],
+        );
+
+        // FastWorker::run → self.work() should be Static
+        let fast_static: Vec<_> = result
+            .call_sites
+            .iter()
+            .filter(|s| s.caller_fqn.contains("FastWorker") && matches!(s.dispatch, CallDispatch::Static))
+            .collect();
+        assert!(
+            !fast_static.is_empty(),
+            "FastWorker::run should emit a Static-dispatch edge; all: {:?}",
+            result.call_sites.iter()
+                .filter(|s| s.caller_fqn.contains("FastWorker"))
+                .map(|s| (&s.dispatch, &s.callee_fqn))
+                .collect::<Vec<_>>()
+        );
+
+        // SlowWorker::run → self.work() should be Static
+        let slow_static: Vec<_> = result
+            .call_sites
+            .iter()
+            .filter(|s| s.caller_fqn.contains("SlowWorker") && matches!(s.dispatch, CallDispatch::Static))
+            .collect();
+        assert!(
+            !slow_static.is_empty(),
+            "SlowWorker::run should emit a Static-dispatch edge; all: {:?}",
+            result.call_sites.iter()
+                .filter(|s| s.caller_fqn.contains("SlowWorker"))
+                .map(|s| (&s.dispatch, &s.callee_fqn))
+                .collect::<Vec<_>>()
+        );
+    }
 }

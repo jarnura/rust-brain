@@ -162,10 +162,11 @@ impl TypeResolutionService {
 
             sqlx::query(
                 r#"
-                INSERT INTO call_sites 
+                INSERT INTO call_sites
                     (caller_fqn, callee_fqn, file_path, line_number, concrete_type_args, is_monomorphized, quality, dispatch)
-                VALUES 
+                VALUES
                     ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (caller_fqn, callee_fqn, dispatch, line_number) DO NOTHING
                 "#
             )
             .bind(&site.caller_fqn)

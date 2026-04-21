@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS call_sites (
     line_number INT NOT NULL,
     concrete_type_args JSONB DEFAULT '[]',
     is_monomorphized BOOLEAN DEFAULT FALSE,
+    dispatch TEXT NOT NULL DEFAULT 'dynamic' CHECK (dispatch IN ('static', 'trait', 'dynamic')),
     quality TEXT NOT NULL DEFAULT 'heuristic' CHECK (quality IN ('analyzed', 'heuristic')),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -94,6 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_call_sites_caller ON call_sites(caller_fqn);
 CREATE INDEX IF NOT EXISTS idx_call_sites_callee ON call_sites(callee_fqn);
 CREATE INDEX IF NOT EXISTS idx_call_sites_file ON call_sites(file_path);
 CREATE INDEX IF NOT EXISTS idx_call_sites_types ON call_sites USING GIN(concrete_type_args);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_call_sites_unique ON call_sites(caller_fqn, callee_fqn, dispatch, line_number);
 
 -- =============================================================================
 -- TRAIT IMPLEMENTATIONS: impl Trait for Type mappings

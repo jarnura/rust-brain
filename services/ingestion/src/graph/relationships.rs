@@ -97,7 +97,7 @@ pub struct RelationshipData {
 }
 
 /// Property value that can be stored in Neo4j
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum PropertyValue {
     String(String),
@@ -267,8 +267,9 @@ impl RelationshipBuilder {
         line: usize,
         file: impl Into<String>,
         concrete_types: Vec<String>,
-        is_static_dispatch: bool,
+        dispatch: impl Into<String>,
     ) -> RelationshipData {
+        let dispatch_str = dispatch.into();
         let mut properties = HashMap::new();
         properties.insert("line".to_string(), PropertyValue::from(line));
         properties.insert("file".to_string(), PropertyValue::from(file.into()));
@@ -279,8 +280,12 @@ impl RelationshipBuilder {
             );
         }
         properties.insert(
+            "dispatch".to_string(),
+            PropertyValue::from(dispatch_str.clone()),
+        );
+        properties.insert(
             "is_static_dispatch".to_string(),
-            PropertyValue::from(is_static_dispatch),
+            PropertyValue::from(dispatch_str == "static"),
         );
 
         RelationshipData {
@@ -622,13 +627,21 @@ mod tests {
             42,
             "src/module.rs",
             vec!["String".to_string()],
-            true,
+            "static",
         );
 
         assert_eq!(rel.rel_type, RelationshipType::CALLS);
         assert!(rel.properties.contains_key("line"));
         assert!(rel.properties.contains_key("file"));
         assert!(rel.properties.contains_key("concrete_types"));
+        assert_eq!(
+            rel.properties.get("dispatch"),
+            Some(&PropertyValue::String("static".to_string()))
+        );
+        assert_eq!(
+            rel.properties.get("is_static_dispatch"),
+            Some(&PropertyValue::Bool(true))
+        );
     }
 
     #[test]

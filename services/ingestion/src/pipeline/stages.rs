@@ -3326,8 +3326,13 @@ impl PipelineStage for GraphStage {
         }
         info!("Created {} EXTENDS relationships", extends_count);
 
-        // 6. Create CALLS relationships for function calls
-        // Build a set of all known function FQNs for fast lookup
+        // 6. Create CALLS relationships for function calls.
+        //
+        // Primary source: the `call_sites` Postgres table populated by the typecheck stage,
+        // which carries accurate `dispatch` types (static/dynamic/trait) and concrete impl FQNs.
+        // Fallback: regex-based extraction from body_source for any caller not yet covered.
+
+        // Build a set of all known function FQNs for the regex fallback.
         let mut function_fqns: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut function_names_to_fqns: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -3345,6 +3350,47 @@ impl PipelineStage for GraphStage {
         }
 
         let mut calls_count = 0;
+
+        // --- Primary: load resolved call sites from Postgres ---
+        let db_call_sites = match Self::load_call_sites_from_db(
+            &ctx.config,
+            ctx.config.crate_name.as_deref(),
+        )
+        .await
+        {
+            Ok(sites) => {
+                info!("Loaded {} call sites from Postgres for graph CALLS edges", sites.len());
+                sites
+            }
+            Err(e) => {
+                warn!("Failed to load call sites from DB, falling back to regex: {}", e);
+                Vec::new()
+            }
+        };
+
+        // Track which callers are already covered by DB-sourced edges to avoid regex duplicates.
+        let mut db_covered_callers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for (caller_fqn, callee_fqn, line, dispatch, concrete_types) in &db_call_sites {
+            if !workspace_crate_names.is_empty()
+                && !Self::is_workspace_fqn(caller_fqn, &workspace_crate_names)
+            {
+                continue;
+            }
+            relationships.push(RelationshipBuilder::create_calls(
+                caller_fqn.clone(),
+                callee_fqn.clone(),
+                *line,
+                "",
+                concrete_types.clone(),
+                dispatch.as_str(),
+            ));
+            calls_count += 1;
+            db_covered_callers.insert(caller_fqn.clone());
+        }
+
+        // --- Fallback: regex-based extraction for callers not in DB ---
         for items in parsed_items.values() {
             for item in items {
                 if !workspace_crate_names.is_empty()
@@ -3352,60 +3398,63 @@ impl PipelineStage for GraphStage {
                 {
                     continue;
                 }
-                if item.item_type == "function" && !item.body_source.is_empty() {
-                    // Static/free function calls
-                    let calls = Self::extract_function_calls(
-                        &item.body_source,
-                        &function_fqns,
-                        &function_names_to_fqns,
-                        &item.fqn,
-                    );
-                    for (callee_fqn, line) in &calls {
+                if item.item_type != "function" || item.body_source.is_empty() {
+                    continue;
+                }
+                // Skip if this caller was already fully covered by the typecheck DB results.
+                if db_covered_callers.contains(&item.fqn) {
+                    continue;
+                }
+
+                let calls = Self::extract_function_calls(
+                    &item.body_source,
+                    &function_fqns,
+                    &function_names_to_fqns,
+                    &item.fqn,
+                );
+                for (callee_fqn, line) in &calls {
+                    relationships.push(RelationshipBuilder::create_calls(
+                        item.fqn.clone(),
+                        callee_fqn.clone(),
+                        *line,
+                        "",
+                        Vec::new(),
+                        "static",
+                    ));
+                    calls_count += 1;
+                }
+
+                let static_callee_fqns: std::collections::HashSet<&str> =
+                    calls.iter().map(|(fqn, _)| fqn.as_str()).collect();
+                let self_type_attr = item
+                    .attributes
+                    .iter()
+                    .find(|a| a.starts_with("impl_type="))
+                    .map(|a| &a["impl_type=".len()..]);
+                let method_calls = Self::extract_method_calls(
+                    &item.body_source,
+                    &function_names_to_fqns,
+                    self_type_attr,
+                );
+                for (callee_fqn, line) in &method_calls {
+                    if !static_callee_fqns.contains(callee_fqn.as_str()) {
                         relationships.push(RelationshipBuilder::create_calls(
                             item.fqn.clone(),
                             callee_fqn.clone(),
                             *line,
                             "",
                             Vec::new(),
-                            "static",
+                            "dynamic",
                         ));
                         calls_count += 1;
-                    }
-
-                    // Method calls with local type tracking
-                    let static_callee_fqns: std::collections::HashSet<&str> =
-                        calls.iter().map(|(fqn, _)| fqn.as_str()).collect();
-                    // Determine self_type from impl_type attribute (set by parse_impl_with_methods)
-                    let self_type_attr = item
-                        .attributes
-                        .iter()
-                        .find(|a| a.starts_with("impl_type="))
-                        .map(|a| &a["impl_type=".len()..]);
-                    let method_calls = Self::extract_method_calls(
-                        &item.body_source,
-                        &function_names_to_fqns,
-                        self_type_attr,
-                    );
-                    for (callee_fqn, line) in &method_calls {
-                        // Avoid duplicate entries
-                        if !static_callee_fqns.contains(callee_fqn.as_str()) {
-                            relationships.push(RelationshipBuilder::create_calls(
-                                item.fqn.clone(),
-                                callee_fqn.clone(),
-                                *line,
-                                "",
-                                Vec::new(),
-                                "dynamic",
-                            ));
-                            calls_count += 1;
-                        }
                     }
                 }
             }
         }
         info!(
-            "Created {} CALLS relationships (including method calls)",
-            calls_count
+            "Created {} CALLS relationships ({} from typecheck DB, remainder from regex fallback)",
+            calls_count,
+            db_covered_callers.len()
         );
 
         // 7. Create USES_TYPE relationships for type usage in functions/methods
@@ -3997,6 +4046,70 @@ impl GraphStage {
             .collect();
 
         Ok(items)
+    }
+
+    /// Load resolved call sites from the Postgres `call_sites` table.
+    /// Returns (caller_fqn, callee_fqn, line_number, dispatch, concrete_types).
+    async fn load_call_sites_from_db(
+        config: &crate::pipeline::PipelineConfig,
+        crate_name: Option<&str>,
+    ) -> Result<Vec<(String, String, usize, String, Vec<String>)>> {
+        let pool = config
+            .create_pg_pool(2)
+            .await
+            .context("Failed to connect to database for loading call sites")?;
+
+        let rows = if let Some(cn) = crate_name {
+            let pattern = format!("{}::%", cn);
+            sqlx::query(
+                r#"
+                SELECT caller_fqn, callee_fqn, line_number, dispatch, concrete_type_args
+                FROM call_sites
+                WHERE caller_fqn LIKE $1
+                ORDER BY caller_fqn, line_number
+                "#,
+            )
+            .bind(&pattern)
+            .fetch_all(&pool)
+            .await
+            .context("Failed to query call_sites")?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT caller_fqn, callee_fqn, line_number, dispatch, concrete_type_args
+                FROM call_sites
+                ORDER BY caller_fqn, line_number
+                "#,
+            )
+            .fetch_all(&pool)
+            .await
+            .context("Failed to query call_sites")?
+        };
+
+        let mut sites = Vec::with_capacity(rows.len());
+        for row in rows {
+            let caller_fqn: String = row.get("caller_fqn");
+            let callee_fqn: String = row.get("callee_fqn");
+            let line_number: i32 = row.get("line_number");
+            let dispatch: String = row.get("dispatch");
+            let type_args_json: Option<serde_json::Value> = row.get("concrete_type_args");
+            let concrete_types: Vec<String> = type_args_json
+                .and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| {
+                                e.get("concrete_type")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            sites.push((caller_fqn, callee_fqn, line_number as usize, dispatch, concrete_types));
+        }
+
+        Ok(sites)
     }
 
     /// Find the FQN of a trait by name using pre-built O(1) lookup index.

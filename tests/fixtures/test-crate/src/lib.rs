@@ -216,6 +216,8 @@ pub enum FfiResult {
 // TRAIT DEFINITIONS
 // =============================================================================
 
+pub mod dispatch_resolution;
+
 /// A trait for processing items.
 pub trait Processor {
     /// The input type for the processor.
