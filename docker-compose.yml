@@ -309,6 +309,9 @@ services:
       RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS: ${CONTAINER_KEEP_ALIVE_SECS:-0}
       OPENCODE_CONFIG_HOST_PATH: ${OPENCODE_CONFIG_HOST_PATH:-}
       MCP_SSE_URL: ${MCP_SSE_URL:-http://mcp-sse:3001/sse}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
       RUSTBRAIN_AUTH_DISABLED: "true"
     networks:
       rustbrain-net:
@@ -361,6 +364,7 @@ services:
       API_BASE_URL: http://api:8080
       RUST_LOG: ${RUST_LOG:-info,rustbrain_mcp=debug}
       MCP_TRANSPORT: stdio
+      WORKSPACE_ID: ${WORKSPACE_ID:-}
     depends_on:
       api:
         condition: service_healthy
@@ -392,6 +396,7 @@ services:
       RUST_LOG: ${RUST_LOG:-info,rustbrain_mcp=debug}
       MCP_TRANSPORT: sse
       MCP_PORT: 3001
+      WORKSPACE_ID: ${WORKSPACE_ID:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
       interval: 15s
