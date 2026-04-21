@@ -12,6 +12,9 @@ use tracing::instrument;
 pub struct GetFunctionRequest {
     /// Fully qualified name of the function (e.g., "crate::module::function_name")
     pub fqn: String,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Information about a caller
@@ -69,11 +72,19 @@ pub struct FunctionDetail {
 
 /// Execute the get_function tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: GetFunctionRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: GetFunctionRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let encoded_fqn =
         url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
     let response: FunctionDetail = client
-        .get(&format!("/tools/get_function?fqn={}", encoded_fqn))
+        .get_with_workspace(
+            &format!("/tools/get_function?fqn={}", encoded_fqn),
+            effective_ws,
+        )
         .await?;
 
     let mut output = format!("# {} `{}`\n\n", response.kind.to_uppercase(), response.fqn);
@@ -140,6 +151,10 @@ pub fn definition() -> serde_json::Value {
                 "fqn": {
                     "type": "string",
                     "description": "Fully qualified name of the item (e.g., 'crate::module::function_name'). Use search_code to find the FQN if you don't know it."
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["fqn"]

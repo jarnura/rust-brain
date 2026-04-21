@@ -12,6 +12,9 @@ use tracing::instrument;
 pub struct GetModuleTreeRequest {
     /// Name of the crate
     pub crate_name: String,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// An item within a module
@@ -49,14 +52,19 @@ pub struct ModuleTreeResponse {
 
 /// Execute the get_module_tree tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: GetModuleTreeRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: GetModuleTreeRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let encoded_crate =
         url::form_urlencoded::byte_serialize(request.crate_name.as_bytes()).collect::<String>();
     let response: ModuleTreeResponse = client
-        .get(&format!(
-            "/tools/get_module_tree?crate_name={}",
-            encoded_crate
-        ))
+        .get_with_workspace(
+            &format!("/tools/get_module_tree?crate_name={}", encoded_crate),
+            effective_ws,
+        )
         .await?;
 
     let mut output = format!("# Module Tree: `{}`\n\n", response.crate_name);
@@ -137,6 +145,10 @@ pub fn definition() -> serde_json::Value {
                 "crate_name": {
                     "type": "string",
                     "description": "Name of the crate to analyze"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["crate_name"]

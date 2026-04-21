@@ -16,14 +16,23 @@ pub struct StatusCheckRequest {
     pub status: Option<String>,
     /// Filter by agent
     pub agent: Option<String>,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Execute the status_check tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: StatusCheckRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: StatusCheckRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     if let Some(task_id) = &request.task_id {
-        // Get specific task
-        let result: serde_json::Value = client.get(&format!("/api/tasks/{}", task_id)).await?;
+        let result: serde_json::Value = client
+            .get_with_workspace(&format!("/api/tasks/{}", task_id), effective_ws)
+            .await?;
         Ok(format!(
             "# Task: {}\n\n- **Phase:** {}\n- **Class:** {}\n- **Agent:** {}\n- **Status:** {}\n- **Retry Count:** {}\n- **Error:** {}\n- **Updated:** {}",
             result["id"].as_str().unwrap_or("?"),
@@ -36,7 +45,6 @@ pub async fn execute(client: &ApiClient, request: StatusCheckRequest) -> Result<
             result["updated_at"].as_str().unwrap_or("?"),
         ))
     } else {
-        // List tasks with filters
         let mut url = "/api/tasks?".to_string();
         let mut params = vec![];
         if let Some(status) = &request.status {
@@ -47,7 +55,7 @@ pub async fn execute(client: &ApiClient, request: StatusCheckRequest) -> Result<
         }
         url.push_str(&params.join("&"));
 
-        let tasks: Vec<serde_json::Value> = client.get(&url).await?;
+        let tasks: Vec<serde_json::Value> = client.get_with_workspace(&url, effective_ws).await?;
 
         let mut output = String::from("# Task Status\n\n");
 
@@ -94,6 +102,10 @@ pub fn definition() -> serde_json::Value {
                 "agent": {
                     "type": "string",
                     "description": "Filter tasks by assigned agent"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             }
         }

@@ -15,6 +15,9 @@ pub struct GetCallersRequest {
     /// Depth of the call graph to explore (default: 1)
     #[serde(default = "default_depth")]
     pub depth: usize,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_depth() -> usize {
@@ -49,16 +52,21 @@ pub struct CallersResponse {
 
 /// Execute the get_callers tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: GetCallersRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: GetCallersRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let depth = request.depth.clamp(1, 5);
     let encoded_fqn =
         url::form_urlencoded::byte_serialize(request.fqn.as_bytes()).collect::<String>();
 
     let response: CallersResponse = client
-        .get(&format!(
-            "/tools/get_callers?fqn={}&depth={}",
-            encoded_fqn, depth
-        ))
+        .get_with_workspace(
+            &format!("/tools/get_callers?fqn={}&depth={}", encoded_fqn, depth),
+            effective_ws,
+        )
         .await?;
 
     if response.callers.is_empty() {
@@ -117,6 +125,10 @@ pub fn definition() -> serde_json::Value {
                     "default": 1,
                     "minimum": 1,
                     "maximum": 5
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["fqn"]

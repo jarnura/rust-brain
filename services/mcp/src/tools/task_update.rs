@@ -20,17 +20,27 @@ pub struct TaskUpdateRequest {
     pub status: Option<String>,
     /// Error message (optional, for update)
     pub error: Option<String>,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Execute the task_update tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: TaskUpdateRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: TaskUpdateRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     match request.op.as_str() {
         "create" => {
             let task = request.task.ok_or_else(|| {
                 McpError::InvalidRequest("'task' field required for create operation".to_string())
             })?;
-            let result: serde_json::Value = client.post("/api/tasks", &task).await?;
+            let result: serde_json::Value = client
+                .post_with_workspace("/api/tasks", &task, effective_ws)
+                .await?;
             Ok(format!(
                 "**Task created**\n\n- ID: {}\n- Phase: {}\n- Agent: {}\n- Status: {}",
                 result["id"].as_str().unwrap_or("?"),
@@ -53,9 +63,10 @@ pub async fn execute(client: &ApiClient, request: TaskUpdateRequest) -> Result<S
             }
 
             let result: serde_json::Value = client
-                .put(
+                .put_with_workspace(
                     &format!("/api/tasks/{}", task_id),
                     &serde_json::Value::Object(body),
+                    effective_ws,
                 )
                 .await?;
             Ok(format!(
@@ -101,6 +112,10 @@ pub fn definition() -> serde_json::Value {
                 "error": {
                     "type": "string",
                     "description": "Error message (optional, for update)"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["op"]

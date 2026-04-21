@@ -26,6 +26,9 @@ pub struct ContextStoreRequest {
     pub limit: u32,
     /// Full artifact body (for put)
     pub artifact: Option<serde_json::Value>,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -34,13 +37,20 @@ fn default_limit() -> u32 {
 
 /// Execute the context_store tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: ContextStoreRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: ContextStoreRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     match request.op.as_str() {
         "put" => {
             let artifact = request.artifact.ok_or_else(|| {
                 McpError::InvalidRequest("'artifact' field required for put operation".to_string())
             })?;
-            let result: serde_json::Value = client.post("/api/artifacts", &artifact).await?;
+            let result: serde_json::Value = client
+                .post_with_workspace("/api/artifacts", &artifact, effective_ws)
+                .await?;
             Ok(format!(
                 "**Artifact created**\n\n- ID: {}\n- Type: {}\n- Status: {}",
                 result["id"].as_str().unwrap_or("unknown"),
@@ -52,7 +62,9 @@ pub async fn execute(client: &ApiClient, request: ContextStoreRequest) -> Result
             let id = request.artifact_id.ok_or_else(|| {
                 McpError::InvalidRequest("'artifact_id' required for get operation".to_string())
             })?;
-            let result: serde_json::Value = client.get(&format!("/api/artifacts/{}", id)).await?;
+            let result: serde_json::Value = client
+                .get_with_workspace(&format!("/api/artifacts/{}", id), effective_ws)
+                .await?;
             Ok(format!(
                 "# Artifact: {}\n\n- **Type:** {}\n- **Producer:** {}\n- **Status:** {}\n- **Task:** {}\n- **Confidence:** {}\n\n## Summary\n\n```json\n{}\n```\n\n## Payload\n\n```json\n{}\n```",
                 result["id"].as_str().unwrap_or("unknown"),
@@ -72,10 +84,10 @@ pub async fn execute(client: &ApiClient, request: ContextStoreRequest) -> Result
                 )
             })?;
             let result: Vec<serde_json::Value> = client
-                .get(&format!(
-                    "/api/artifacts?task_id={}&limit={}",
-                    task_id, request.limit
-                ))
+                .get_with_workspace(
+                    &format!("/api/artifacts?task_id={}&limit={}", task_id, request.limit),
+                    effective_ws,
+                )
                 .await?;
             format_artifact_list(&result, &format!("Artifacts for task {}", task_id))
         }
@@ -90,7 +102,8 @@ pub async fn execute(client: &ApiClient, request: ContextStoreRequest) -> Result
             if let Some(status) = &request.status {
                 url.push_str(&format!("&status={}", status));
             }
-            let result: Vec<serde_json::Value> = client.get(&url).await?;
+            let result: Vec<serde_json::Value> =
+                client.get_with_workspace(&url, effective_ws).await?;
             format_artifact_list(&result, &format!("Artifacts of type '{}'", artifact_type))
         }
         unknown => Err(McpError::InvalidRequest(format!(
@@ -163,6 +176,10 @@ pub fn definition() -> serde_json::Value {
                 "artifact": {
                     "type": "object",
                     "description": "Full artifact body (required for put)"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["op"]

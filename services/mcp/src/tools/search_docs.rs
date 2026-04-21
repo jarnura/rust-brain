@@ -51,7 +51,12 @@ pub struct SearchDocsResponse {
 
 /// Execute the search_docs tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: SearchDocsRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: SearchDocsRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let api_request = serde_json::json!({
         "query": request.query,
         "limit": request.limit.min(50),
@@ -59,11 +64,7 @@ pub async fn execute(client: &ApiClient, request: SearchDocsRequest) -> Result<S
     });
 
     let response: SearchDocsResponse = client
-        .post_with_workspace(
-            "/tools/search_docs",
-            &api_request,
-            request.workspace_id.as_deref(),
-        )
+        .post_with_workspace("/tools/search_docs", &api_request, effective_ws)
         .await?;
 
     if response.results.is_empty() {

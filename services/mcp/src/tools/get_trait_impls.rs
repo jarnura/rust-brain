@@ -15,6 +15,9 @@ pub struct GetTraitImplsRequest {
     /// Maximum number of results
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -45,15 +48,23 @@ pub struct TraitImplsResponse {
 
 /// Execute the get_trait_impls tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: GetTraitImplsRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: GetTraitImplsRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let encoded_trait =
         url::form_urlencoded::byte_serialize(request.trait_name.as_bytes()).collect::<String>();
     let response: TraitImplsResponse = client
-        .get(&format!(
-            "/tools/get_trait_impls?trait_name={}&limit={}",
-            encoded_trait,
-            request.limit.min(100)
-        ))
+        .get_with_workspace(
+            &format!(
+                "/tools/get_trait_impls?trait_name={}&limit={}",
+                encoded_trait,
+                request.limit.min(100)
+            ),
+            effective_ws,
+        )
         .await?;
 
     if response.implementations.is_empty() {
@@ -99,6 +110,10 @@ pub fn definition() -> serde_json::Value {
                     "default": 20,
                     "minimum": 1,
                     "maximum": 100
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["trait_name"]

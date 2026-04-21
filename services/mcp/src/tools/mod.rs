@@ -49,77 +49,88 @@ pub fn all_definitions() -> Vec<Value> {
 
 /// Execute a tool by name
 #[instrument(skip(client), fields(tool = %name))]
-pub async fn execute_tool(client: &ApiClient, name: &str, arguments: Value) -> Result<String> {
+pub async fn execute_tool(
+    client: &ApiClient,
+    name: &str,
+    arguments: Value,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
     info!("Executing tool: {}", name);
     match name {
         "search_code" => {
             let request: search_code::SearchCodeRequest = serde_json::from_value(arguments)?;
-            search_code::execute(client, request).await
+            search_code::execute(client, request, default_workspace_id).await
         }
         "search_docs" => {
             let request: search_docs::SearchDocsRequest = serde_json::from_value(arguments)?;
-            search_docs::execute(client, request).await
+            search_docs::execute(client, request, default_workspace_id).await
         }
         "get_function" => {
             let request: get_function::GetFunctionRequest = serde_json::from_value(arguments)?;
-            get_function::execute(client, request).await
+            get_function::execute(client, request, default_workspace_id).await
         }
         "get_callers" => {
             let request: get_callers::GetCallersRequest = serde_json::from_value(arguments)?;
-            get_callers::execute(client, request).await
+            get_callers::execute(client, request, default_workspace_id).await
         }
         "get_trait_impls" => {
             let request: get_trait_impls::GetTraitImplsRequest = serde_json::from_value(arguments)?;
-            get_trait_impls::execute(client, request).await
+            get_trait_impls::execute(client, request, default_workspace_id).await
         }
         "find_type_usages" => {
             let request: find_type_usages::FindTypeUsagesRequest =
                 serde_json::from_value(arguments)?;
-            find_type_usages::execute(client, request).await
+            find_type_usages::execute(client, request, default_workspace_id).await
         }
         "get_module_tree" => {
             let request: get_module_tree::GetModuleTreeRequest = serde_json::from_value(arguments)?;
-            get_module_tree::execute(client, request).await
+            get_module_tree::execute(client, request, default_workspace_id).await
         }
         "query_graph" => {
             let request: query_graph::QueryGraphRequest = serde_json::from_value(arguments)?;
-            query_graph::execute(client, request).await
+            query_graph::execute(client, request, default_workspace_id).await
         }
         "find_calls_with_type" => {
             let request: typecheck_tools::FindCallsWithTypeRequest =
                 serde_json::from_value(arguments)?;
-            typecheck_tools::execute_find_calls_with_type(client, request).await
+            typecheck_tools::execute_find_calls_with_type(client, request, default_workspace_id)
+                .await
         }
         "find_trait_impls_for_type" => {
             let request: typecheck_tools::FindTraitImplsForTypeRequest =
                 serde_json::from_value(arguments)?;
-            typecheck_tools::execute_find_trait_impls_for_type(client, request).await
+            typecheck_tools::execute_find_trait_impls_for_type(
+                client,
+                request,
+                default_workspace_id,
+            )
+            .await
         }
         "pg_query" => {
             let request: pg_query::PgQueryRequest = serde_json::from_value(arguments)?;
-            pg_query::execute(client, request).await
+            pg_query::execute(client, request, default_workspace_id).await
         }
         "context_store" => {
             let request: context_store::ContextStoreRequest = serde_json::from_value(arguments)?;
-            context_store::execute(client, request).await
+            context_store::execute(client, request, default_workspace_id).await
         }
         "status_check" => {
             let request: status_check::StatusCheckRequest = serde_json::from_value(arguments)?;
-            status_check::execute(client, request).await
+            status_check::execute(client, request, default_workspace_id).await
         }
         "task_update" => {
             let request: task_update::TaskUpdateRequest = serde_json::from_value(arguments)?;
-            task_update::execute(client, request).await
+            task_update::execute(client, request, default_workspace_id).await
         }
         "aggregate_search" => {
             let request: aggregate_search::AggregateSearchRequest =
                 serde_json::from_value(arguments)?;
-            aggregate_search::execute(client, request).await
+            aggregate_search::execute(client, request, default_workspace_id).await
         }
         "consistency_check" => {
             let request: consistency_check::ConsistencyCheckRequest =
                 serde_json::from_value(arguments)?;
-            consistency_check::execute(client, request).await
+            consistency_check::execute(client, request, default_workspace_id).await
         }
         unknown => {
             warn!(tool = %unknown, "Unknown tool requested");

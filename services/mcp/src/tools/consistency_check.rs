@@ -15,11 +15,19 @@ pub struct ConsistencyCheckRequest {
     pub crate_name: Option<String>,
     /// Detail level: "summary" (counts only) or "full" (FQN sets)
     pub detail: Option<String>,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Execute the consistency_check tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: ConsistencyCheckRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: ConsistencyCheckRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let mut url = "/api/consistency?".to_string();
     let mut params = vec![];
 
@@ -32,7 +40,7 @@ pub async fn execute(client: &ApiClient, request: ConsistencyCheckRequest) -> Re
 
     url.push_str(&params.join("&"));
 
-    let result: serde_json::Value = client.get(&url).await?;
+    let result: serde_json::Value = client.get_with_workspace(&url, effective_ws).await?;
 
     let crate_name = result["crate_name"].as_str().unwrap_or("unknown");
     let status = result["status"].as_str().unwrap_or("unknown");
@@ -140,6 +148,10 @@ pub fn definition() -> serde_json::Value {
                     "type": "string",
                     "description": "Detail level: 'summary' (counts only, fast) or 'full' (FQN sets, slower but precise)",
                     "enum": ["summary", "full"]
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             }
         }

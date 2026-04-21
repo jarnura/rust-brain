@@ -46,6 +46,7 @@ impl ApiClient {
     }
 
     /// Make a GET request to the API
+    #[allow(dead_code)]
     #[instrument(skip(self), fields(path = %path))]
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
@@ -67,6 +68,7 @@ impl ApiClient {
     }
 
     /// Make a POST request to the API
+    #[allow(dead_code)]
     #[instrument(skip(self, body), fields(path = %path))]
     pub async fn post<T: DeserializeOwned, B: serde::Serialize + std::fmt::Debug>(
         &self,
@@ -92,6 +94,7 @@ impl ApiClient {
     }
 
     /// Make a PUT request to the API
+    #[allow(dead_code)]
     #[instrument(skip(self, body), fields(path = %path))]
     pub async fn put<T: DeserializeOwned, B: serde::Serialize + std::fmt::Debug>(
         &self,
@@ -117,7 +120,6 @@ impl ApiClient {
     }
 
     /// Make a GET request to the API with an optional workspace ID header.
-    #[allow(dead_code)]
     #[instrument(skip(self), fields(path = %path))]
     pub async fn get_with_workspace<T: DeserializeOwned>(
         &self,
@@ -158,6 +160,36 @@ impl ApiClient {
         debug!("POST {} {:?} (workspace: {:?})", url, body, workspace_id);
 
         let mut request = self.client.post(&url).json(body);
+        if let Some(ws_id) = workspace_id {
+            request = request.header("X-Workspace-Id", ws_id);
+        }
+        let response = self
+            .with_auth(request)
+            .send()
+            .await
+            .map_err(McpError::Http)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpError::Api(format!("{}: {}", status, body)));
+        }
+
+        response.json().await.map_err(McpError::Http)
+    }
+
+    /// Make a PUT request to the API with an optional workspace ID header.
+    #[instrument(skip(self, body), fields(path = %path))]
+    pub async fn put_with_workspace<T: DeserializeOwned, B: serde::Serialize + std::fmt::Debug>(
+        &self,
+        path: &str,
+        body: &B,
+        workspace_id: Option<&str>,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        debug!("PUT {} {:?} (workspace: {:?})", url, body, workspace_id);
+
+        let mut request = self.client.put(&url).json(body);
         if let Some(ws_id) = workspace_id {
             request = request.header("X-Workspace-Id", ws_id);
         }

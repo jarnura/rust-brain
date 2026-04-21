@@ -21,6 +21,9 @@ pub struct FindCallsWithTypeRequest {
     /// Maximum number of results
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -51,7 +54,9 @@ pub struct CallsWithTypeResponse {
 pub async fn execute_find_calls_with_type(
     client: &ApiClient,
     request: FindCallsWithTypeRequest,
+    default_workspace_id: Option<&str>,
 ) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let encoded_type =
         url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
     let mut url = format!(
@@ -66,7 +71,7 @@ pub async fn execute_find_calls_with_type(
         url.push_str(&format!("&callee_name={}", encoded_callee));
     }
 
-    let response: CallsWithTypeResponse = client.get(&url).await?;
+    let response: CallsWithTypeResponse = client.get_with_workspace(&url, effective_ws).await?;
 
     if response.calls.is_empty() {
         let mut msg = format!(
@@ -138,6 +143,10 @@ pub fn definition_find_calls_with_type() -> serde_json::Value {
                     "default": 20,
                     "minimum": 1,
                     "maximum": 100
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["type_name"]
@@ -157,6 +166,9 @@ pub struct FindTraitImplsForTypeRequest {
     /// Maximum number of results
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// A trait implementation
@@ -183,15 +195,20 @@ pub struct TraitImplsForTypeResponse {
 pub async fn execute_find_trait_impls_for_type(
     client: &ApiClient,
     request: FindTraitImplsForTypeRequest,
+    default_workspace_id: Option<&str>,
 ) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let encoded_type =
         url::form_urlencoded::byte_serialize(request.type_name.as_bytes()).collect::<String>();
     let response: TraitImplsForTypeResponse = client
-        .get(&format!(
-            "/tools/find_trait_impls_for_type?type_name={}&limit={}",
-            encoded_type,
-            request.limit.min(100)
-        ))
+        .get_with_workspace(
+            &format!(
+                "/tools/find_trait_impls_for_type?type_name={}&limit={}",
+                encoded_type,
+                request.limit.min(100)
+            ),
+            effective_ws,
+        )
         .await?;
 
     if response.implementations.is_empty() {
@@ -247,6 +264,10 @@ pub fn definition_find_trait_impls_for_type() -> serde_json::Value {
                     "default": 20,
                     "minimum": 1,
                     "maximum": 100
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["type_name"]

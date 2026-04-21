@@ -40,6 +40,9 @@ pub struct QueryGraphRequest {
     pub limit: Option<i64>,
     #[serde(default)]
     pub depth: Option<i64>,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 impl QueryGraphRequest {
@@ -94,15 +97,21 @@ pub struct GraphQueryResponse {
 
 /// Execute the query_graph tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: QueryGraphRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: QueryGraphRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let params = request.merged_parameters();
     let response: GraphQueryResponse = client
-        .post(
+        .post_with_workspace(
             "/tools/query_graph",
             &serde_json::json!({
                 "query_name": request.query_name,
                 "parameters": params,
             }),
+            effective_ws,
         )
         .await?;
 
@@ -255,6 +264,10 @@ pub fn definition() -> serde_json::Value {
                 "depth": {
                     "type": "integer",
                     "description": "Traversal depth (1-5, default 1, for find_callers/find_neighbors)"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["query_name"]
@@ -493,6 +506,7 @@ mod tests {
             prefix: None,
             limit: None,
             depth: None,
+            workspace_id: None,
         };
 
         assert_eq!(request.query_name, "find_functions_by_name");

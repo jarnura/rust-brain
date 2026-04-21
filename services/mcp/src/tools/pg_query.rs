@@ -15,6 +15,9 @@ pub struct PgQueryRequest {
     /// Bind parameters (optional)
     #[serde(default)]
     pub params: Vec<String>,
+    /// Workspace ID to scope this operation
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// API request body sent to the REST endpoint
@@ -33,13 +36,20 @@ struct PgQueryResponse {
 
 /// Execute the pg_query tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: PgQueryRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: PgQueryRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let api_request = ApiPgQueryRequest {
         query: request.query,
         params: request.params,
     };
 
-    let response: PgQueryResponse = client.post("/tools/pg_query", &api_request).await?;
+    let response: PgQueryResponse = client
+        .post_with_workspace("/tools/pg_query", &api_request, effective_ws)
+        .await?;
 
     if response.rows.is_empty() {
         return Ok("No rows returned.".to_string());
@@ -126,6 +136,10 @@ pub fn definition() -> serde_json::Value {
                     "items": { "type": "string" },
                     "description": "Bind parameters for the query (optional)",
                     "default": []
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID to scope this operation. Auto-populated from server config if not specified."
                 }
             },
             "required": ["query"]

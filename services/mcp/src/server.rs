@@ -392,7 +392,13 @@ impl McpServer {
 
         debug!("Tool call: {} with args {:?}", request.name, arguments);
 
-        let result = tools::execute_tool(&self.client, &request.name, arguments).await;
+        let result = tools::execute_tool(
+            &self.client,
+            &request.name,
+            arguments,
+            self.config.workspace_id.as_deref(),
+        )
+        .await;
 
         let is_error = result.is_err();
 

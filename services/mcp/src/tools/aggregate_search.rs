@@ -56,18 +56,19 @@ struct AggregateSearchResponse {
 
 /// Execute the aggregate_search tool
 #[instrument(skip(client))]
-pub async fn execute(client: &ApiClient, request: AggregateSearchRequest) -> Result<String> {
+pub async fn execute(
+    client: &ApiClient,
+    request: AggregateSearchRequest,
+    default_workspace_id: Option<&str>,
+) -> Result<String> {
+    let effective_ws = request.workspace_id.as_deref().or(default_workspace_id);
     let api_request = ApiAggregateSearchRequest {
         query: request.query.clone(),
         limit: request.limit,
     };
 
     let response: AggregateSearchResponse = client
-        .post_with_workspace(
-            "/tools/aggregate_search",
-            &api_request,
-            request.workspace_id.as_deref(),
-        )
+        .post_with_workspace("/tools/aggregate_search", &api_request, effective_ws)
         .await?;
 
     if response.results.is_empty() {

@@ -32,17 +32,21 @@ fn client() -> Client {
 /// Reads the API key from `RUSTBRAIN_TEST_API_KEY` env var.  If not set,
 /// returns a plain client (works when `RUSTBRAIN_AUTH_DISABLED=true`).
 fn authenticated_client() -> Client {
-    let builder = Client::builder()
-        .timeout(Duration::from_secs(15));
+    let builder = Client::builder().timeout(Duration::from_secs(15));
 
     match std::env::var("RUSTBRAIN_TEST_API_KEY") {
         Ok(key) if !key.is_empty() => {
             let mut headers = HeaderMap::new();
             headers.insert(
                 AUTHORIZATION,
-                format!("Bearer {key}").parse().expect("Invalid API key header value"),
+                format!("Bearer {key}")
+                    .parse()
+                    .expect("Invalid API key header value"),
             );
-            builder.default_headers(headers).build().expect("Failed to build HTTP client")
+            builder
+                .default_headers(headers)
+                .build()
+                .expect("Failed to build HTTP client")
         }
         _ => builder.build().expect("Failed to build HTTP client"),
     }
