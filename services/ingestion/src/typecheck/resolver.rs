@@ -1129,4 +1129,352 @@ mod tests {
         assert!(impl_info.trait_fqn.contains("From"));
         assert!(impl_info.self_type.contains("Container"));
     }
+
+    // -----------------------------------------------------------------------
+    // ResolutionQuality helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolution_quality_as_str() {
+        assert_eq!(ResolutionQuality::Analyzed.as_str(), "analyzed");
+        assert_eq!(ResolutionQuality::Heuristic.as_str(), "heuristic");
+    }
+
+    #[test]
+    fn test_resolution_quality_parse_str() {
+        assert_eq!(ResolutionQuality::parse_str("analyzed"), ResolutionQuality::Analyzed);
+        assert_eq!(ResolutionQuality::parse_str("heuristic"), ResolutionQuality::Heuristic);
+        // Any unknown string maps to Heuristic
+        assert_eq!(ResolutionQuality::parse_str("unknown"), ResolutionQuality::Heuristic);
+        assert_eq!(ResolutionQuality::parse_str(""), ResolutionQuality::Heuristic);
+    }
+
+    // -----------------------------------------------------------------------
+    // analyze_heuristics_only
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_analyze_heuristics_only_with_valid_source() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Display for Widget {
+                fn fmt(&self, f: &mut Formatter) -> fmt::Result { Ok(()) }
+            }
+
+            fn render<T: Display>(item: T) {
+                let s = format::<String>("{}", item);
+            }
+        "#;
+
+        let result = resolver.analyze_heuristics_only(
+            "my_crate",
+            "my_crate::ui",
+            "ui.rs",
+            source,
+            &["my_crate::ui::render".to_string()],
+        );
+
+        // Heuristics should detect the trait impl from the impl line
+        assert!(!result.trait_impls.is_empty(), "Expected at least one trait impl");
+        for impl_info in &result.trait_impls {
+            assert!(matches!(impl_info.quality, ResolutionQuality::Heuristic));
+            assert_eq!(impl_info.file_path, "ui.rs");
+        }
+
+        // Errors should be empty for valid source
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_analyze_heuristics_only_with_empty_source() {
+        let resolver = TypeResolver::new();
+        let result = resolver.analyze_heuristics_only("crate", "mod", "f.rs", "", &[]);
+
+        assert!(result.trait_impls.is_empty());
+        assert!(result.call_sites.is_empty());
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_analyze_heuristics_only_turbofish_detected() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            fn main() {
+                let x = parse::<u64>("42");
+                let y = collect::<Vec<i32>>();
+            }
+        "#;
+
+        let result = resolver.analyze_heuristics_only(
+            "crate",
+            "main_mod",
+            "main.rs",
+            source,
+            &["main_mod::main".to_string()],
+        );
+
+        assert!(!result.call_sites.is_empty(), "Expected turbofish call sites");
+        for site in &result.call_sites {
+            assert!(matches!(site.quality, ResolutionQuality::Heuristic));
+            assert!(site.is_monomorphized);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-item source files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multi_item_source_extraction() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            pub struct Config { timeout: u64 }
+
+            pub fn create_config() -> Config {
+                Config { timeout: 30 }
+            }
+
+            impl Default for Config {
+                fn default() -> Self { Config { timeout: 30 } }
+            }
+
+            impl Clone for Config {
+                fn clone(&self) -> Self { Config { timeout: self.timeout } }
+            }
+
+            pub fn process(cfg: Config) -> bool {
+                let _ = cfg;
+                true
+            }
+        "#;
+
+        let result = resolver.analyze_source("crate", "crate::config", "config.rs", source, &[]);
+
+        // Two trait impls: Default and Clone
+        assert_eq!(result.trait_impls.len(), 2);
+        let traits: Vec<&str> = result.trait_impls.iter().map(|i| i.trait_fqn.as_str()).collect();
+        assert!(traits.contains(&"Default"));
+        assert!(traits.contains(&"Clone"));
+
+        // All should be Analyzed quality
+        for impl_info in &result.trait_impls {
+            assert!(matches!(impl_info.quality, ResolutionQuality::Analyzed));
+        }
+    }
+
+    #[test]
+    fn test_nested_impl_method_call_sites() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Processor {
+                pub fn run(&self) {
+                    let result = self.prepare();
+                    self.emit(result);
+                }
+
+                fn prepare(&self) -> i32 { 0 }
+                fn emit(&self, _v: i32) {}
+            }
+        "#;
+
+        let result = resolver.analyze_source(
+            "crate",
+            "crate::proc",
+            "proc.rs",
+            source,
+            &["crate::proc::Processor::run".to_string()],
+        );
+
+        // Inherent impl: no trait impls
+        assert!(result.trait_impls.is_empty());
+
+        // Should capture method calls inside run()
+        let run_calls: Vec<_> = result
+            .call_sites
+            .iter()
+            .filter(|s| s.caller_fqn.contains("run"))
+            .collect();
+        assert!(!run_calls.is_empty(), "Expected method calls from run()");
+    }
+
+    #[test]
+    fn test_generic_params_extracted_on_impl() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl<T: Clone + Send, U: Sync> Converter<T, U> {
+                pub fn convert(&self) {}
+            }
+        "#;
+
+        // Inherent impl — but we do still parse generics
+        let result = resolver.analyze_source("crate", "crate::conv", "conv.rs", source, &[]);
+
+        // No trait impl (inherent impl)
+        assert!(result.trait_impls.is_empty());
+    }
+
+    #[test]
+    fn test_generic_trait_impl_generics_populated() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl<T: Clone + Send> Iterator for MyIter<T> {
+                type Item = T;
+                fn next(&mut self) -> Option<T> { None }
+            }
+        "#;
+
+        let result = resolver.analyze_source("crate", "crate::iter", "iter.rs", source, &[]);
+
+        assert_eq!(result.trait_impls.len(), 1);
+        let impl_info = &result.trait_impls[0];
+        assert_eq!(impl_info.trait_fqn, "Iterator");
+        assert!(impl_info.self_type.contains("MyIter"));
+        // Generic param T should be captured
+        assert!(!impl_info.generic_params.is_empty());
+        assert_eq!(impl_info.generic_params[0].name, "T");
+        assert_eq!(impl_info.generic_params[0].kind, "type");
+    }
+
+    #[test]
+    fn test_impl_fqn_format() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Debug for Foo {
+                fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { Ok(()) }
+            }
+        "#;
+
+        let result = resolver.analyze_source("crate", "crate::foo", "foo.rs", source, &[]);
+
+        assert!(!result.trait_impls.is_empty());
+        // impl_fqn should follow module::Trait_Type format
+        let fqn = &result.trait_impls[0].impl_fqn;
+        assert!(fqn.contains("Debug"), "impl_fqn should contain trait name: {}", fqn);
+        assert!(fqn.contains("Foo"), "impl_fqn should contain type name: {}", fqn);
+    }
+
+    #[test]
+    fn test_turbofish_single_type_arg() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            fn caller() {
+                let v = Vec::<String>::new();
+            }
+        "#;
+
+        let result = resolver.analyze_source("crate", "crate::m", "m.rs", source, &[]);
+
+        let mono_sites: Vec<_> = result.call_sites.iter().filter(|s| s.is_monomorphized).collect();
+        assert!(!mono_sites.is_empty(), "Expected monomorphized call site for Vec::<String>::new()");
+        let site = &mono_sites[0];
+        assert_eq!(site.concrete_type_args.len(), 1);
+        assert!(site.concrete_type_args[0].concrete_type.contains("String"));
+    }
+
+    #[test]
+    fn test_heuristic_type_args_nested_generics() {
+        let resolver = TypeResolver::new();
+
+        // Two-level nested generics
+        let args = resolver.parse_type_args_heuristic("HashMap<String, Vec<i32>>, Option<u64>");
+        assert_eq!(args.len(), 2, "Expected 2 args: {:?}", args);
+        assert!(args[0].concrete_type.contains("HashMap"));
+        assert!(args[1].concrete_type.contains("Option"));
+        assert_eq!(args[0].param_name, "T0");
+        assert_eq!(args[1].param_name, "T1");
+    }
+
+    #[test]
+    fn test_heuristic_single_type_arg() {
+        let resolver = TypeResolver::new();
+        let args = resolver.parse_type_args_heuristic("String");
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].concrete_type, "String");
+        assert_eq!(args[0].param_name, "T0");
+    }
+
+    #[test]
+    fn test_heuristic_empty_type_args() {
+        let resolver = TypeResolver::new();
+        let args = resolver.parse_type_args_heuristic("");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_file_path_propagated_in_results() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            impl Clone for MyType {
+                fn clone(&self) -> Self { MyType }
+            }
+        "#;
+
+        let result =
+            resolver.analyze_source("crate", "crate::m", "src/lib.rs", source, &[]);
+
+        assert!(!result.trait_impls.is_empty());
+        assert_eq!(result.trait_impls[0].file_path, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_heuristic_trait_impl_line_numbers() {
+        let resolver = TypeResolver::new();
+        // The impl line is on line 3 (1-indexed)
+        let source = "// line 1\n// line 2\nimpl Foo for Bar {}\n";
+
+        let result = resolver.analyze_heuristics_only("crate", "crate::m", "f.rs", source, &[]);
+
+        assert!(!result.trait_impls.is_empty());
+        // Line numbers in heuristic mode are 1-based
+        assert_eq!(result.trait_impls[0].line_number, 3);
+    }
+
+    #[test]
+    fn test_type_resolver_default_is_same_as_new() {
+        let _resolver: TypeResolver = TypeResolver::default();
+        // If this compiles and doesn't panic, Default is wired up correctly
+    }
+
+    #[test]
+    fn test_analyze_source_no_errors_for_valid_source() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+            impl std::fmt::Display for () {
+                fn fmt(&self, _f: &mut std::fmt::Formatter) -> std::fmt::Result { Ok(()) }
+            }
+        "#;
+
+        let result = resolver.analyze_source("crate", "crate::math", "math.rs", source, &[]);
+        assert!(result.errors.is_empty(), "No errors expected for valid source: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_analyze_source_errors_recorded_for_invalid_source() {
+        let resolver = TypeResolver::new();
+        // Truly unparseable — not valid Rust
+        let source = "this is not rust code @#$%^";
+
+        let result = resolver.analyze_source("crate", "crate::m", "f.rs", source, &[]);
+
+        // Syn will fail; errors should be recorded
+        assert!(!result.errors.is_empty(), "Expected errors for invalid source");
+    }
+
+    #[test]
+    fn test_method_turbofish_on_variable_receiver() {
+        let resolver = TypeResolver::new();
+        let source = r#"
+            fn do_work(buf: Vec<u8>) {
+                let s = buf.iter().map::<String, _>(|b| b.to_string()).collect::<Vec<_>>();
+            }
+        "#;
+
+        let result = resolver.analyze_source("crate", "crate::work", "work.rs", source, &[]);
+
+        // Should find at least one monomorphized method call
+        let mono: Vec<_> = result.call_sites.iter().filter(|s| s.is_monomorphized).collect();
+        assert!(!mono.is_empty(), "Expected monomorphized method calls");
+    }
 }

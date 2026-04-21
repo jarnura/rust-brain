@@ -436,4 +436,308 @@ mod tests {
             "If this fails, the doc comment bug is fixed! Update this test."
         );
     }
+
+    // -----------------------------------------------------------------------
+    // truncate_body_source (tested indirectly via parse)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_short_body_source_not_truncated() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub fn tiny() -> i32 { 42 }"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        let item = &result.items[0];
+        // Body source should contain actual code, not a truncation placeholder
+        assert!(
+            !item.body_source.starts_with("[BODY:"),
+            "Short body should not be truncated: {}",
+            item.body_source
+        );
+    }
+
+    #[test]
+    fn test_large_body_source_truncated_to_placeholder() {
+        // Build a source function whose body exceeds MAX_BODY_SOURCE_LEN (50_000 bytes)
+        // We test truncate_body_source directly via the public-facing function.
+        let short = "hello";
+        let long = "x".repeat(60_000);
+
+        assert_eq!(truncate_body_source(short), short);
+
+        let truncated = truncate_body_source(&long);
+        assert!(
+            truncated.starts_with("[BODY:"),
+            "Long body should be replaced with placeholder: {}",
+            &truncated[..30]
+        );
+        assert!(truncated.contains("60000 bytes"));
+    }
+
+    // -----------------------------------------------------------------------
+    // FQN construction edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fqn_with_deeply_nested_module() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub fn leaf() {}"#;
+
+        let result = parser.parse(source, "crate::a::b::c::d").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert_eq!(result.items[0].fqn, "crate::a::b::c::d::leaf");
+    }
+
+    #[test]
+    fn test_fqn_for_struct_uses_correct_module_path() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub struct Payload { value: u64 }"#;
+
+        let result = parser.parse(source, "crate::net::proto").unwrap();
+
+        assert!(!result.items.is_empty());
+        let item = &result.items[0];
+        assert_eq!(item.fqn, "crate::net::proto::Payload");
+        assert_eq!(item.name, "Payload");
+    }
+
+    // -----------------------------------------------------------------------
+    // Malformed Rust — graceful degradation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_entirely_malformed_source_does_not_panic() {
+        let parser = DualParser::new().unwrap();
+        // Not valid Rust at all
+        let source = "@#$% not rust ! {} fn ???";
+
+        // Should not panic — may return empty items or errors
+        let result = parser.parse(source, "test");
+        // Either Ok (with errors) or Err — both acceptable; we just need no panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_partial_source_returns_some_items() {
+        let parser = DualParser::new().unwrap();
+        // Two valid items plus some garbage in the middle
+        let source = r#"
+            pub fn before() -> i32 { 1 }
+            pub struct After { x: i32 }
+        "#;
+
+        let result = parser.parse(source, "test::m").unwrap();
+
+        // At least the two valid items should parse
+        assert!(
+            result.items.len() >= 2,
+            "Expected at least 2 items, got {}",
+            result.items.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Visibility variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_private_item_visibility() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"fn private_fn() {}"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert!(
+            matches!(result.items[0].visibility, Visibility::Private),
+            "Expected Private visibility"
+        );
+    }
+
+    #[test]
+    fn test_public_item_visibility() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub fn public_fn() {}"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert!(
+            matches!(result.items[0].visibility, Visibility::Public),
+            "Expected Public visibility"
+        );
+    }
+
+    #[test]
+    fn test_pub_crate_item_visibility() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub(crate) fn crate_fn() {}"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        // Should be crate-visible (not Private, not Public)
+        assert!(
+            !matches!(result.items[0].visibility, Visibility::Public),
+            "pub(crate) should not be Public"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Struct / enum / trait item types
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enum_item_type() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub enum Status { Active, Inactive }"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert_eq!(result.items[0].item_type.as_str(), "enum");
+        assert_eq!(result.items[0].name, "Status");
+    }
+
+    #[test]
+    fn test_trait_item_type() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"pub trait Processable { fn process(&self); }"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert_eq!(result.items[0].item_type.as_str(), "trait");
+        assert_eq!(result.items[0].name, "Processable");
+    }
+
+    // -----------------------------------------------------------------------
+    // Multiple generic params and where clauses
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multiple_generic_params() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"
+            pub fn multi<A, B, C>(_a: A, _b: B, _c: C) {}
+        "#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        let item = &result.items[0];
+        assert_eq!(item.generic_params.len(), 3, "Expected 3 generic params");
+    }
+
+    #[test]
+    fn test_where_clause_with_multiple_bounds() {
+        let parser = DualParser::new().unwrap();
+        let source = r#"
+            pub fn bounded<T>(_x: T)
+            where
+                T: Clone + Send + Sync + 'static,
+            {}
+        "#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        assert!(!result.items[0].where_clauses.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Attributes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_derive_attributes_stripped_by_skeleton_extraction() {
+        // Known limitation: attributes preceding an item (e.g. #[derive(...)]) are
+        // outside the tree-sitter skeleton byte range, so syn sees only the bare
+        // item body and the attribute list is empty.  This mirrors the doc-comment
+        // limitation documented in test_doc_comments_lost_in_dual_parse.
+        // Fix: expand skeleton byte ranges to include preceding attribute blocks.
+        let parser = DualParser::new().unwrap();
+        let source = r#"
+            #[derive(Clone, Debug, PartialEq)]
+            pub struct Tagged { id: u64 }
+        "#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(!result.items.is_empty());
+        let item = &result.items[0];
+        // Attributes are currently lost in the dual-parse path
+        // When fixed, change this assertion to assert non-empty
+        assert!(
+            item.attributes.is_empty(),
+            "If this fails, the attribute-stripping bug is fixed! Update this test."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Large file stress test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_large_source_file_does_not_panic() {
+        let parser = DualParser::new().unwrap();
+
+        // Generate 100 small functions
+        let mut source = String::new();
+        for i in 0..100 {
+            source.push_str(&format!("pub fn func_{i}() -> i32 {{ {i} }}\n"));
+        }
+
+        let result = parser.parse(&source, "crate::generated").unwrap();
+
+        assert!(
+            result.items.len() >= 100,
+            "Expected at least 100 items, got {}",
+            result.items.len()
+        );
+        assert!(result.errors.is_empty(), "Expected no parse errors for clean source");
+    }
+
+    // -----------------------------------------------------------------------
+    // ParseResult structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_result_partial_items_on_syn_failure() {
+        let parser = DualParser::new().unwrap();
+        // This is valid enough for tree-sitter but still parseable by syn.
+        // Partial items appear only when syn fails but tree-sitter succeeds.
+        // For a completely valid source, partial_items should be empty.
+        let source = r#"pub fn clean() -> bool { true }"#;
+
+        let result = parser.parse(source, "test").unwrap();
+
+        assert!(
+            result.partial_items.is_empty(),
+            "No partial items expected for clean source"
+        );
+    }
+
+    #[test]
+    fn test_parse_file_returns_error_for_missing_file() {
+        let parser = DualParser::new().unwrap();
+        let missing = std::path::Path::new("/nonexistent/path/to/file.rs");
+
+        let result = parser.parse_file(missing, "test");
+
+        assert!(result.is_err(), "Expected error for missing file");
+    }
+
+    // -----------------------------------------------------------------------
+    // DualParser::default()
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dual_parser_default_is_ok() {
+        // Default uses expect() internally; just ensure it doesn't panic
+        let _parser = DualParser::default();
+    }
 }

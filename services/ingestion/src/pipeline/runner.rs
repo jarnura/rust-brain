@@ -840,4 +840,297 @@ mod tests {
             assert!(runner.should_run_stage(stage_name));
         }
     }
+
+    // -----------------------------------------------------------------------
+    // should_run_stage: stage-filter matrix for all 6 stages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_run_stage_each_individually() {
+        for target_stage in STAGE_NAMES {
+            let config = PipelineConfig {
+                stages: Some(vec![target_stage.to_string()]),
+                ..test_config()
+            };
+            let runner = PipelineRunner::new(config).unwrap();
+
+            // Only the target stage should run
+            for stage in STAGE_NAMES {
+                if *stage == *target_stage {
+                    assert!(
+                        runner.should_run_stage(stage),
+                        "Expected {} to run when stages=[{}]",
+                        stage,
+                        target_stage
+                    );
+                } else {
+                    assert!(
+                        !runner.should_run_stage(stage),
+                        "Expected {} NOT to run when stages=[{}]",
+                        stage,
+                        target_stage
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_should_run_stage_subset() {
+        let config = PipelineConfig {
+            stages: Some(vec![
+                "parse".to_string(),
+                "typecheck".to_string(),
+                "extract".to_string(),
+            ]),
+            ..test_config()
+        };
+        let runner = PipelineRunner::new(config).unwrap();
+
+        assert!(!runner.should_run_stage("expand"));
+        assert!(runner.should_run_stage("parse"));
+        assert!(runner.should_run_stage("typecheck"));
+        assert!(runner.should_run_stage("extract"));
+        assert!(!runner.should_run_stage("graph"));
+        assert!(!runner.should_run_stage("embed"));
+    }
+
+    #[test]
+    fn test_should_run_stage_unknown_stage_returns_false_when_filtering() {
+        let config = PipelineConfig {
+            stages: Some(vec!["expand".to_string()]),
+            ..test_config()
+        };
+        let runner = PipelineRunner::new(config).unwrap();
+
+        // A stage name not in STAGE_NAMES should not run when a filter is active
+        assert!(!runner.should_run_stage("nonexistent_stage"));
+    }
+
+    #[test]
+    fn test_should_run_stage_unknown_runs_when_no_filter() {
+        let config = test_config(); // stages: None
+        let runner = PipelineRunner::new(config).unwrap();
+
+        // With no filter every name passes (filter is inclusive only when set)
+        assert!(runner.should_run_stage("anything"));
+    }
+
+    #[test]
+    fn test_should_run_stage_empty_stages_list_matches_nothing() {
+        let config = PipelineConfig {
+            stages: Some(vec![]), // explicitly empty — nothing should run
+            ..test_config()
+        };
+        let runner = PipelineRunner::new(config).unwrap();
+
+        for stage in STAGE_NAMES {
+            assert!(
+                !runner.should_run_stage(stage),
+                "Expected {} NOT to run with empty stages list",
+                stage
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage ordering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stage_names_canonical_ordering() {
+        assert_eq!(STAGE_NAMES.len(), 6);
+        assert_eq!(STAGE_NAMES[0], "expand");
+        assert_eq!(STAGE_NAMES[1], "parse");
+        assert_eq!(STAGE_NAMES[2], "typecheck");
+        assert_eq!(STAGE_NAMES[3], "extract");
+        assert_eq!(STAGE_NAMES[4], "graph");
+        assert_eq!(STAGE_NAMES[5], "embed");
+    }
+
+    #[test]
+    fn test_stage_names_no_duplicates() {
+        let unique: std::collections::HashSet<_> = STAGE_NAMES.iter().collect();
+        assert_eq!(unique.len(), STAGE_NAMES.len(), "STAGE_NAMES must have no duplicates");
+    }
+
+    // -----------------------------------------------------------------------
+    // PipelineRunner construction variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_runner_new_succeeds_for_all_stage_configs() {
+        // Verify runner can be built for each single-stage config
+        for stage in STAGE_NAMES {
+            let config = PipelineConfig {
+                stages: Some(vec![stage.to_string()]),
+                ..test_config()
+            };
+            assert!(
+                PipelineRunner::new(config).is_ok(),
+                "PipelineRunner::new failed for stage={}",
+                stage
+            );
+        }
+    }
+
+    #[test]
+    fn test_runner_with_context_succeeds() {
+        use crate::pipeline::PipelineContext;
+        let config = test_config();
+        let ctx = PipelineContext::new(config);
+        let runner = PipelineRunner::with_context(ctx);
+        assert!(runner.is_ok());
+    }
+
+    #[test]
+    fn test_runner_context_accessor() {
+        let config = test_config();
+        let runner = PipelineRunner::new(config.clone()).unwrap();
+        // context() should not panic and should reflect config
+        let _ctx = runner.context();
+    }
+
+    #[test]
+    fn test_runner_monitor_initially_none() {
+        let config = test_config();
+        let runner = PipelineRunner::new(config).unwrap();
+        // Before connect(), monitor should be None
+        assert!(runner.monitor().is_none());
+    }
+
+    #[test]
+    fn test_runner_resilience_initially_none() {
+        let config = test_config();
+        let runner = PipelineRunner::new(config).unwrap();
+        // Before connect(), resilience should be None
+        assert!(runner.resilience().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // PipelineConfig::validate — from_stage validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_validate_rejects_invalid_from_stage() {
+        let config = PipelineConfig {
+            from_stage: Some("not_a_real_stage".to_string()),
+            ..test_config()
+        };
+        assert!(
+            config.validate().is_err(),
+            "Expected validate() to reject unknown from_stage"
+        );
+    }
+
+    #[test]
+    fn test_config_validate_accepts_all_valid_from_stages() {
+        for stage in STAGE_NAMES {
+            let config = PipelineConfig {
+                from_stage: Some(stage.to_string()),
+                ..test_config()
+            };
+            assert!(
+                config.validate().is_ok(),
+                "Expected validate() to accept from_stage={}",
+                stage
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_validate_no_from_stage_is_ok() {
+        let config = test_config();
+        assert!(config.validate().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // PipelineConfig::workspace_schema
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workspace_schema_correct_derivation() {
+        let config = PipelineConfig {
+            workspace_label: Some("Workspace_1a2b3c4d5e6f".to_string()),
+            ..test_config()
+        };
+        assert_eq!(config.workspace_schema(), Some("ws_1a2b3c4d5e6f".to_string()));
+    }
+
+    #[test]
+    fn test_workspace_schema_none_when_no_label() {
+        let config = test_config();
+        assert_eq!(config.workspace_schema(), None);
+    }
+
+    #[test]
+    fn test_workspace_schema_none_for_invalid_label() {
+        let config = PipelineConfig {
+            workspace_label: Some("invalid_label".to_string()),
+            ..test_config()
+        };
+        assert_eq!(config.workspace_schema(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // PipelineConfig::workspace_qdrant_suffix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workspace_qdrant_suffix_correct() {
+        let config = PipelineConfig {
+            workspace_label: Some("Workspace_aabbccddeeff".to_string()),
+            ..test_config()
+        };
+        assert_eq!(config.workspace_qdrant_suffix(), Some("aabbccddeeff"));
+    }
+
+    #[test]
+    fn test_workspace_qdrant_suffix_none_when_no_label() {
+        let config = test_config();
+        assert_eq!(config.workspace_qdrant_suffix(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_workspace_label
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_workspace_label_valid() {
+        use crate::pipeline::validate_workspace_label;
+        assert!(validate_workspace_label("Workspace_1a2b3c4d5e6f"));
+        assert!(validate_workspace_label("Workspace_000000000000"));
+        assert!(validate_workspace_label("Workspace_abcdef012345"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_invalid_prefix() {
+        use crate::pipeline::validate_workspace_label;
+        assert!(!validate_workspace_label("workspace_1a2b3c4d5e6f"));
+        assert!(!validate_workspace_label("1a2b3c4d5e6f"));
+        assert!(!validate_workspace_label("ws_1a2b3c4d5e6f"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_wrong_hex_length() {
+        use crate::pipeline::validate_workspace_label;
+        assert!(!validate_workspace_label("Workspace_1a2b3c4d5e6")); // 11 chars
+        assert!(!validate_workspace_label("Workspace_1a2b3c4d5e6f7")); // 13 chars
+        assert!(!validate_workspace_label("Workspace_")); // 0 chars
+    }
+
+    #[test]
+    fn test_validate_workspace_label_uppercase_rejected() {
+        use crate::pipeline::validate_workspace_label;
+        // Uppercase hex is not allowed
+        assert!(!validate_workspace_label("Workspace_AABBCCDDEEFF"));
+        assert!(!validate_workspace_label("Workspace_1A2B3C4D5E6F"));
+    }
+
+    #[test]
+    fn test_validate_workspace_label_non_hex_chars() {
+        use crate::pipeline::validate_workspace_label;
+        assert!(!validate_workspace_label("Workspace_gggggggggggg")); // 'g' not hex
+        assert!(!validate_workspace_label("Workspace_zzzzzzzzzzzz"));
+    }
 }
