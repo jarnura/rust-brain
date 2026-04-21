@@ -14,6 +14,7 @@ use neo4rs::Graph;
 use prometheus::Registry;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 
 /// Per-key rate limiter using fixed-window token buckets.
 ///
@@ -47,6 +48,11 @@ pub struct AppState {
     pub start_time: Instant,
     /// Per-key rate limiter keyed by API key ID
     pub rate_limiter: Arc<KeyRateLimiter>,
+    /// Semaphore limiting concurrent ingestion container spawns.
+    ///
+    /// Sized from `Config::max_concurrent_ingestions`. Tasks that cannot
+    /// acquire a permit are queued in the tokio runtime until a slot frees.
+    pub ingestion_semaphore: Arc<Semaphore>,
 }
 
 /// Prometheus metrics for API request tracking.

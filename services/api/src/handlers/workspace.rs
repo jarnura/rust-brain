@@ -179,10 +179,27 @@ pub async fn create_workspace(
         .unwrap_or_else(|| schema_name_from_id(ws_id));
     let docker = state.docker.clone();
     let config = state.config.clone();
-
     let http_client = state.http_client.clone();
+    let semaphore = state.ingestion_semaphore.clone();
 
     tokio::spawn(async move {
+        let available = semaphore.available_permits();
+        if available == 0 {
+            info!(
+                workspace_id = %ws_id,
+                "Ingestion queued — all concurrency slots in use"
+            );
+        }
+        // Acquiring the permit here (inside the spawned task) keeps the HTTP
+        // response non-blocking while still queuing work that exceeds the limit.
+        let _permit = semaphore
+            .acquire()
+            .await
+            .expect("ingestion semaphore closed unexpectedly");
+        info!(
+            workspace_id = %ws_id,
+            "Ingestion started — concurrency slot acquired"
+        );
         run_clone(
             pool,
             client,
@@ -194,6 +211,11 @@ pub async fn create_workspace(
             source_url,
         )
         .await;
+        // _permit is dropped here, releasing the slot for queued tasks.
+        info!(
+            workspace_id = %ws_id,
+            "Ingestion completed — concurrency slot released"
+        );
     });
 
     let body = CreateWorkspaceResponse {
@@ -1099,5 +1121,69 @@ mod tests {
         let tree = build_tree_from_paths(&entries);
         assert!(tree.is_dir);
         assert!(tree.children.is_empty());
+    }
+
+    /// Verify the semaphore allows exactly N concurrent tasks and queues the rest.
+    #[tokio::test]
+    async fn test_ingestion_semaphore_limits_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        let limit = 3usize;
+        let sem = Arc::new(Semaphore::new(limit));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let sem = sem.clone();
+            let in_flight = in_flight.clone();
+            let peak = peak.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(current, Ordering::SeqCst);
+                // Simulate brief work
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert!(
+            peak.load(Ordering::SeqCst) <= limit,
+            "peak in-flight ({}) exceeded semaphore limit ({})",
+            peak.load(Ordering::SeqCst),
+            limit
+        );
+    }
+
+    /// Verify queued tasks all eventually complete (no tasks are dropped or rejected).
+    #[tokio::test]
+    async fn test_ingestion_semaphore_queued_tasks_complete() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+
+        let sem = Arc::new(Semaphore::new(2));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let total = 8usize;
+
+        let mut handles = Vec::new();
+        for _ in 0..total {
+            let sem = sem.clone();
+            let completed = completed.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                completed.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), total);
     }
 }

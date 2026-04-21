@@ -188,6 +188,14 @@ async fn main() -> anyhow::Result<()> {
 
     let rate_limiter = Arc::new(middleware::PerKeyRateLimiter::new());
 
+    let ingestion_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.max_concurrent_ingestions,
+    ));
+    info!(
+        max_concurrent_ingestions = config.max_concurrent_ingestions,
+        "Ingestion concurrency throttle initialized"
+    );
+
     let state = AppState {
         config: config.clone(),
         pg_pool,
@@ -199,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
         docker: docker.clone(),
         start_time,
         rate_limiter,
+        ingestion_semaphore,
     };
 
     // Start timeout sweeper for stale execution containers

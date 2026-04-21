@@ -138,6 +138,13 @@ pub struct Config {
     /// The value itself becomes the key (prefixed with `rb_live_` if not already).
     /// Override via `RUSTBRAIN_BOOTSTRAP_KEY`.
     pub bootstrap_key: Option<String>,
+    /// Maximum number of ingestion containers that may run concurrently.
+    ///
+    /// Each container opens a pool of 5 Postgres connections, so this directly
+    /// controls the peak Postgres connection count from ingestion work.
+    /// Defaults to `5` (25 connections, leaving headroom under max_connections=100).
+    /// Override via `MAX_CONCURRENT_INGESTIONS`.
+    pub max_concurrent_ingestions: usize,
 }
 
 impl Config {
@@ -171,6 +178,7 @@ impl Config {
     /// | `RUSTBRAIN_AUTH_DISABLED` | no | `false` |
     /// | `RUSTBRAIN_INTERNAL_API_KEY` | no | _(none)_ |
     /// | `RUSTBRAIN_BOOTSTRAP_KEY` | no | _(none)_ |
+    /// | `MAX_CONCURRENT_INGESTIONS` | no | `5` |
     ///
     /// # Panics
     ///
@@ -239,6 +247,9 @@ impl Config {
             bootstrap_key: std::env::var("RUSTBRAIN_BOOTSTRAP_KEY")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            max_concurrent_ingestions: std::env::var("MAX_CONCURRENT_INGESTIONS")
+                .map(|s| s.parse().unwrap_or(5))
+                .unwrap_or(5),
         }
     }
 }
@@ -278,6 +289,7 @@ mod tests {
             auth_disabled: false,
             internal_api_key: None,
             bootstrap_key: None,
+            max_concurrent_ingestions: 5,
         };
 
         assert_eq!(config.embedding_dimensions, 768);
