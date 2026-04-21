@@ -9,6 +9,7 @@ Operational guide for starting, stopping, monitoring, and troubleshooting the ru
 | Start all services | `bash scripts/start.sh` |
 | Stop all services | `bash scripts/stop.sh` |
 | Health check | `bash scripts/healthcheck.sh` |
+| Apply SQL migrations | `bash scripts/apply-migrations.sh` |
 | E2E smoke test | `bash scripts/smoke-test.sh` |
 | View logs | `docker-compose logs -f [service]` |
 | Reset all data | `docker-compose down -v && bash scripts/start.sh` |
@@ -31,10 +32,12 @@ The startup script performs these phases:
 
 1. **Core Databases** — Starts Postgres, Neo4j, Qdrant, Ollama
 2. **Health Waits** — Waits for each service to be healthy
-3. **Qdrant Init** — Creates vector collections and indexes
-4. **Model Pull** — Downloads embedding and code models
-5. **Observability** — Starts Prometheus, Grafana, Pgweb
-6. **Health Check** — Verifies all endpoints
+3. **SQL Migrations** — Applies pending migrations from `services/api/migrations/`
+4. **Qdrant Init** — Creates vector collections and indexes
+5. **Model Pull** — Downloads embedding and code models
+6. **API Key Validation** — Warns if `ANTHROPIC_API_KEY` or `LITELLM_API_KEY` are missing
+7. **Observability** — Starts Prometheus, Grafana, Pgweb
+8. **Health Check** — Verifies all endpoints
 
 ### Startup Time Estimates
 
@@ -929,6 +932,82 @@ curl -X POST http://localhost:8088/workspaces \
 # Monitor progress
 curl http://localhost:8088/workspaces | python3 -m json.tool
 ```
+
+### 17. SQL Migration Fails on Startup
+
+**Symptoms:**
+- `start.sh` fails at "Phase 3: Applying SQL Migrations"
+- Error: "Failed to apply: 20260421000002_agent_events_seq.sql"
+- API container starts but `validate_schema()` rejects with "SCHEMA VALIDATION FAILED"
+
+**Diagnosis:**
+```bash
+# Check which migrations have been applied
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT version, description, success, installed_on FROM _sqlx_migrations ORDER BY version;"
+
+# Check for failed migrations
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "SELECT version, description FROM _sqlx_migrations WHERE success = false;"
+
+# Manually re-run the migration script
+bash scripts/apply-migrations.sh
+```
+
+**Common issues:**
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `relation "agent_events" does not exist` | Migration depends on earlier migration that wasn't applied | Apply migrations in order — the script does this automatically |
+| `column "seq" of relation "agent_events" already exists` | Migration was applied outside this script | Mark as applied: `INSERT INTO _sqlx_migrations (version, description, success) VALUES (20260421000002, 'agent events seq', true);` |
+| `_sqlx_migrations` table missing | Very old database that predates migration tracking | Run `bash scripts/apply-migrations.sh` which creates the table |
+
+**Manual migration application (if script fails):**
+```bash
+# Apply a single migration by hand
+docker exec -i rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -v ON_ERROR_STOP=1 < services/api/migrations/20260421000002_agent_events_seq.sql
+
+# Then record it
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "INSERT INTO _sqlx_migrations (version, description, success) VALUES (20260421000002, 'agent events seq', true) ON CONFLICT (version) DO UPDATE SET success = true;"
+```
+
+**Reset migration tracking (nuclear option):**
+```bash
+# Warning: only if you're sure all migrations are already applied
+docker exec rustbrain-postgres psql -U rustbrain -d rustbrain \
+  -c "TRUNCATE _sqlx_migrations;"
+bash scripts/apply-migrations.sh
+```
+
+### 18. Missing API Key Warning on Startup
+
+**Symptoms:**
+- `start.sh` prints: "WARNING: Missing or unconfigured API keys"
+- OpenCode container starts but chat/model features fail
+- LiteLLM proxy returns 401 errors
+
+**Diagnosis:**
+```bash
+# Check current values in .env
+grep -E '^(ANTHROPIC_API_KEY|LITELLM_API_KEY)=' .env
+
+# Verify they're passed to the OpenCode container
+docker exec rustbrain-opencode env | grep -E '(ANTHROPIC_API_KEY|LITELLM_API_KEY)'
+```
+
+**Fix:**
+```bash
+# Edit .env with real API keys
+ANTHROPIC_API_KEY=sk-ant-...
+LITELLM_API_KEY=sk-...   # Must not be "your-api-key-here"
+
+# Restart services that use these keys
+docker-compose up -d opencode
+```
+
+**Note:** The warning is non-blocking — databases and the API server start normally. Only AI-powered features (OpenCode, chat) require valid API keys.
 
 ## Full Workspace Cleanup (Fresh Start)
 

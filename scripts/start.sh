@@ -91,23 +91,54 @@ for i in {1..60}; do
 done
 
 echo ""
-echo "=== Phase 3: Initializing Qdrant Collections ==="
+echo "=== Phase 3: Applying SQL Migrations ==="
+bash scripts/apply-migrations.sh
+
+echo ""
+echo "=== Phase 4: Initializing Qdrant Collections ==="
 bash scripts/init-qdrant.sh
 
 echo ""
-echo "=== Phase 4: Pulling Ollama Models ==="
+echo "=== Phase 5: Pulling Ollama Models ==="
 bash scripts/pull-models.sh
 
 echo ""
-echo "=== Phase 5: Starting Observability + Audit Stack ==="
+echo "=== Phase 6: Validating API Keys ==="
+
+# Validate critical API keys before starting services that depend on them
+MISSING_KEYS=()
+
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    MISSING_KEYS+=("ANTHROPIC_API_KEY")
+fi
+
+if [ -z "${LITELLM_API_KEY:-}" ] || [ "${LITELLM_API_KEY}" = "your-api-key-here" ]; then
+    MISSING_KEYS+=("LITELLM_API_KEY")
+fi
+
+if [ ${#MISSING_KEYS[@]} -gt 0 ]; then
+    echo "⚠  WARNING: Missing or unconfigured API keys:"
+    for key in "${MISSING_KEYS[@]}"; do
+        echo "   - $key"
+    done
+    echo "   OpenCode and LiteLLM features will not work without valid keys."
+    echo "   Set them in .env before starting."
+    echo ""
+    echo "   Continuing startup — databases and API will be available,"
+    echo "   but AI-powered features (OpenCode, chat) will fail."
+    echo ""
+fi
+
+echo ""
+echo "=== Phase 7: Starting Observability + Audit Stack ==="
 docker-compose up -d postgres-exporter node-exporter prometheus grafana pgweb audit
 
 echo ""
-echo "=== Phase 6: Waiting for Observability Stack ==="
+echo "=== Phase 8: Waiting for Observability Stack ==="
 sleep 5
 
 echo ""
-echo "=== Phase 7: Running Health Checks ==="
+echo "=== Phase 9: Running Health Checks ==="
 bash scripts/healthcheck.sh
 
 echo ""
