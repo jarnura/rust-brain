@@ -307,6 +307,7 @@ services:
       RUSTBRAIN_CONTAINER_KEEP_ALIVE_SECS: ${CONTAINER_KEEP_ALIVE_SECS:-0}
       OPENCODE_CONFIG_HOST_PATH: ${OPENCODE_CONFIG_HOST_PATH:-}
       MCP_SSE_URL: ${MCP_SSE_URL:-http://mcp-sse:3001/sse}
+      RUSTBRAIN_AUTH_DISABLED: "true"
     networks:
       rustbrain-net:
         aliases:
