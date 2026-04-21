@@ -367,6 +367,56 @@ free -h
              capabilities: [gpu]
    ```
 
+### GPU Passthrough for Ollama (Linux)
+
+Ollama supports GPU acceleration via NVIDIA Container Toolkit on Linux hosts. GPU passthrough reduces query embedding latency from ~22s (CPU, qwen3-embedding:4b) to <1s.
+
+#### Prerequisites
+
+- Linux host with NVIDIA GPU (compute capability 5.0+)
+- NVIDIA driver installed on host (`nvidia-smi` works)
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed
+
+#### Setup
+
+1. **Install NVIDIA Container Toolkit:**
+   ```bash
+   # Ubuntu/Debian
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+     sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+   sudo systemctl restart docker
+   ```
+
+2. **Verify GPU is visible to Docker:**
+   ```bash
+   docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
+   ```
+
+3. **Start with GPU (default on Linux):**
+   ```bash
+   # docker-compose.yml already has GPU reservation — just start normally
+   bash scripts/start.sh
+   ```
+
+4. **Verify Ollama is using GPU:**
+   ```bash
+   # Check Ollama logs for GPU detection
+   docker compose logs ollama 2>&1 | grep -i "gpu\|cuda"
+   # Should show: "using CUDA" or similar
+   ```
+
+#### macOS
+
+macOS does not support NVIDIA GPU passthrough in Docker. The `docker-compose.macos.yml` override removes GPU device reservations. On macOS, Ollama runs CPU-only.
+
+**Mitigations for CPU-only hosts:**
+- Increase `OLLAMA_KEEP_ALIVE` (default in `.env`: `30m`) to keep models loaded between queries
+- The API service caches query embeddings (`EMBEDDING_CACHE_SIZE=10000`, `EMBEDDING_CACHE_TTL_SECS=3600`)
+- Consider switching to `nomic-embed-text` (768d, ~200ms CPU) — requires full re-ingestion
+
 ### 4. Ingestion OOM with Large Crates
 
 If ingestion runs out of memory when processing large codebases with `cargo expand`:
@@ -1599,6 +1649,9 @@ Key variables in `.env`:
 | `EMBEDDING_MODEL` | qwen3-embedding:4b | Embedding model |
 | `EMBEDDING_DIMENSIONS` | 2560 | Vector dimensions |
 | `CODE_MODEL` | codellama:7b | Code understanding model |
+| `OLLAMA_KEEP_ALIVE` | 30m | How long Ollama keeps models loaded |
+| `EMBEDDING_CACHE_SIZE` | 10000 | LRU cache size for query embeddings (0=disabled) |
+| `EMBEDDING_CACHE_TTL_SECS` | 3600 | Cache TTL in seconds for query embeddings |
 | `EMBED_BATCH_SIZE` | 32 | Concurrent embeddings |
 | `NEO4J_BATCH_SIZE` | 1000 | Concurrent graph writes |
 

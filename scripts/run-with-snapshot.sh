@@ -442,7 +442,10 @@ fi
 echo ""
 echo -e "${CYAN}=== Starting databases + Ollama ===${NC}"
 # Ollama is required for semantic search (query embedding).
-# CPU-only is fine — single query embedding takes ~200ms on CPU.
+# NOTE: With qwen3-embedding:4b (2.5B params), CPU-only query embedding takes ~22s.
+# For fast CPU inference, switch to nomic-embed-text (274M params, ~200ms) — but this
+# requires full re-ingestion since vector dimensions differ (768 vs 2560).
+# On Linux hosts with NVIDIA GPU, Ollama auto-detects and uses GPU for <1s latency.
 docker compose up -d postgres neo4j qdrant ollama
 
 # Wait for PostgreSQL
