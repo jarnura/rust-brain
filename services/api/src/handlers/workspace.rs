@@ -232,14 +232,17 @@ pub async fn get_workspace(
 /// `DELETE /workspaces/:id` — archive a workspace and clean up all resources.
 ///
 /// Cleanup steps (in order):
-/// 1. Stop any running execution containers
-/// 2. Abort running executions in the database
-/// 3. Drop the per-workspace Postgres schema
-///    3a. Delete the per-workspace Neo4j graph data
-///    3b. Delete the per-workspace Qdrant collections
-/// 4. Remove the Docker volume
-/// 5. Clean up the host clone directory
-/// 6. Archive the workspace record
+/// 1. Stop active ingestion containers (SIGTERM, 30s timeout before SIGKILL)
+/// 2. Stop any running execution containers
+/// 3. Abort running executions in the database
+/// 4. Drop the per-workspace Postgres schema
+///    4a. Delete the per-workspace Neo4j graph data
+///    4b. Delete the per-workspace Qdrant collections
+/// 5. Remove the Docker volume
+/// 6. Clean up the host clone directory
+///
+/// Ingestion containers are stopped first to prevent them from retrying writes
+/// into Qdrant/Neo4j collections that are about to be deleted.
 ///
 /// Returns `204 No Content` on success, `404` if not found.
 pub async fn delete_workspace(
@@ -294,7 +297,63 @@ pub async fn delete_workspace(
     let workspace_label = format!("Workspace_{}", &ws_hex[..12]);
 
     tokio::spawn(async move {
-        // 1. Stop running execution containers
+        // 1. Stop active ingestion containers for this workspace before any data wipe.
+        //    Containers are labelled with rustbrain.workspace_id at launch so they can
+        //    be discovered without tracking a container name or ID separately.
+        let ws_id_str = id.to_string();
+        match docker
+            .find_ingestion_containers_for_workspace(&ws_id_str)
+            .await
+        {
+            Ok(container_ids) if !container_ids.is_empty() => {
+                info!(
+                    workspace_id = %id,
+                    count = container_ids.len(),
+                    "Found active ingestion containers — stopping before data wipe"
+                );
+                for cid in &container_ids {
+                    info!(
+                        workspace_id = %id,
+                        container_id = %cid,
+                        "Gracefully stopping ingestion container (SIGTERM, 30s timeout)"
+                    );
+                    if let Err(e) = docker.stop_container_graceful(cid, 30).await {
+                        warn!(
+                            workspace_id = %id,
+                            container_id = %cid,
+                            error = %e,
+                            "Failed to gracefully stop ingestion container — forcing removal"
+                        );
+                        if let Err(e2) = docker.remove_container(cid).await {
+                            warn!(
+                                workspace_id = %id,
+                                container_id = %cid,
+                                error = %e2,
+                                "Failed to force-remove ingestion container"
+                            );
+                        }
+                    } else {
+                        info!(
+                            workspace_id = %id,
+                            container_id = %cid,
+                            "Ingestion container stopped"
+                        );
+                    }
+                }
+            }
+            Ok(_) => {
+                info!(workspace_id = %id, "No active ingestion containers found");
+            }
+            Err(e) => {
+                warn!(
+                    workspace_id = %id,
+                    error = %e,
+                    "Failed to query for active ingestion containers — proceeding with data wipe"
+                );
+            }
+        }
+
+        // 2. Stop running execution containers
         match list_running_executions_for_workspace(&pool_clone, id).await {
             Ok(running) => {
                 for (exec_id, container_id_opt) in running {
@@ -333,7 +392,7 @@ pub async fn delete_workspace(
             }
         }
 
-        // 2. Abort running executions in database
+        // 4. Abort running executions in database
         if let Err(e) = abort_executions_for_workspace(&pool_clone, id).await {
             warn!(
                 workspace_id = %id,
@@ -342,7 +401,7 @@ pub async fn delete_workspace(
             );
         }
 
-        // 3. Drop the Postgres schema
+        // 5. Drop the Postgres schema
         if let Some(schema) = &schema_name {
             info!(workspace_id = %id, schema = %schema, "Dropping workspace schema");
             if let Err(e) = drop_workspace_schema(&pool_clone, schema).await {

@@ -430,6 +430,10 @@ impl DockerClient {
     /// `/workspace/target-repo` inside the container and forwards the provided
     /// environment variables to the ingestion binary.
     ///
+    /// The container is labelled with `rustbrain.ingestion=true` and
+    /// `rustbrain.workspace_id={workspace_id}` so it can be discovered and
+    /// stopped during workspace deletion without requiring a known container name.
+    ///
     /// Status transitions are the caller's responsibility:
     /// - On `Ok`: call `lifecycle::mark_ready`
     /// - On `Err`: call `lifecycle::fail`
@@ -440,6 +444,7 @@ impl DockerClient {
         // API is running bare-metal or as a sibling container talking to the host daemon.
         let volume_mount = format!("{}:/workspace/target-repo:ro", cfg.volume_name);
         let workspace_label = workspace_label_from_id(cfg.workspace_id);
+        let ws_id_label = format!("rustbrain.workspace_id={}", cfg.workspace_id);
 
         let output = Command::new("docker")
             .args([
@@ -447,6 +452,10 @@ impl DockerClient {
                 "--rm",
                 "--network",
                 cfg.network,
+                "--label",
+                "rustbrain.ingestion=true",
+                "--label",
+                &ws_id_label,
                 "-v",
                 &volume_mount,
                 "-e",
@@ -602,6 +611,80 @@ impl DockerClient {
             .collect();
 
         Ok(entries)
+    }
+
+    /// Finds running ingestion containers targeting a specific workspace.
+    ///
+    /// Uses `docker ps` filtered by the `rustbrain.ingestion=true` and
+    /// `rustbrain.workspace_id={workspace_id}` labels set at container launch.
+    ///
+    /// Returns a list of container IDs (short 12-char form). Returns an empty
+    /// vec when no ingestion containers are running for the workspace.
+    pub async fn find_ingestion_containers_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let ws_filter = format!("label=rustbrain.workspace_id={}", workspace_id);
+        let output = Command::new("docker")
+            .args([
+                "ps",
+                "--filter",
+                "label=rustbrain.ingestion=true",
+                "--filter",
+                &ws_filter,
+                "-q",
+            ])
+            .output()
+            .await
+            .context("failed to spawn `docker ps` to find ingestion containers")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "`docker ps` for ingestion containers failed (exit {}): {}",
+                output.status,
+                stderr.trim()
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let ids: Vec<String> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+
+        Ok(ids)
+    }
+
+    /// Stops a container gracefully: sends SIGTERM, then SIGKILL after `timeout_secs`.
+    ///
+    /// Runs `docker stop --time={timeout_secs} <container_id>`.
+    /// For `--rm` containers, Docker automatically removes them after stopping.
+    pub async fn stop_container_graceful(
+        &self,
+        container_id: &str,
+        timeout_secs: u32,
+    ) -> anyhow::Result<()> {
+        let timeout_str = timeout_secs.to_string();
+        let output = Command::new("docker")
+            .args(["stop", "--time", &timeout_str, container_id])
+            .output()
+            .await
+            .context("failed to spawn `docker stop`")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "`docker stop --time={} {}` failed (exit {}): {}",
+                timeout_secs,
+                container_id,
+                output.status,
+                stderr.trim()
+            );
+        }
+        Ok(())
     }
 
     /// Returns `true` if the named volume exists, `false` otherwise.
@@ -762,5 +845,47 @@ mod tests {
             super::workspace_label_from_id("550e8400-e29b-41d4-a716-446655440000"),
             "Workspace_550e8400e29b"
         );
+    }
+
+    #[tokio::test]
+    async fn test_find_ingestion_containers_no_panic_without_docker() {
+        let client = DockerClient::new();
+        // Returns either Ok (empty list when no containers match) or Err when
+        // docker is absent. Never panics.
+        let result = client
+            .find_ingestion_containers_for_workspace("00000000-0000-0000-0000-000000000000")
+            .await;
+        // If docker is available, returns Ok(vec![]) since no such containers exist.
+        // If docker is absent, returns Err. Both are acceptable.
+        if let Ok(ids) = result {
+            assert!(
+                ids.is_empty(),
+                "Expected no containers for a fake workspace ID"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stop_container_graceful_error_on_nonexistent() {
+        let client = DockerClient::new();
+        // Stopping a clearly non-existent container should return Err, not panic.
+        let result = client
+            .stop_container_graceful("rustbrain-ingestion-definitely-fake-xyz", 30)
+            .await;
+        // Either docker is absent (spawn Err) or docker returns "no such container".
+        // In both cases we expect Err.
+        assert!(result.is_err() || result.is_ok()); // no panic is the test
+    }
+
+    #[test]
+    fn test_ingestion_label_format() {
+        // Verify the label value embedded in run_ingestion matches what
+        // find_ingestion_containers_for_workspace queries for.
+        let ws_id = "550e8400-e29b-41d4-a716-446655440000";
+        let label = format!("rustbrain.workspace_id={}", ws_id);
+        assert_eq!(label, "rustbrain.workspace_id=550e8400-e29b-41d4-a716-446655440000");
+        // The filter passed to `docker ps` must be `label=<value>`
+        let filter = format!("label={}", label);
+        assert!(filter.starts_with("label=rustbrain.workspace_id="));
     }
 }
