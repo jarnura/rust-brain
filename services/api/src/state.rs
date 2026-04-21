@@ -63,10 +63,11 @@ pub struct AppState {
 
 /// Prometheus metrics for API request tracking.
 ///
-/// Exposes three metric families:
+/// Exposes four metric families:
 /// - `rustbrain_api_requests_total` — counter by endpoint, method, and workspace
 /// - `rustbrain_api_request_duration_seconds` — histogram by endpoint and workspace
 /// - `rustbrain_api_errors_total` — counter by endpoint, error_code, and workspace
+/// - `rustbrain_embedding_duration_seconds` — histogram by model and cache_hit
 ///
 /// Scraped via `GET /metrics` (see [`crate::handlers::health::metrics_handler`]).
 pub struct Metrics {
@@ -80,6 +81,11 @@ pub struct Metrics {
     pub errors_total: prometheus::CounterVec,
     /// Per-workspace resource gauges (updated by background collector)
     pub workspace_gauges: Arc<WorkspaceGauges>,
+    /// Embedding latency histogram (labels: `model`, `cache_hit`)
+    ///
+    /// `cache_hit="true"` observations are sub-millisecond (in-process cache).
+    /// `cache_hit="false"` observations cover the full Ollama round-trip (can be 10–30s).
+    pub embedding_duration: prometheus::HistogramVec,
 }
 
 impl Default for Metrics {
@@ -130,6 +136,24 @@ impl Metrics {
             .register(Box::new(errors_total.clone()))
             .expect("Failed to register errors_total");
 
+        // Buckets spanning cache hits (~sub-ms) through full Ollama round-trips (~30s)
+        let embedding_buckets = vec![
+            0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, 30.0,
+        ];
+        let embedding_duration = prometheus::HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "rustbrain_embedding_duration_seconds",
+                "Embedding generation duration (cache hit or Ollama round-trip)",
+            )
+            .buckets(embedding_buckets),
+            &["model", "cache_hit"],
+        )
+        .expect("Failed to create embedding_duration metric");
+
+        registry
+            .register(Box::new(embedding_duration.clone()))
+            .expect("Failed to register embedding_duration");
+
         let workspace_gauges = WorkspaceGauges::new(&registry);
 
         Self {
@@ -138,6 +162,7 @@ impl Metrics {
             request_duration,
             errors_total,
             workspace_gauges: Arc::new(workspace_gauges),
+            embedding_duration,
         }
     }
 
@@ -161,6 +186,21 @@ impl Metrics {
             .with_label_values(&[endpoint, error_code, workspace])
             .inc();
     }
+
+    /// Records an embedding duration observation.
+    ///
+    /// `cache_hit` should be `"true"` for in-process cache hits and `"false"` for
+    /// Ollama round-trips. `model` is the embedding model name from config.
+    pub fn record_embedding_duration(
+        &self,
+        model: &str,
+        cache_hit: bool,
+        duration: std::time::Duration,
+    ) {
+        self.embedding_duration
+            .with_label_values(&[model, if cache_hit { "true" } else { "false" }])
+            .observe(duration.as_secs_f64());
+    }
 }
 
 #[cfg(test)]
@@ -178,5 +218,141 @@ mod tests {
             std::time::Duration::from_millis(100),
         );
         // No panic = success
+    }
+
+    #[test]
+    fn test_embedding_duration_histogram_registered() {
+        let metrics = Metrics::new();
+        // Prometheus only reports a metric family once at least one observation exists
+        metrics.record_embedding_duration("test-model", false, std::time::Duration::from_millis(1));
+        let mfs = metrics.registry.gather();
+        let names: Vec<&str> = mfs.iter().map(|mf| mf.get_name()).collect();
+        assert!(
+            names.contains(&"rustbrain_embedding_duration_seconds"),
+            "embedding_duration histogram not found in registry; got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_embedding_duration_cache_hit_observation() {
+        let metrics = Metrics::new();
+        metrics.record_embedding_duration(
+            "qwen3-embedding:4b",
+            true,
+            std::time::Duration::from_micros(500),
+        );
+
+        // The histogram for cache_hit="true" must have exactly one sample
+        let mfs = metrics.registry.gather();
+        let mf = mfs
+            .iter()
+            .find(|mf| mf.get_name() == "rustbrain_embedding_duration_seconds")
+            .expect("metric family not found");
+
+        let hit_metric = mf
+            .get_metric()
+            .iter()
+            .find(|m| {
+                m.get_label()
+                    .iter()
+                    .any(|lp| lp.get_name() == "cache_hit" && lp.get_value() == "true")
+            })
+            .expect("cache_hit=true metric not found");
+
+        assert_eq!(hit_metric.get_histogram().get_sample_count(), 1);
+    }
+
+    #[test]
+    fn test_embedding_duration_cache_miss_observation() {
+        let metrics = Metrics::new();
+        metrics.record_embedding_duration(
+            "qwen3-embedding:4b",
+            false,
+            std::time::Duration::from_secs(12),
+        );
+
+        let mfs = metrics.registry.gather();
+        let mf = mfs
+            .iter()
+            .find(|mf| mf.get_name() == "rustbrain_embedding_duration_seconds")
+            .expect("metric family not found");
+
+        let miss_metric = mf
+            .get_metric()
+            .iter()
+            .find(|m| {
+                m.get_label()
+                    .iter()
+                    .any(|lp| lp.get_name() == "cache_hit" && lp.get_value() == "false")
+            })
+            .expect("cache_hit=false metric not found");
+
+        assert_eq!(miss_metric.get_histogram().get_sample_count(), 1);
+        // 12s should fall in the 15s bucket
+        assert!(miss_metric.get_histogram().get_sample_sum() >= 12.0);
+    }
+
+    #[test]
+    fn test_embedding_duration_model_label() {
+        let metrics = Metrics::new();
+        metrics.record_embedding_duration("my-model", true, std::time::Duration::from_millis(1));
+
+        let mfs = metrics.registry.gather();
+        let mf = mfs
+            .iter()
+            .find(|mf| mf.get_name() == "rustbrain_embedding_duration_seconds")
+            .expect("metric family not found");
+
+        let model_metric = mf.get_metric().iter().find(|m| {
+            m.get_label()
+                .iter()
+                .any(|lp| lp.get_name() == "model" && lp.get_value() == "my-model")
+        });
+        assert!(model_metric.is_some(), "model label not recorded");
+    }
+
+    #[test]
+    fn test_embedding_duration_hit_and_miss_are_distinct() {
+        let metrics = Metrics::new();
+        metrics.record_embedding_duration(
+            "qwen3-embedding:4b",
+            true,
+            std::time::Duration::from_micros(100),
+        );
+        metrics.record_embedding_duration(
+            "qwen3-embedding:4b",
+            false,
+            std::time::Duration::from_secs(5),
+        );
+
+        let mfs = metrics.registry.gather();
+        let mf = mfs
+            .iter()
+            .find(|mf| mf.get_name() == "rustbrain_embedding_duration_seconds")
+            .expect("metric family not found");
+
+        // Two distinct label-sets must be recorded
+        let hit_count = mf
+            .get_metric()
+            .iter()
+            .filter(|m| {
+                m.get_label()
+                    .iter()
+                    .any(|lp| lp.get_name() == "cache_hit" && lp.get_value() == "true")
+            })
+            .count();
+        let miss_count = mf
+            .get_metric()
+            .iter()
+            .filter(|m| {
+                m.get_label()
+                    .iter()
+                    .any(|lp| lp.get_name() == "cache_hit" && lp.get_value() == "false")
+            })
+            .count();
+
+        assert_eq!(hit_count, 1);
+        assert_eq!(miss_count, 1);
     }
 }

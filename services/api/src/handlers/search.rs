@@ -13,6 +13,7 @@
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::time::Instant;
 use tracing::debug;
 
 use super::{default_limit, CalleeInfo, CallerInfo};
@@ -600,9 +601,13 @@ fn sha256_hex(input: &str) -> String {
 
 async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppError> {
     let cache_key = format!("{}:{}", state.config.embedding_model, sha256_hex(text));
+    let t0 = Instant::now();
 
     if let Some(cached) = state.embedding_cache.get(&cache_key).await {
         debug!(cache_key = %cache_key, "Embedding cache hit");
+        state
+            .metrics
+            .record_embedding_duration(&state.config.embedding_model, true, t0.elapsed());
         return Ok(cached);
     }
 
@@ -648,6 +653,10 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
     if embedding.is_empty() {
         return Err(AppError::Ollama("Invalid embedding format".to_string()));
     }
+
+    state
+        .metrics
+        .record_embedding_duration(&state.config.embedding_model, false, t0.elapsed());
 
     state
         .embedding_cache
