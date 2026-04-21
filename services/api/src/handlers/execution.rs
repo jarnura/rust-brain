@@ -17,6 +17,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::errors::AppError;
@@ -29,6 +32,8 @@ use crate::state::AppState;
 use crate::workspace::get_workspace;
 
 const SSE_MAX_FRAME_BYTES: usize = 64 * 1024;
+const SSE_CHANNEL_CAPACITY: usize = 256;
+const SSE_WRITE_TIMEOUT_SECS: u64 = 5;
 
 fn truncate_sse_event(data: &str, event_seq: i64) -> String {
     if data.len() <= SSE_MAX_FRAME_BYTES {
@@ -127,6 +132,11 @@ pub async fn execute_workspace(
         ready_timeout_secs: state.config.opencode_ready_timeout_secs,
         opencode_config_host_path: state.config.opencode_config_host_path.clone(),
         mcp_sse_url: Some(state.config.mcp_sse_url.clone()),
+        litellm_api_key: std::env::var("LITELLM_API_KEY").ok().filter(|s| !s.is_empty()),
+        openai_api_key: std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty()),
+        opencode_server_password: std::env::var("OPENCODE_SERVER_PASSWORD")
+            .ok()
+            .filter(|s| !s.is_empty()),
     };
 
     tokio::spawn(async move {
@@ -196,8 +206,7 @@ pub async fn stream_events(
     Path(id): Path<Uuid>,
     Query(query): Query<StreamEventsQuery>,
     headers: HeaderMap,
-) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, AppError>
-{
+) -> Result<Sse<ReceiverStream<Result<Event, std::convert::Infallible>>>, AppError> {
     // Verify execution exists before starting the stream
     db_get_execution(&state.workspace_manager.pool, id)
         .await
@@ -216,9 +225,12 @@ pub async fn stream_events(
             .unwrap_or(0)
     });
 
-    let stream = async_stream::stream! {
+    let (tx, rx) = mpsc::channel(SSE_CHANNEL_CAPACITY);
+
+    tokio::spawn(async move {
         let mut last_seq: i64 = initial_seq;
         let poll_interval = Duration::from_millis(500);
+        let write_timeout = Duration::from_secs(SSE_WRITE_TIMEOUT_SECS);
 
         loop {
             // Fetch new events since last seen seq
@@ -229,19 +241,41 @@ pub async fn stream_events(
                         "error": e.to_string(),
                         "persistence_degraded": true,
                     });
-                    yield Ok(Event::default()
-                        .event("error")
-                        .data(payload.to_string()));
+                    let _ = tx
+                        .send(Ok(Event::default()
+                            .event("error")
+                            .data(payload.to_string())))
+                        .await;
                     break;
                 }
             };
 
             for event in &events {
-                let data = truncate_sse_event(&serde_json::to_string(event).unwrap_or_default(), event.seq);
-                yield Ok(Event::default()
+                let data = truncate_sse_event(
+                    &serde_json::to_string(event).unwrap_or_default(),
+                    event.seq,
+                );
+                let sse_event = Ok(Event::default()
                     .id(event.seq.to_string())
                     .event("agent_event")
                     .data(data));
+
+                match tokio::time::timeout(write_timeout, tx.send(sse_event)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => {
+                        // Receiver dropped — client disconnected
+                        return;
+                    }
+                    Err(_) => {
+                        // Write timeout — slow consumer
+                        warn!(
+                            execution_id = %id,
+                            "SSE write timeout ({}s) for execution {}, closing stream",
+                            SSE_WRITE_TIMEOUT_SECS, id
+                        );
+                        return;
+                    }
+                }
                 last_seq = event.seq;
             }
 
@@ -253,18 +287,31 @@ pub async fn stream_events(
                         "completed" | "failed" | "aborted" | "timeout"
                     );
                     if terminal {
-                        if let Ok(remaining) = list_agent_events_after_seq(&pool, id, last_seq).await {
+                        if let Ok(remaining) =
+                            list_agent_events_after_seq(&pool, id, last_seq).await
+                        {
                             for event in &remaining {
-                                let data = truncate_sse_event(&serde_json::to_string(event).unwrap_or_default(), event.seq);
-                                yield Ok(Event::default()
+                                let data = truncate_sse_event(
+                                    &serde_json::to_string(event).unwrap_or_default(),
+                                    event.seq,
+                                );
+                                let sse_event = Ok(Event::default()
                                     .id(event.seq.to_string())
                                     .event("agent_event")
                                     .data(data));
+
+                                match tokio::time::timeout(write_timeout, tx.send(sse_event)).await
+                                {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(_)) | Err(_) => return,
+                                }
                             }
                         }
                         // Emit a `done` event carrying the final status
                         let done_payload = serde_json::json!({ "status": exec.status }).to_string();
-                        yield Ok(Event::default().event("done").data(done_payload));
+                        let _ = tx
+                            .send(Ok(Event::default().event("done").data(done_payload)))
+                            .await;
                         break;
                     }
                 }
@@ -274,9 +321,9 @@ pub async fn stream_events(
 
             tokio::time::sleep(poll_interval).await;
         }
-    };
+    });
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()))
 }
 
 /// `GET /executions/:id/events/:seq` — fetch a single agent event by seq.

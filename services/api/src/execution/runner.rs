@@ -88,6 +88,12 @@ pub struct RunParams {
     pub opencode_config_host_path: Option<String>,
     /// MCP-SSE URL passed to execution containers as an environment variable.
     pub mcp_sse_url: Option<String>,
+    /// LiteLLM API key forwarded to execution containers.
+    pub litellm_api_key: Option<String>,
+    /// OpenAI-compatible API key forwarded to execution containers.
+    pub openai_api_key: Option<String>,
+    /// OpenCode server password forwarded to execution containers.
+    pub opencode_server_password: Option<String>,
 }
 
 // =============================================================================
@@ -181,6 +187,9 @@ async fn run_execution_inner(
         publish_port,
         opencode_config_host_path: params.opencode_config_host_path.as_deref(),
         mcp_sse_url: params.mcp_sse_url.as_deref(),
+        litellm_api_key: params.litellm_api_key.as_deref(),
+        openai_api_key: params.openai_api_key.as_deref(),
+        opencode_server_password: params.opencode_server_password.as_deref(),
     };
     let (container_id, internal_url, mapped_port) =
         match docker.spawn_execution_container(&exec_cfg).await {
@@ -873,6 +882,9 @@ mod tests {
             ready_timeout_secs: 60,
             opencode_config_host_path: None,
             mcp_sse_url: None,
+            litellm_api_key: None,
+            openai_api_key: None,
+            opencode_server_password: None,
         };
         assert_eq!(p.volume_name, "rustbrain-ws-abc12345");
         assert_eq!(p.docker_network, "rustbrain");
@@ -898,6 +910,9 @@ mod tests {
             ready_timeout_secs: 90,
             opencode_config_host_path: Some("/opt/configs/opencode".into()),
             mcp_sse_url: Some("http://mcp-sse:3001/sse".into()),
+            litellm_api_key: None,
+            openai_api_key: None,
+            opencode_server_password: None,
         };
         assert_eq!(p.keep_alive_secs, 1800);
         assert_eq!(p.ready_timeout_secs, 90);

@@ -47,6 +47,15 @@ pub struct ExecutionConfig<'a> {
     pub opencode_config_host_path: Option<&'a str>,
     /// MCP-SSE URL injected as `MCP_SSE_URL` env var into the container.
     pub mcp_sse_url: Option<&'a str>,
+    /// LiteLLM API key forwarded as `LITELLM_API_KEY` env var.
+    ///
+    /// Required by the entrypoint's `verify_opencode_config()` to substitute
+    /// the `${LITELLM_API_KEY}` placeholder in `opencode.json.template`.
+    pub litellm_api_key: Option<&'a str>,
+    /// OpenAI-compatible API key forwarded as `OPENAI_API_KEY` env var.
+    pub openai_api_key: Option<&'a str>,
+    /// OpenCode server password forwarded as `OPENCODE_SERVER_PASSWORD` env var.
+    pub opencode_server_password: Option<&'a str>,
 }
 
 /// Configuration passed to [`DockerClient::run_ingestion`].
@@ -256,7 +265,7 @@ impl DockerClient {
         // Pre-compute optional mount/env strings so we can borrow them in args.
         let config_json_mount = cfg.opencode_config_host_path.map(|p| {
             format!(
-                "{}/opencode.json:/home/opencode/.config/opencode/opencode.json:ro",
+                "{}/opencode.json:/home/opencode/.config/opencode/opencode.json.template:ro",
                 p
             )
         });
@@ -267,6 +276,15 @@ impl DockerClient {
             )
         });
         let mcp_env = cfg.mcp_sse_url.map(|url| format!("MCP_SSE_URL={}", url));
+        let litellm_env = cfg
+            .litellm_api_key
+            .map(|key| format!("LITELLM_API_KEY={}", key));
+        let openai_env = cfg
+            .openai_api_key
+            .map(|key| format!("OPENAI_API_KEY={}", key));
+        let opencode_pass_env = cfg
+            .opencode_server_password
+            .map(|pass| format!("OPENCODE_SERVER_PASSWORD={}", pass));
 
         let mut args = vec![
             "run",
@@ -290,6 +308,18 @@ impl DockerClient {
             args.push(mount);
         }
         if let Some(ref env) = mcp_env {
+            args.push("-e");
+            args.push(env);
+        }
+        if let Some(ref env) = litellm_env {
+            args.push("-e");
+            args.push(env);
+        }
+        if let Some(ref env) = openai_env {
+            args.push("-e");
+            args.push(env);
+        }
+        if let Some(ref env) = opencode_pass_env {
             args.push("-e");
             args.push(env);
         }
@@ -634,6 +664,9 @@ mod tests {
             publish_port: false,
             opencode_config_host_path: None,
             mcp_sse_url: None,
+            litellm_api_key: None,
+            openai_api_key: None,
+            opencode_server_password: None,
         };
         // Spawning with a clearly non-existent image should return Err, not panic.
         let result = client.spawn_execution_container(&cfg).await;
