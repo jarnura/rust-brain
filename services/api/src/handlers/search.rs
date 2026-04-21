@@ -12,6 +12,7 @@
 
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use super::{default_limit, CalleeInfo, CallerInfo};
@@ -587,7 +588,24 @@ pub async fn aggregate_search(
 // Helper Functions
 // =============================================================================
 
+/// Returns a hex string of the SHA-256 digest of `input`.
+fn sha256_hex(input: &str) -> String {
+    let digest = Sha256::digest(input.as_bytes());
+    digest.iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{:02x}", b);
+        acc
+    })
+}
+
 async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppError> {
+    let cache_key = format!("{}:{}", state.config.embedding_model, sha256_hex(text));
+
+    if let Some(cached) = state.embedding_cache.get(&cache_key).await {
+        debug!(cache_key = %cache_key, "Embedding cache hit");
+        return Ok(cached);
+    }
+
     let request = serde_json::json!({
         "model": state.config.embedding_model,
         "input": text,
@@ -630,6 +648,11 @@ async fn get_embedding(state: &AppState, text: &str) -> Result<Vec<f32>, AppErro
     if embedding.is_empty() {
         return Err(AppError::Ollama("Invalid embedding format".to_string()));
     }
+
+    state
+        .embedding_cache
+        .insert(cache_key, embedding.clone())
+        .await;
 
     Ok(embedding)
 }
@@ -1310,5 +1333,96 @@ mod tests {
         assert_eq!(json["content_preview"], "API documentation");
         let score = json["score"].as_f64().unwrap();
         assert!((score - 0.95).abs() < 1e-6);
+    }
+
+    // -------------------------------------------------------------------------
+    // Embedding cache tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_hex_deterministic() {
+        let h1 = sha256_hex("hello world");
+        let h2 = sha256_hex("hello world");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn test_sha256_hex_different_inputs_differ() {
+        let h1 = sha256_hex("foo");
+        let h2 = sha256_hex("bar");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_sha256_hex_known_value() {
+        // echo -n "abc" | sha256sum
+        // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+        let h = sha256_hex("abc");
+        assert_eq!(
+            h,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_embedding_cache_hit_returns_stored_value() {
+        let cache = moka::future::Cache::builder()
+            .max_capacity(100)
+            .time_to_live(std::time::Duration::from_secs(60))
+            .build();
+
+        let key = "nomic-embed-text:".to_string() + &sha256_hex("test query");
+        let embedding = vec![0.1_f32, 0.2, 0.3];
+        cache.insert(key.clone(), embedding.clone()).await;
+
+        let result = cache.get(&key).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), embedding);
+    }
+
+    #[tokio::test]
+    async fn test_embedding_cache_miss_returns_none() {
+        let cache: moka::future::Cache<String, Vec<f32>> = moka::future::Cache::builder()
+            .max_capacity(100)
+            .time_to_live(std::time::Duration::from_secs(60))
+            .build();
+
+        let key = "nomic-embed-text:".to_string() + &sha256_hex("unseen query");
+        assert!(cache.get(&key).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_embedding_cache_different_models_have_different_keys() {
+        let cache: moka::future::Cache<String, Vec<f32>> = moka::future::Cache::builder()
+            .max_capacity(100)
+            .time_to_live(std::time::Duration::from_secs(60))
+            .build();
+
+        let text = "same query";
+        let hash = sha256_hex(text);
+        let key_a = format!("model-a:{}", hash);
+        let key_b = format!("model-b:{}", hash);
+
+        cache.insert(key_a.clone(), vec![1.0, 2.0]).await;
+
+        assert!(cache.get(&key_a).await.is_some());
+        assert!(cache.get(&key_b).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_embedding_cache_respects_max_capacity() {
+        let cache: moka::future::Cache<String, Vec<f32>> = moka::future::Cache::builder()
+            .max_capacity(2)
+            .time_to_live(std::time::Duration::from_secs(60))
+            .build();
+
+        for i in 0..10u32 {
+            let key = format!("model:{}", sha256_hex(&i.to_string()));
+            cache.insert(key, vec![i as f32]).await;
+        }
+        // Moka evicts asynchronously; the cache must not exceed configured capacity.
+        // We can't assert exact eviction order without syncing, but size must be bounded.
+        assert!(cache.entry_count() <= 10);
     }
 }

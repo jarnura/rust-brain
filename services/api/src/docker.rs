@@ -442,7 +442,7 @@ impl DockerClient {
     pub async fn run_ingestion(&self, cfg: &IngestionConfig<'_>) -> anyhow::Result<String> {
         // Mount the named Docker volume (not a host path) so this works whether the
         // API is running bare-metal or as a sibling container talking to the host daemon.
-        let volume_mount = format!("{}:/workspace/target-repo:ro", cfg.volume_name);
+        let volume_mount = format!("{}:/workspace/target-repo", cfg.volume_name);
         let workspace_label = workspace_label_from_id(cfg.workspace_id);
         let ws_id_label = format!("rustbrain.workspace_id={}", cfg.workspace_id);
 
@@ -547,7 +547,7 @@ impl DockerClient {
                 "busybox",
                 "sh",
                 "-c",
-                "cp -r /src/. /dest/",
+                "cp -r /src/. /dest/ && chown -R 1000:1000 /dest/",
             ])
             .output()
             .await
@@ -883,7 +883,10 @@ mod tests {
         // find_ingestion_containers_for_workspace queries for.
         let ws_id = "550e8400-e29b-41d4-a716-446655440000";
         let label = format!("rustbrain.workspace_id={}", ws_id);
-        assert_eq!(label, "rustbrain.workspace_id=550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            label,
+            "rustbrain.workspace_id=550e8400-e29b-41d4-a716-446655440000"
+        );
         // The filter passed to `docker ps` must be `label=<value>`
         let filter = format!("label={}", label);
         assert!(filter.starts_with("label=rustbrain.workspace_id="));

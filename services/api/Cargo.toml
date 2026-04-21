@@ -40,6 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.8", features = ["v4", "serde"] }
 tracing = "0.1"
 sha2 = "0.10"
+moka = { version = "0.12", features = ["future"] }
 
 # Metrics
 prometheus = "0.13"

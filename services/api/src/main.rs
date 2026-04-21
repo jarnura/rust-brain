@@ -196,6 +196,18 @@ async fn main() -> anyhow::Result<()> {
         "Ingestion concurrency throttle initialized"
     );
 
+    let embedding_cache = moka::future::Cache::builder()
+        .max_capacity(config.embedding_cache_size)
+        .time_to_live(std::time::Duration::from_secs(
+            config.embedding_cache_ttl_secs,
+        ))
+        .build();
+    info!(
+        cache_size = config.embedding_cache_size,
+        ttl_secs = config.embedding_cache_ttl_secs,
+        "Embedding LRU cache initialized"
+    );
+
     let state = AppState {
         config: config.clone(),
         pg_pool,
@@ -208,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
         start_time,
         rate_limiter,
         ingestion_semaphore,
+        embedding_cache,
     };
 
     // Start timeout sweeper for stale execution containers

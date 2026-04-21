@@ -145,6 +145,17 @@ pub struct Config {
     /// Defaults to `5` (25 connections, leaving headroom under max_connections=100).
     /// Override via `MAX_CONCURRENT_INGESTIONS`.
     pub max_concurrent_ingestions: usize,
+    /// Maximum number of entries in the in-process embedding LRU cache.
+    ///
+    /// Each entry is a `Vec<f32>` of `embedding_dimensions` length (~10 KB for
+    /// 2560-dim vectors). 10 000 entries ≈ 100 MB.
+    /// Override via `EMBEDDING_CACHE_SIZE`.
+    pub embedding_cache_size: u64,
+    /// Time-to-live in seconds for embedding cache entries.
+    ///
+    /// Stale entries are evicted after this duration regardless of access.
+    /// Defaults to `3600` (1 hour). Override via `EMBEDDING_CACHE_TTL_SECS`.
+    pub embedding_cache_ttl_secs: u64,
 }
 
 impl Config {
@@ -179,6 +190,8 @@ impl Config {
     /// | `RUSTBRAIN_INTERNAL_API_KEY` | no | _(none)_ |
     /// | `RUSTBRAIN_BOOTSTRAP_KEY` | no | _(none)_ |
     /// | `MAX_CONCURRENT_INGESTIONS` | no | `5` |
+    /// | `EMBEDDING_CACHE_SIZE` | no | `10000` |
+    /// | `EMBEDDING_CACHE_TTL_SECS` | no | `3600` |
     ///
     /// # Panics
     ///
@@ -250,6 +263,12 @@ impl Config {
             max_concurrent_ingestions: std::env::var("MAX_CONCURRENT_INGESTIONS")
                 .map(|s| s.parse().unwrap_or(5))
                 .unwrap_or(5),
+            embedding_cache_size: std::env::var("EMBEDDING_CACHE_SIZE")
+                .map(|s| s.parse().unwrap_or(10_000))
+                .unwrap_or(10_000),
+            embedding_cache_ttl_secs: std::env::var("EMBEDDING_CACHE_TTL_SECS")
+                .map(|s| s.parse().unwrap_or(3600))
+                .unwrap_or(3600),
         }
     }
 }
@@ -290,6 +309,8 @@ mod tests {
             internal_api_key: None,
             bootstrap_key: None,
             max_concurrent_ingestions: 5,
+            embedding_cache_size: 10_000,
+            embedding_cache_ttl_secs: 3600,
         };
 
         assert_eq!(config.embedding_dimensions, 768);
