@@ -628,10 +628,13 @@ impl PipelineRunner {
                 return Ok(());
             }
         };
+        // extracted_items has no crate_name column; filter by FQN prefix since Rust
+        // FQNs start with the crate name (e.g. "my_crate::module::Item").
+        let fqn_prefix = format!("{}::%", crate_name);
         let orphan_count: i64 = sqlx::query_scalar(
-            r#"SELECT count(*)::bigint FROM extracted_items WHERE source_file_id IS NULL AND crate_name = $1"#
+            r#"SELECT count(*)::bigint FROM extracted_items WHERE source_file_id IS NULL AND fqn LIKE $1"#,
         )
-        .bind(crate_name)
+        .bind(&fqn_prefix)
         .fetch_one(pool)
         .await
         .context("Failed to query orphan count for pre-graph gate")?;
@@ -665,8 +668,15 @@ impl PipelineRunner {
                 return Ok(());
             }
         };
+        // extracted_items has no crate_name column; join through source_files to
+        // filter by crate. Items processed by the extract stage will have a source_file_id.
         let sampled_fqns: Vec<String> = sqlx::query_scalar(
-            r#"SELECT fqn FROM extracted_items WHERE crate_name = $1 ORDER BY random() LIMIT 10"#,
+            r#"SELECT ei.fqn
+               FROM extracted_items ei
+               INNER JOIN source_files sf ON ei.source_file_id = sf.id
+               WHERE sf.crate_name = $1
+               ORDER BY random()
+               LIMIT 10"#,
         )
         .bind(crate_name)
         .fetch_all(pool)
