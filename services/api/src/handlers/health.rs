@@ -79,10 +79,9 @@ pub async fn health(
     State(state): State<AppState>,
     OptionalWorkspaceId(ws): OptionalWorkspaceId,
 ) -> Result<Json<HealthResponse>, AppError> {
-    let collection_name = crate::workspace::resolve_code_collection(ws.as_ref(), &state.config);
     let (postgres, qdrant, ollama, neo4j, opencode) = tokio::join!(
         check_postgres(&state),
-        check_qdrant(&state, &collection_name),
+        check_qdrant(&state, ws.as_ref()),
         check_ollama(&state),
         check_neo4j_with_counts(&state),
         check_opencode(&state),
@@ -141,52 +140,99 @@ async fn check_postgres(state: &AppState) -> DependencyStatus {
     }
 }
 
-async fn check_qdrant(state: &AppState, collection_name: &str) -> DependencyStatus {
+async fn check_qdrant(
+    state: &AppState,
+    workspace_ctx: Option<&crate::neo4j::WorkspaceContext>,
+) -> DependencyStatus {
     let start = std::time::Instant::now();
-    match state
-        .http_client
-        .get(format!(
-            "{}/collections/{}",
-            state.config.qdrant_host, collection_name
-        ))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            let latency = start.elapsed().as_millis() as u64;
-            let points_count = resp
-                .json::<serde_json::Value>()
+    match workspace_ctx {
+        Some(ctx) => {
+            let collection_name =
+                crate::workspace::resolve_code_collection(Some(ctx), &state.config);
+            match state
+                .http_client
+                .get(format!(
+                    "{}/collections/{}",
+                    state.config.qdrant_host, collection_name
+                ))
+                .send()
                 .await
-                .ok()
-                .and_then(|v| v["result"]["points_count"].as_u64());
-            DependencyStatus {
-                status: "healthy".to_string(),
-                latency_ms: Some(latency),
-                error: None,
-                points_count,
-                items_count: None,
-                nodes_count: None,
-                edges_count: None,
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let latency = start.elapsed().as_millis() as u64;
+                    let points_count = resp
+                        .json::<serde_json::Value>()
+                        .await
+                        .ok()
+                        .and_then(|v| v["result"]["points_count"].as_u64());
+                    DependencyStatus {
+                        status: "healthy".to_string(),
+                        latency_ms: Some(latency),
+                        error: None,
+                        points_count,
+                        items_count: None,
+                        nodes_count: None,
+                        edges_count: None,
+                    }
+                }
+                Ok(resp) => DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: Some(format!("Status: {}", resp.status())),
+                    points_count: None,
+                    items_count: None,
+                    nodes_count: None,
+                    edges_count: None,
+                },
+                Err(e) => DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                    points_count: None,
+                    items_count: None,
+                    nodes_count: None,
+                    edges_count: None,
+                },
             }
         }
-        Ok(resp) => DependencyStatus {
-            status: "unhealthy".to_string(),
-            latency_ms: Some(start.elapsed().as_millis() as u64),
-            error: Some(format!("Status: {}", resp.status())),
-            points_count: None,
-            items_count: None,
-            nodes_count: None,
-            edges_count: None,
-        },
-        Err(e) => DependencyStatus {
-            status: "unhealthy".to_string(),
-            latency_ms: None,
-            error: Some(e.to_string()),
-            points_count: None,
-            items_count: None,
-            nodes_count: None,
-            edges_count: None,
-        },
+        None => {
+            // No workspace context — verify Qdrant is reachable by listing collections.
+            // Enumerating ws_* is unnecessary here; connectivity check is sufficient.
+            match state
+                .http_client
+                .get(format!("{}/collections", state.config.qdrant_host))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => DependencyStatus {
+                    status: "healthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: None,
+                    points_count: None,
+                    items_count: None,
+                    nodes_count: None,
+                    edges_count: None,
+                },
+                Ok(resp) => DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: Some(start.elapsed().as_millis() as u64),
+                    error: Some(format!("Status: {}", resp.status())),
+                    points_count: None,
+                    items_count: None,
+                    nodes_count: None,
+                    edges_count: None,
+                },
+                Err(e) => DependencyStatus {
+                    status: "unhealthy".to_string(),
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                    points_count: None,
+                    items_count: None,
+                    nodes_count: None,
+                    edges_count: None,
+                },
+            }
+        }
     }
 }
 
@@ -418,6 +464,39 @@ mod tests {
         assert_eq!(json["dependencies"]["neo4j"]["nodes_count"], 3200);
         assert_eq!(json["dependencies"]["neo4j"]["edges_count"], 5100);
         assert_eq!(json["dependencies"]["qdrant"]["points_count"], 2285);
+    }
+
+    #[test]
+    fn test_qdrant_no_workspace_omits_points_count() {
+        // When no workspace header is present, the Qdrant check uses the list
+        // endpoint (connectivity only) and must NOT include points_count in output.
+        let mut deps = HashMap::new();
+        deps.insert(
+            "qdrant".to_string(),
+            DependencyStatus {
+                status: "healthy".to_string(),
+                latency_ms: Some(2),
+                error: None,
+                points_count: None,
+                items_count: None,
+                nodes_count: None,
+                edges_count: None,
+            },
+        );
+        let resp = HealthResponse {
+            status: "healthy".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            version: "0.1.0".to_string(),
+            dependencies: deps,
+            uptime_secs: 0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        // Connectivity-only path: points_count must be absent from JSON output
+        assert!(
+            json["dependencies"]["qdrant"]["points_count"].is_null(),
+            "points_count should be omitted when no workspace context is present"
+        );
+        assert_eq!(json["dependencies"]["qdrant"]["status"], "healthy");
     }
 
     #[test]
