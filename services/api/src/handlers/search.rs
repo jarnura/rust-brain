@@ -230,7 +230,7 @@ struct PgEnrichmentWithBody {
 /// Ollama is down, instead of returning a hard `AppError::Ollama`.
 pub async fn search_semantic(
     State(state): State<AppState>,
-    OptionalWorkspaceId(ws): OptionalWorkspaceId,
+    WorkspaceId(ws): WorkspaceId,
     Json(req): Json<SearchSemanticRequest>,
 ) -> Result<Json<SearchSemanticResponse>, AppError> {
     debug!("Semantic search for: {}", req.query);
@@ -260,7 +260,7 @@ pub async fn search_semantic(
             let search_url = format!(
                 "{}/collections/{}/points/search",
                 state.config.qdrant_host,
-                crate::workspace::resolve_code_collection(ws.as_ref(), &state.config)
+                crate::workspace::resolve_code_collection(Some(&ws), &state.config)
             );
 
             let response = state
@@ -304,7 +304,7 @@ pub async fn search_semantic(
                 &req.query,
                 req.limit,
                 req.crate_filter.as_deref(),
-                ws.as_ref(),
+                Some(&ws),
             )
             .await
         }

@@ -190,7 +190,7 @@ async fn find_usages_of_type_without_workspace_returns_400() {
 }
 
 #[tokio::test]
-#[ignore = "server bug: returns HTTP 500 instead of 400 for missing X-Workspace-Id on search_semantic; fix server before enabling"]
+#[ignore = "integration test — needs live docker-compose stack; run with: cargo test --test workspace_isolation_contract -- --include-ignored"]
 async fn search_semantic_without_workspace_returns_400() {
     let resp = authenticated_client()
         .post(format!("{BASE}/tools/search_semantic"))
