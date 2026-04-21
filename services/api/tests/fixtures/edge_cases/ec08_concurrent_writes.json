@@ -1,0 +1,20 @@
+{
+  "id": "EC08",
+  "title": "Concurrent writes to same execution_id",
+  "category": "Concurrency",
+  "description": "Two runner instances or poll loops attempt to insert events for the same execution_id simultaneously. The UNIQUE (execution_id, seq) constraint must prevent duplicates, and both writes must succeed without data corruption.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-7",
+  "input": {
+    "concurrent_inserts": 2,
+    "same_execution_id": true,
+    "expected_seq_values": [1, 2]
+  },
+  "expected_behavior": {
+    "seq_constraint_holds": true,
+    "no_duplicate_rows": true,
+    "both_inserts_succeed": true,
+    "seq_values_monotonic": true
+  },
+  "production_scenario": "A retry or crash-restart causes two runner instances to process the same execution. The database constraint must prevent duplicate events while allowing both to make forward progress."
+}

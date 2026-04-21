@@ -1,0 +1,20 @@
+{
+  "id": "EC06",
+  "title": "Slow consumer causing channel full",
+  "category": "Backpressure",
+  "description": "SSE client reads events slower than they are produced, causing the internal channel to fill. Events should be dropped with a counter increment, not cause OOM or panic.",
+  "prerequisite_phase": "2C (RUSA-267)",
+  "reconciliation_ref": "R-8",
+  "input": {
+    "scenario": "SSE client connects but reads events with artificial delays, while the runner produces events at full speed",
+    "channel_capacity": "bounded"
+  },
+  "expected_behavior": {
+    "events_dropped_with_counter_increment": true,
+    "no_oom": true,
+    "no_panic": true,
+    "drop_counter_metric_available": true,
+    "server_remains_responsive": true
+  },
+  "production_scenario": "A slow network or busy frontend causes the SSE client to fall behind. The server must shed load gracefully (drop events with accounting) rather than accumulating unbounded memory or crashing."
+}

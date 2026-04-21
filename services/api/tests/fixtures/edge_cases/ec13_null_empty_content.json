@@ -1,0 +1,23 @@
+{
+  "id": "EC13",
+  "title": "Event with null/empty content JSONB",
+  "category": "Boundary",
+  "description": "An agent_event is inserted with null or empty object as the content JSONB field. The event must be stored and delivered without panic, and the SSE stream must serialize it correctly.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-1",
+  "input": {
+    "events": [
+      { "event_type": "reasoning", "content": null },
+      { "event_type": "tool_call", "content": {} },
+      { "event_type": "error", "content": "" }
+    ]
+  },
+  "expected_behavior": {
+    "null_content_stored_without_panic": true,
+    "empty_object_stored_without_panic": true,
+    "empty_string_stored_without_panic": true,
+    "sse_delivery_serializes_correctly": true,
+    "no_data_corruption": true
+  },
+  "production_scenario": "A bug in the runner or an unusual OpenCode response produces events with empty or null content. The storage and delivery pipeline must handle these gracefully — a missing content field should not crash the SSE stream or corrupt the event sequence."
+}

@@ -1,0 +1,26 @@
+{
+  "id": "EC05",
+  "title": "Rapid burst (50+ events in one poll)",
+  "category": "Throughput",
+  "description": "OpenCode returns 50+ new MessageParts in a single GET /session/{id}/message response. All events must be stored with correct monotonically increasing seq numbers and no gaps.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-3",
+  "input": {
+    "opencode_response": {
+      "messages": [
+        {
+          "info": { "id": "msg-1", "role": "assistant", "sessionID": "ses-test", "time": 1234567890 },
+          "parts": "<50+ MessagePart objects of varying types>"
+        }
+      ]
+    }
+  },
+  "expected_behavior": {
+    "all_events_stored": true,
+    "seq_numbers_monotonically_increasing": true,
+    "no_gaps_in_seq": true,
+    "event_count_matches_parts_count": true,
+    "events_stored_in_order": true
+  },
+  "production_scenario": "An execution with heavy tool usage (many parallel agent dispatches) produces a large batch of events between poll intervals. The system must handle burst writes without data loss or ordering corruption."
+}

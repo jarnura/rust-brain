@@ -1,0 +1,20 @@
+{
+  "id": "EC17",
+  "title": "Unknown event_type vs CHECK constraint",
+  "category": "Schema",
+  "description": "Attempt to insert an agent_event with an event_type not in the CHECK constraint list. The insert must fail gracefully with a database error, and the runner must log the error without crashing.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-7, R-4",
+  "input": {
+    "invalid_event_type": "custom_future_type",
+    "valid_event_types": ["reasoning", "tool_call", "file_edit", "error", "phase_change", "agent_dispatch", "container_kept_alive", "unknown"]
+  },
+  "expected_behavior": {
+    "insert_fails_with_db_error": true,
+    "error_logged_gracefully": true,
+    "runner_does_not_crash": true,
+    "no_panic": true,
+    "execution_continues": true
+  },
+  "production_scenario": "A code change introduces a new event_type string but the database migration hasn't been applied yet. The CHECK constraint rejects the insert, and the runner must handle this gracefully — log the error and continue, not crash the entire execution."
+}

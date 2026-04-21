@@ -1,0 +1,20 @@
+{
+  "id": "EC10",
+  "title": "Empty execution (no events)",
+  "category": "Boundary",
+  "description": "An execution starts but produces zero agent_events before reaching a terminal state. The SSE stream must open successfully, emit keepalive pings, and then emit a 'done' event.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-8",
+  "input": {
+    "execution_status": "completed",
+    "agent_event_count": 0
+  },
+  "expected_behavior": {
+    "sse_stream_opens": true,
+    "keepalive_pings_emitted": true,
+    "done_event_emitted": true,
+    "done_event_contains_terminal_status": true,
+    "no_spurious_events": true
+  },
+  "production_scenario": "An execution that immediately errors out or completes before any agent produces events. The frontend must still receive a proper stream lifecycle (open → done) to update the UI."
+}

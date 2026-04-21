@@ -1,0 +1,34 @@
+{
+  "id": "EC04",
+  "title": "Very large event content (over 64 KiB)",
+  "category": "Frame limit",
+  "description": "A tool call result or reasoning text exceeds the 64 KiB SSE frame limit. The SSE frame should be truncated with an error indicator, but the full content should be available via the pull/DB endpoint.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-8",
+  "input": {
+    "opencode_response": {
+      "messages": [
+        {
+          "info": { "id": "msg-1", "role": "assistant", "sessionID": "ses-test", "time": 1234567890 },
+          "parts": [
+            {
+              "type": "tool-invocation",
+              "toolName": "search_code",
+              "args": { "query": "large result set" },
+              "result": "<65 KiB+ of result data>",
+              "state": { "type": "result" }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected_behavior": {
+    "sse_frame_truncated": true,
+    "truncated_frame_contains_error_indicator": true,
+    "truncated_frame_contains_original_id": true,
+    "full_content_stored_in_db": true,
+    "pull_endpoint_returns_full_content": true
+  },
+  "production_scenario": "A search_code or pg_query tool returns an enormous result set. The SSE transport must not send oversized frames (causing client disconnect), but the data must not be lost — it should be retrievable from Postgres."
+}

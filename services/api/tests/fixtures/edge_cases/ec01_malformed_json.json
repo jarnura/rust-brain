@@ -1,0 +1,20 @@
+{
+  "id": "EC01",
+  "title": "Malformed JSON response from OpenCode REST API",
+  "category": "Ingress",
+  "description": "OpenCode GET /session/{id}/message returns invalid JSON. The runner must log a warning, not crash, and the next poll iteration must succeed.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-4(a)",
+  "input": {
+    "opencode_response": "this is not valid json {{{",
+    "http_status": 200
+  },
+  "expected_behavior": {
+    "runner_logs_warning": true,
+    "runner_does_not_crash": true,
+    "next_poll_succeeds": true,
+    "event_count_delta": 0,
+    "execution_status_remains": "running"
+  },
+  "production_scenario": "OpenCode API returns corrupted response due to partial write or proxy interference. Runner must be resilient — one bad poll must not kill the entire execution."
+}

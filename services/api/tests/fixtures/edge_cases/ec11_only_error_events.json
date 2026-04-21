@@ -1,0 +1,23 @@
+{
+  "id": "EC11",
+  "title": "Execution with only error events",
+  "category": "Boundary",
+  "description": "An execution that produces only error-typed events (e.g., container spawn failure, session creation failure). All error events must be delivered correctly via SSE with proper event_type classification.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-1",
+  "input": {
+    "events": [
+      { "event_type": "error", "content": { "stage": "container_spawn", "error": "Docker API error: no such image" } },
+      { "event_type": "error", "content": { "stage": "session_create", "error": "Connection refused" } }
+    ],
+    "execution_status": "failed"
+  },
+  "expected_behavior": {
+    "all_error_events_delivered": true,
+    "event_type_is_error": true,
+    "content_contains_stage_and_error": true,
+    "done_event_emitted_after_errors": true,
+    "no_events_silently_dropped": true
+  },
+  "production_scenario": "An execution that fails early (e.g., Docker image not available, OpenCode not reachable). The error events are the only useful output — they must all reach the frontend."
+}

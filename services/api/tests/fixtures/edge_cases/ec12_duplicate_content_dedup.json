@@ -1,0 +1,21 @@
+{
+  "id": "EC12",
+  "title": "Duplicate content hash on retry",
+  "category": "Dedup",
+  "description": "A runner retries a poll and sees parts it already bridged. The duplicate content must be detected (by request ID dedup window or seq constraint), and no duplicate agent_events rows should be inserted.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-10",
+  "input": {
+    "first_poll_parts": 10,
+    "second_poll_parts": 12,
+    "overlapping_parts": 10,
+    "new_parts": 2
+  },
+  "expected_behavior": {
+    "second_insert_returns_existing_row": true,
+    "no_duplicate_rows_in_agent_events": true,
+    "total_event_count_after_both_polls": 12,
+    "seq_constraint_prevents_duplicate_seq": true
+  },
+  "production_scenario": "The runner's poll loop re-fetches messages it already processed (e.g., due to a timeout or retry). The dedup mechanism must prevent inserting the same event twice while still allowing genuinely new events through."
+}

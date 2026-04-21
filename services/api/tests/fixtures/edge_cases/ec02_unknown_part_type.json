@@ -1,0 +1,28 @@
+{
+  "id": "EC02",
+  "title": "Unknown MessagePart type",
+  "category": "Parsing",
+  "description": "OpenCode returns a MessagePart with a type not in the known enum variants. The part must be stored as event_type='unknown' with raw_type and raw data, not silently dropped.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-4(c)",
+  "input": {
+    "opencode_response": {
+      "messages": [
+        {
+          "info": { "id": "msg-1", "role": "assistant", "sessionID": "ses-test", "time": 1234567890 },
+          "parts": [
+            { "type": "image", "url": "https://example.com/diagram.png", "alt": "architecture diagram" }
+          ]
+        }
+      ]
+    }
+  },
+  "expected_behavior": {
+    "event_stored_as_unknown": true,
+    "event_content_contains_raw_type": "image",
+    "event_content_contains_raw_data": true,
+    "not_silently_dropped": true,
+    "event_count_delta": 1
+  },
+  "production_scenario": "OpenCode adds new part types (e.g., image, video, custom-widget) that the rust-brain parser doesn't know about yet. These must be persisted as opaque events for forward compatibility, not lost."
+}

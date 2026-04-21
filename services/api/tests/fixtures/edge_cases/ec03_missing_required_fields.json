@@ -1,0 +1,28 @@
+{
+  "id": "EC03",
+  "title": "Known type with missing required fields",
+  "category": "Parsing",
+  "description": "A MessagePart with a known type string (e.g., 'text') but missing required fields (e.g., no 'text' field). Serde deserialization should fail gracefully, the runner should log the failure, and polling should continue.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-4(b)",
+  "input": {
+    "opencode_response": {
+      "messages": [
+        {
+          "info": { "id": "msg-1", "role": "assistant", "sessionID": "ses-test", "time": 1234567890 },
+          "parts": [
+            { "type": "text" }
+          ]
+        }
+      ]
+    }
+  },
+  "expected_behavior": {
+    "serde_deserialization_fails_gracefully": true,
+    "runner_logs_warning": true,
+    "poll_continues": true,
+    "no_panic": true,
+    "event_count_delta": 0
+  },
+  "production_scenario": "OpenCode API version change drops a required field, or a partial write leaves a part with only the type discriminator. The runner must not panic or stop polling."
+}

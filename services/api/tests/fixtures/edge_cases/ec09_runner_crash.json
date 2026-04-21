@@ -1,0 +1,21 @@
+{
+  "id": "EC09",
+  "title": "Runner crash mid-execution (partial stream)",
+  "category": "Crash",
+  "description": "The runner process crashes or is killed while bridging events. All events stored before the crash must remain intact, and the execution must be marked as 'failed' by the sweeper.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-3",
+  "input": {
+    "events_before_crash": 10,
+    "crash_after_event_seq": 10,
+    "execution_status_at_crash": "running"
+  },
+  "expected_behavior": {
+    "stored_events_intact": true,
+    "event_count_matches_pre_crash": 10,
+    "execution_eventually_marked_failed": true,
+    "no_partial_corrupt_events": true,
+    "sweeper_detects_stale_execution": true
+  },
+  "production_scenario": "OOM kill, Docker restart, or segfault terminates the runner mid-execution. No data must be lost, and the execution must eventually reach a terminal state (not hang as 'running' forever)."
+}

@@ -1,0 +1,21 @@
+{
+  "id": "EC15",
+  "title": "Multiple simultaneous SSE clients on same execution",
+  "category": "Fan-out",
+  "description": "Two or more SSE clients connect to the same execution's event stream simultaneously. All clients must receive the same events independently, with correct seq ordering.",
+  "prerequisite_phase": "2C (RUSA-267)",
+  "reconciliation_ref": "R-8",
+  "input": {
+    "simultaneous_clients": 3,
+    "events_to_produce": 20,
+    "execution_id": "shared"
+  },
+  "expected_behavior": {
+    "all_clients_receive_all_events": true,
+    "event_ordering_correct_per_client": true,
+    "no_events_duplicated_within_client": true,
+    "no_events_missing_from_any_client": true,
+    "done_event_received_by_all": true
+  },
+  "production_scenario": "Multiple browser tabs or team members view the same execution simultaneously. Each client must get a complete, ordered event stream — no fan-out gaps or cross-client interference."
+}

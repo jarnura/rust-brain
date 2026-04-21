@@ -1,0 +1,21 @@
+{
+  "id": "EC16",
+  "title": "Terminal state with no pending events",
+  "category": "Termination",
+  "description": "An execution reaches a terminal state (completed/failed) and the SSE stream has already delivered all events. The stream must emit a 'done' event immediately and close cleanly.",
+  "prerequisite_phase": "2B (RUSA-266)",
+  "reconciliation_ref": "R-8",
+  "input": {
+    "execution_status": "completed",
+    "all_events_already_delivered": true,
+    "last_delivered_seq": 15,
+    "no_new_events_in_poll": true
+  },
+  "expected_behavior": {
+    "done_event_emitted_immediately": true,
+    "done_event_contains_status": "completed",
+    "stream_closes_after_done": true,
+    "no_extra_polling_after_terminal": true
+  },
+  "production_scenario": "Client connects to an already-completed execution. The stream must not poll indefinitely — it should deliver any missed events (if cursor-based reconnect) and then immediately emit 'done' and close."
+}

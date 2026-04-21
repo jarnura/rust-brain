@@ -1,0 +1,22 @@
+{
+  "id": "EC14",
+  "title": "SSE connection dropped before done event",
+  "category": "Transport",
+  "description": "The SSE client disconnects (closes the connection) while the execution is still running, before the 'done' event is emitted. The server must clean up resources without leaking, and no error should propagate to other connected clients.",
+  "prerequisite_phase": "2C (RUSA-267)",
+  "reconciliation_ref": "R-8",
+  "input": {
+    "disconnect_timing": "mid_stream",
+    "events_delivered_before_disconnect": 5,
+    "total_events": 10,
+    "execution_status_at_disconnect": "running"
+  },
+  "expected_behavior": {
+    "no_server_side_resource_leak": true,
+    "clean_session_cleanup": true,
+    "no_error_propagated_to_other_clients": true,
+    "reconnection_possible_after_drop": true,
+    "server_remains_healthy": true
+  },
+  "production_scenario": "User closes browser tab, navigates away, or network drops during streaming. The server must detect the disconnect and clean up — no goroutine/channel leaks, no stale sessions consuming memory indefinitely."
+}

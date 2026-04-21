@@ -1,0 +1,21 @@
+{
+  "id": "EC07",
+  "title": "Reconnect after buffer eviction (seq gap)",
+  "category": "Reconnect",
+  "description": "SSE client reconnects with a cursor that points to events already evicted from the in-memory buffer. A gap event should be emitted, and the client should fall back to the DB-backed pull endpoint for full recovery.",
+  "prerequisite_phase": "2C (RUSA-267)",
+  "reconciliation_ref": "R-8, R-10",
+  "input": {
+    "reconnect_cursor": 5,
+    "buffer_oldest_seq": 100,
+    "buffer_latest_seq": 200,
+    "gap_size": 95
+  },
+  "expected_behavior": {
+    "gap_event_emitted": true,
+    "gap_event_contains_missing_range": true,
+    "pull_endpoint_recovers_full_history": true,
+    "client_can_resume_from_latest_buffered": true
+  },
+  "production_scenario": "A mobile client disconnects for hours and reconnects. The in-memory buffer has wrapped around. The system must signal the gap so the client can fetch missed events from Postgres rather than silently skipping them."
+}
