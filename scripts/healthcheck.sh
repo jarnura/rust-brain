@@ -67,7 +67,7 @@ check_port "Qdrant gRPC" "localhost" "6334"
 
 echo ""
 echo "=== Container Status ==="
-docker-compose ps 2>/dev/null || echo "Docker not available or no containers running"
+docker compose ps 2>/dev/null || echo "Docker not available or no containers running"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"

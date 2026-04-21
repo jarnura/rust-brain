@@ -29,7 +29,7 @@ if [ "$(uname -s)" = "Darwin" ] && [ ! -f docker-compose.override.yml ]; then
 fi
 
 echo "=== Phase 1: Starting Core Databases ==="
-docker-compose up -d postgres neo4j qdrant ollama
+docker compose up -d postgres neo4j qdrant ollama
 
 echo ""
 echo "=== Phase 2: Waiting for databases to be healthy ==="
@@ -37,7 +37,7 @@ echo "=== Phase 2: Waiting for databases to be healthy ==="
 # Wait for Postgres
 echo "Waiting for Postgres..."
 for i in {1..60}; do
-    if docker-compose exec -T postgres pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" > /dev/null 2>&1; then
+    if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" > /dev/null 2>&1; then
         echo "✓ Postgres ready"
         break
     fi
@@ -135,7 +135,7 @@ fi
 
 echo ""
 echo "=== Phase 7: Starting Observability + Audit Stack ==="
-docker-compose up -d postgres-exporter node-exporter prometheus grafana pgweb audit
+docker compose up -d postgres-exporter node-exporter prometheus grafana pgweb audit
 
 echo ""
 echo "=== Phase 8: Waiting for Observability Stack ==="

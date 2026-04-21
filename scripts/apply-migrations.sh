@@ -49,8 +49,8 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Verify Postgres is reachable
-if ! docker-compose exec -T postgres pg_isready -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1; then
-    log_error "Postgres is not ready. Start it first with: docker-compose up -d postgres"
+if ! docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1; then
+    log_error "Postgres is not ready. Start it first with: docker compose up -d postgres"
     exit 1
 fi
 
@@ -58,7 +58,7 @@ fi
 # This table is compatible with sqlx-cli's migration tracking so that
 # `sqlx migrate run` won't re-apply migrations applied by this script.
 log_info "Ensuring _sqlx_migrations tracking table exists..."
-docker-compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1 <<'SQL'
+docker compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1 <<'SQL'
 CREATE TABLE IF NOT EXISTS _sqlx_migrations (
     version BIGINT PRIMARY KEY,
     description TEXT NOT NULL,
@@ -71,7 +71,7 @@ SQL
 log_ok "Migration tracking table ready"
 
 # List applied migrations
-APPLIED=$(docker-compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" -t -A -c \
+APPLIED=$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" -t -A -c \
     "SELECT version FROM _sqlx_migrations WHERE success = true ORDER BY version;" 2>/dev/null || echo "")
 
 # Discover pending migrations (sorted by filename = chronological)
@@ -129,7 +129,7 @@ for migration_file in "${PENDING[@]}"; do
     START_TIME=$(date +%s%N)
 
     # Apply the migration
-    if docker-compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" \
+    if docker compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" \
         -v ON_ERROR_STOP=1 \
         -f - < "$migration_file" > /dev/null 2>&1; then
 
@@ -137,7 +137,7 @@ for migration_file in "${PENDING[@]}"; do
         EXECUTION_MS=$(( (END_TIME - START_TIME) / 1000000 ))
 
         # Record in tracking table
-        docker-compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1 <<SQL
+        docker compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1 <<SQL
 INSERT INTO _sqlx_migrations (version, description, success, execution_time)
 VALUES (${version}, '${description}', true, ${EXECUTION_MS})
 ON CONFLICT (version) DO UPDATE SET success = true, installed_on = NOW(), execution_time = ${EXECUTION_MS};
@@ -145,7 +145,7 @@ SQL
         log_ok "Applied: $basename (${EXECUTION_MS}ms)"
     else
         # Record failure
-        docker-compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1 <<SQL
+        docker compose exec -T postgres psql -U "${POSTGRES_USER:-rustbrain}" -d "${POSTGRES_DB:-rustbrain}" > /dev/null 2>&1 <<SQL
 INSERT INTO _sqlx_migrations (version, description, success)
 VALUES (${version}, '${description}', false)
 ON CONFLICT (version) DO UPDATE SET success = false, installed_on = NOW();

@@ -229,3 +229,48 @@ groups:
             Workspace {{ $labels.workspace }} has {{ $value }} orphaned
             Docker container(s) not tracked in Postgres.
           runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#docker-resource-leak-detection"
+
+  - name: rustbrain-ingestion
+    rules:
+      - alert: IngestionContainerOOMKilled
+        expr: container_oom_events_total{container_name="rustbrain-ingestion"} > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: ingestion
+        annotations:
+          summary: "Ingestion container was OOM killed"
+          description: |
+            The ingestion container (rustbrain-ingestion) was killed due to
+            out-of-memory conditions. The 32GB memory limit may be insufficient
+            for the workload. Consider increasing INGESTION_MEMORY_BUDGET or
+            reducing EMBED_BATCH_SIZE / PARALLEL_JOBS in .env.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#ingestion-oom-with-large-crates"
+
+      - alert: IngestionMemoryHigh
+        expr: container_memory_usage_bytes{container_name="rustbrain-ingestion"} / container_spec_memory_limit_bytes{container_name="rustbrain-ingestion"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "Ingestion container using >85% of memory budget"
+          description: |
+            The ingestion container is using {{ $value | humanizePercentage }}
+            of its 32GB memory limit. If it continues growing, it may be
+            OOM killed. Consider reducing batch sizes or parallelism.
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#ingestion-oom-with-large-crates"
+
+      - alert: IngestionContainerRestarting
+        expr: increase(container_restart_count_total{container_name="rustbrain-ingestion"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ingestion
+        annotations:
+          summary: "Ingestion container is restarting"
+          description: |
+            The ingestion container has restarted {{ $value }} time(s) in the
+            last 10 minutes. This likely indicates a crash (possibly OOM).
+            Check container logs: docker compose logs ingestion --tail=100
+          runbook_url: "https://github.com/jarnura/rust-brain/blob/main/docs/runbook.md#ingestion-oom-with-large-crates"

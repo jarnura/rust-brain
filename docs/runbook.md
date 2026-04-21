@@ -12,8 +12,8 @@ Operational guide for starting, stopping, monitoring, and troubleshooting the ru
 | Apply SQL migrations | `bash scripts/apply-migrations.sh` |
 | Apply devops migrations | `bash scripts/apply-devops-migrations.sh` |
 | E2E smoke test | `bash scripts/smoke-test.sh` |
-| View logs | `docker-compose logs -f [service]` |
-| Reset all data | `docker-compose down -v && bash scripts/start.sh` |
+| View logs | `docker compose logs -f [service]` |
+| Reset all data | `docker compose down -v && bash scripts/start.sh` |
 
 ## Starting the System
 
@@ -60,13 +60,13 @@ The startup script performs these phases:
 
 ```bash
 # Start only databases
-docker-compose up -d postgres neo4j qdrant
+docker compose up -d postgres neo4j qdrant
 
 # Start only observability
-docker-compose up -d prometheus grafana
+docker compose up -d prometheus grafana
 
 # Start only AI layer
-docker-compose up -d ollama
+docker compose up -d ollama
 ```
 
 ## Stopping the System
@@ -77,12 +77,12 @@ docker-compose up -d ollama
 bash scripts/stop.sh
 ```
 
-This runs `docker-compose down`, stopping all containers but preserving data volumes.
+This runs `docker compose down`, stopping all containers but preserving data volumes.
 
 ### Stop and Remove Data
 
 ```bash
-docker-compose down -v
+docker compose down -v
 ```
 
 **Warning:** This deletes all stored data:
@@ -97,10 +97,10 @@ docker-compose down -v
 
 ```bash
 # Stop specific service
-docker-compose stop neo4j
+docker compose stop neo4j
 
 # Stop and remove container (keeps volume)
-docker-compose rm -sf neo4j
+docker compose rm -sf neo4j
 ```
 
 ## Health Checks
@@ -166,10 +166,10 @@ bash scripts/smoke-test.sh
 
 ```bash
 # Via psql
-docker-compose exec postgres psql -U rustbrain -d rustbrain -c "SELECT 1"
+docker compose exec postgres psql -U rustbrain -d rustbrain -c "SELECT 1"
 
 # Via pg_isready
-docker-compose exec postgres pg_isready -U rustbrain -d rustbrain
+docker compose exec postgres pg_isready -U rustbrain -d rustbrain
 ```
 
 ##### Apache AGE Graph Extension
@@ -204,7 +204,7 @@ Production uses only `docker compose -f docker-compose.yml up -d postgres` — n
 curl -s http://localhost:7474
 
 # Cypher query
-docker-compose exec neo4j cypher-shell -u neo4j -p <your-password> "RETURN 1"
+docker compose exec neo4j cypher-shell -u neo4j -p <your-password> "RETURN 1"
 ```
 
 #### Qdrant
@@ -299,15 +299,15 @@ POSTGRES_PORT=5433
 
 **Symptoms:**
 - Neo4j container keeps restarting
-- `docker-compose ps` shows unhealthy status
+- `docker compose ps` shows unhealthy status
 
 **Diagnosis:**
 ```bash
 # Check logs
-docker-compose logs neo4j
+docker compose logs neo4j
 
 # Common issue: memory
-docker-compose exec neo4j cat /conf/neo4j.conf | grep memory
+docker compose exec neo4j cat /conf/neo4j.conf | grep memory
 ```
 
 **Fixes:**
@@ -323,13 +323,13 @@ docker-compose exec neo4j cat /conf/neo4j.conf | grep memory
    ```bash
    # Fix volume permissions
    sudo chown -R 7474:7474 ./data/neo4j 2>/dev/null || true
-   docker-compose restart neo4j
+   docker compose restart neo4j
    ```
 
 3. **Reset Neo4j data:**
    ```bash
-   docker-compose down -v neo4j_data neo4j_logs
-   docker-compose up -d neo4j
+   docker compose down -v neo4j_data neo4j_logs
+   docker compose up -d neo4j
    ```
 
 ### 3. Ollama Out of Memory
@@ -468,10 +468,10 @@ bash scripts/init-qdrant.sh
 **Diagnosis:**
 ```bash
 # Check if Postgres is running
-docker-compose ps postgres
+docker compose ps postgres
 
 # Check logs
-docker-compose logs postgres
+docker compose logs postgres
 ```
 
 **Fixes:**
@@ -479,13 +479,13 @@ docker-compose logs postgres
 1. **Wait longer** (Postgres can take time to initialize)
    ```bash
    sleep 30
-   docker-compose exec postgres pg_isready -U rustbrain
+   docker compose exec postgres pg_isready -U rustbrain
    ```
 
 2. **Reset Postgres:**
    ```bash
-   docker-compose down -v postgres_data
-   docker-compose up -d postgres
+   docker compose down -v postgres_data
+   docker compose up -d postgres
    # Wait for initialization
    sleep 30
    ```
@@ -502,13 +502,13 @@ docker-compose logs postgres
 curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | select(.health != "up")'
 
 # Check Prometheus config
-docker-compose exec prometheus cat /etc/prometheus/prometheus.yml
+docker compose exec prometheus cat /etc/prometheus/prometheus.yml
 ```
 
 **Fix:**
 ```bash
 # Restart services to re-register
-docker-compose restart prometheus grafana
+docker compose restart prometheus grafana
 
 # Or full restart
 bash scripts/stop.sh && bash scripts/start.sh
@@ -1012,7 +1012,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 LITELLM_API_KEY=sk-...   # Must not be "your-api-key-here"
 
 # Restart services that use these keys
-docker-compose up -d opencode
+docker compose up -d opencode
 ```
 
 **Note:** The warning is non-blocking — databases and the API server start normally. Only AI-powered features (OpenCode, chat) require valid API keys.
@@ -1030,6 +1030,88 @@ The OpenCode container's entrypoint (`configs/opencode/docker-entrypoint.sh`) va
 | Invalid characters | Contains characters other than `[A-Za-z0-9_-.]` | "LITELLM_API_KEY contains unexpected characters" |
 
 This validation is also non-blocking — the OpenCode server starts regardless, but logs warnings for invalid keys.
+
+### 19. Ingestion OOM / Memory Alerts
+
+**Symptoms:**
+- Prometheus alert `IngestionContainerOOMKilled` fires (severity: critical)
+- Prometheus alert `IngestionMemoryHigh` fires (severity: warning)
+- Prometheus alert `IngestionContainerRestarting` fires (severity: critical)
+- Ingestion container exits with code 137 (OOM killed)
+- Ingestion pipeline fails mid-run with no output
+
+**Diagnosis:**
+
+```bash
+# Check if the ingestion container was OOM killed
+docker inspect rustbrain-ingestion --format='{{.State.OOMKilled}}' 2>/dev/null || echo "Container not found"
+
+# Check container memory usage vs limit
+docker stats --no-stream rustbrain-ingestion 2>/dev/null || echo "Container not running"
+
+# Check recent container restarts
+docker inspect rustbrain-ingestion --format='{{.RestartCount}}' 2>/dev/null || echo "Container not found"
+
+# Check Prometheus alert status
+curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | select(.labels.alertname | startswith("Ingestion"))'
+
+# Check ingestion logs for memory-related errors
+docker logs rustbrain-ingestion 2>&1 | grep -iE "(oom|memory|killed|cannot allocate)" | tail -20
+```
+
+**Alert reference:**
+
+| Alert | Severity | For | Condition |
+|-------|----------|-----|-----------|
+| `IngestionContainerOOMKilled` | Critical | 0m | Container OOM kill event detected |
+| `IngestionMemoryHigh` | Warning | 5m | Memory usage >85% of 32GB limit |
+| `IngestionContainerRestarting` | Critical | 1m | Container restart count increasing in 10min window |
+
+**Fixes:**
+
+1. **Reduce memory usage** by lowering concurrency:
+   ```bash
+   # In .env
+   EMBED_BATCH_SIZE=8
+   PARALLEL_JOBS=1
+   NEO4J_BATCH_SIZE=500
+   BATCH_SIZE=4
+   ```
+
+2. **Increase Docker memory limit** (if host has capacity):
+   ```yaml
+   # In docker-compose.yml, adjust the ingestion service memory limit
+   deploy:
+     resources:
+       limits:
+         memory: 48G
+   ```
+
+3. **Run ingestion with a smaller memory budget** for constrained systems:
+   ```bash
+   INGESTION_MEMORY_BUDGET=16GB ./scripts/ingest.sh /path/to/crate
+   ```
+
+4. **Split large monorepos** into individual crate ingestion runs:
+   ```bash
+   # Ingest one crate at a time
+   rustbrain-ingestion -c ./crate1 --max-concurrency 2
+   rustbrain-ingestion -c ./crate2 --max-concurrency 2
+   ```
+
+**Verification after recovery:**
+
+```bash
+# Confirm ingestion container is healthy and running
+docker ps --filter "name=rustbrain-ingestion" --format "{{.Status}}"
+
+# Verify memory is within bounds
+docker stats --no-stream rustbrain-ingestion
+
+# Check that alerts have resolved
+curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | select(.state == "firing" and (.labels.alertname | startswith("Ingestion")))'
+# Expected: empty (no firing ingestion alerts)
+```
 
 ## Full Workspace Cleanup (Fresh Start)
 
@@ -1144,7 +1226,7 @@ docker volume ls --filter name=rustbrain-ws
 
 ```bash
 # Stop everything and remove volumes
-docker-compose down -v
+docker compose down -v
 
 # Remove any orphaned volumes
 docker volume prune -f
@@ -1157,21 +1239,21 @@ bash scripts/start.sh
 
 ```bash
 # Reset Postgres only
-docker-compose down -v postgres_data
-docker-compose up -d postgres
+docker compose down -v postgres_data
+docker compose up -d postgres
 
 # Reset Neo4j only
-docker-compose down -v neo4j_data neo4j_logs
-docker-compose up -d neo4j
+docker compose down -v neo4j_data neo4j_logs
+docker compose up -d neo4j
 
 # Reset Qdrant only
-docker-compose down -v qdrant_data
-docker-compose up -d qdrant
+docker compose down -v qdrant_data
+docker compose up -d qdrant
 bash scripts/init-qdrant.sh
 
 # Reset Ollama models (re-download)
-docker-compose down -v ollama_data
-docker-compose up -d ollama
+docker compose down -v ollama_data
+docker compose up -d ollama
 bash scripts/pull-models.sh
 ```
 
@@ -1179,12 +1261,12 @@ bash scripts/pull-models.sh
 
 ```bash
 # Reset Prometheus metrics
-docker-compose down -v prometheus_data
-docker-compose up -d prometheus
+docker compose down -v prometheus_data
+docker compose up -d prometheus
 
 # Reset Grafana dashboards (uses provisioned ones from configs/)
-docker-compose down -v grafana_data
-docker-compose up -d grafana
+docker compose down -v grafana_data
+docker compose up -d grafana
 ```
 
 ## OpenCode Developer Agent Write Workflow
@@ -1323,8 +1405,8 @@ NEO4J_BOLT_PORT=8687
 
 Then restart:
 ```bash
-docker-compose down
-docker-compose up -d
+docker compose down
+docker compose up -d
 ```
 
 ## Viewing Logs
@@ -1333,23 +1415,23 @@ docker-compose up -d
 
 ```bash
 # Follow all logs
-docker-compose logs -f
+docker compose logs -f
 
 # Last 100 lines per service
-docker-compose logs --tail=100
+docker compose logs --tail=100
 ```
 
 ### Specific Service
 
 ```bash
 # Follow specific service
-docker-compose logs -f postgres
-docker-compose logs -f neo4j
-docker-compose logs -f ollama
-docker-compose logs -f qdrant
+docker compose logs -f postgres
+docker compose logs -f neo4j
+docker compose logs -f ollama
+docker compose logs -f qdrant
 
 # With timestamps
-docker-compose logs -f --timestamps neo4j
+docker compose logs -f --timestamps neo4j
 ```
 
 ### Log Locations (Inside Containers)
@@ -1367,14 +1449,14 @@ docker-compose logs -f --timestamps neo4j
 
 ```bash
 # List all containers
-docker-compose ps
+docker compose ps
 
 # Show resource usage
 docker stats
 
 # Execute command in container
-docker-compose exec postgres psql -U rustbrain -d rustbrain
-docker-compose exec neo4j cypher-shell -u neo4j -p <your-password>
+docker compose exec postgres psql -U rustbrain -d rustbrain
+docker compose exec neo4j cypher-shell -u neo4j -p <your-password>
 
 # Copy file from container
 docker cp rustbrain-postgres:/var/lib/postgresql/data ./postgres-backup
@@ -1383,7 +1465,7 @@ docker cp rustbrain-postgres:/var/lib/postgresql/data ./postgres-backup
 docker network inspect rustbrain_rustbrain-net
 
 # Rebuild container (after config change)
-docker-compose up -d --force-recreate neo4j
+docker compose up -d --force-recreate neo4j
 ```
 
 ## Qdrant Workspace Migration
@@ -1523,17 +1605,17 @@ Key variables in `.env`:
 
 ```bash
 # Full backup
-docker-compose exec postgres pg_dump -U rustbrain rustbrain > backup_$(date +%Y%m%d).sql
+docker compose exec postgres pg_dump -U rustbrain rustbrain > backup_$(date +%Y%m%d).sql
 
 # Restore
-cat backup_20260314.sql | docker-compose exec -T postgres psql -U rustbrain rustbrain
+cat backup_20260314.sql | docker compose exec -T postgres psql -U rustbrain rustbrain
 ```
 
 ### Backup Neo4j
 
 ```bash
 # Dump database
-docker-compose exec neo4j neo4j-admin database dump neo4j --to-path=/backup/
+docker compose exec neo4j neo4j-admin database dump neo4j --to-path=/backup/
 
 # Or copy data volume
 docker run --rm -v rustbrain_neo4j_data:/data -v $(pwd)/backup:/backup alpine tar czf /backup/neo4j_data.tar.gz /data

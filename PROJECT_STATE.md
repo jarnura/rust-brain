@@ -174,7 +174,7 @@ issues:
 next_steps:
   - "Fix API compatibility issues in ingestion service"
   - "Run integration tests with test fixture"
-  - "Add ingestion service to docker-compose up"
+  - "Add ingestion service to docker compose up"
   - "Create API documentation (docs/api-spec.md)"
 
 # SERVICE ENDPOINTS

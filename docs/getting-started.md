@@ -201,7 +201,7 @@ The ingestion pipeline runs as a Docker service. To ingest a crate:
 export TARGET_REPO_PATH=/path/to/your/rust/crate
 
 # Run the ingestion service
-docker-compose run --rm ingestion \
+docker compose run --rm ingestion \
   --source-path /target \
   --crate-name my-crate
 ```
@@ -228,7 +228,7 @@ echo "TARGET_REPO_PATH=/path/to/your/rust/crate" >> .env
 
 ```bash
 # Check Postgres for extracted items
-docker-compose exec postgres psql -U rustbrain -d rustbrain -c \
+docker compose exec postgres psql -U rustbrain -d rustbrain -c \
   "SELECT COUNT(*) FROM extracted_items;"
 
 # Check Neo4j for graph nodes
@@ -492,7 +492,7 @@ EMBEDDING_DIMENSIONS=2560
 
 ```bash
 # Stop and remove all data
-docker-compose down -v
+docker compose down -v
 
 # Start fresh
 bash scripts/start.sh

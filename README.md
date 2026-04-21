@@ -337,7 +337,7 @@ The CI pipeline (`.github/workflows/ci.yml`) runs automatically on all pull requ
 
 ### What Requires Docker
 
-Integration tests require the full docker-compose stack (Postgres, Neo4j, Qdrant, Ollama). These are **not run in CI** due to resource constraints and are marked with `#[ignore]` in the codebase.
+Integration tests require the full Docker Compose stack (Postgres, Neo4j, Qdrant, Ollama). These are **not run in CI** due to resource constraints and are marked with `#[ignore]` in the codebase.
 
 To run integration tests locally:
 

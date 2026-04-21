@@ -140,11 +140,50 @@ create_feature_branch() {
 }
 
 # =============================================================================
+# Validate API Keys
+# =============================================================================
+validate_api_keys() {
+    local VALID=true
+
+    # LITELLM_API_KEY validation
+    if [ -z "${LITELLM_API_KEY:-}" ]; then
+        log_warn "LITELLM_API_KEY is not set — OpenCode will not be able to connect to LiteLLM proxy"
+        VALID=false
+    elif [ "$LITELLM_API_KEY" = "your-api-key-here" ]; then
+        log_warn "LITELLM_API_KEY is still the placeholder value — set a real key in .env"
+        VALID=false
+    elif echo "$LITELLM_API_KEY" | grep -qP '^\s+$'; then
+        log_warn "LITELLM_API_KEY is whitespace-only — set a real key in .env"
+        VALID=false
+    elif [ ${#LITELLM_API_KEY} -lt 8 ]; then
+        log_warn "LITELLM_API_KEY appears too short (less than 8 chars) — expected a Bearer token or API key"
+        VALID=false
+    elif ! echo "$LITELLM_API_KEY" | grep -qP '^[A-Za-z0-9_\-.]+$'; then
+        log_warn "LITELLM_API_KEY contains unexpected characters — expected alphanumeric, dashes, underscores, or dots"
+        VALID=false
+    fi
+
+    if [ "$VALID" = true ]; then
+        log_info "LITELLM_API_KEY format validated"
+    else
+        log_warn "OpenCode AI features (chat, model routing) will not work without a valid LITELLM_API_KEY"
+    fi
+}
+
+# =============================================================================
 # Verify OpenCode Config
 # =============================================================================
 verify_opencode_config() {
     local template="/home/opencode/.config/opencode/opencode.json.template"
     local config="/home/opencode/.config/opencode/opencode.json"
+
+    # Retry up to 5 times — bind mounts may not be ready at container start
+    local attempts=0
+    while [ $attempts -lt 5 ] && [ ! -f "$template" ] && [ ! -f "$config" ]; do
+        attempts=$((attempts + 1))
+        log_warn "Config not found yet, waiting for bind mount (attempt $attempts/5)..."
+        sleep 1
+    done
 
     if [ -f "$template" ]; then
         log_info "Generating OpenCode config from template (substituting env vars)"
@@ -153,7 +192,7 @@ verify_opencode_config() {
     elif [ -f "$config" ]; then
         log_info "OpenCode config found at $config"
     else
-        log_warn "OpenCode config not found - using defaults"
+        log_warn "OpenCode config not found after retries - using defaults"
     fi
 }
 
@@ -182,6 +221,9 @@ main() {
     
     # Step 4: Verify config
     verify_opencode_config
+    
+    # Step 5: Validate API keys
+    validate_api_keys
     
     log_info "=========================================="
     log_info "Starting OpenCode server..."

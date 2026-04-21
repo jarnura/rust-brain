@@ -29,7 +29,7 @@ check_prereqs() {
     
     if ! curl -sf "${API_BASE}/health" > /dev/null 2>&1; then
         log_fail "API not responding at ${API_BASE}"
-        log_info "Make sure the docker-compose stack is running: bash scripts/start.sh"
+        log_info "Make sure the Docker Compose stack is running: bash scripts/start.sh"
         exit 1
     fi
     log_success "API is healthy"

@@ -170,7 +170,7 @@ sleep 30
 
 ## Test Requirements
 
-- Docker with docker-compose
+- Docker with Docker Compose V2
 - Bash 4.0+
 - curl
 - jq

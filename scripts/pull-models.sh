@@ -5,7 +5,7 @@
 set -euo pipefail
 
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-qwen3-embedding:4b}"
 CODE_MODEL="${CODE_MODEL:-codellama:7b}"
 
 echo "=== Pulling Ollama Models ==="
@@ -57,11 +57,12 @@ RESPONSE=$(curl -fsSL "${OLLAMA_HOST}/api/embed" \
 DIMS=$(echo "$RESPONSE" | jq '.embeddings[0] | length')
 echo "Embedding dimensions: $DIMS"
 
-if [ "$DIMS" != "768" ] && [ "$DIMS" != "1024" ]; then
-    echo "WARNING: Unexpected embedding dimensions: $DIMS"
+EXPECTED_DIMS="${EMBEDDING_DIMENSIONS:-2560}"
+if [ "$DIMS" != "$EXPECTED_DIMS" ]; then
+    echo "WARNING: Unexpected embedding dimensions: $DIMS (expected $EXPECTED_DIMS)"
     echo "You may need to update EMBEDDING_DIMENSIONS in .env"
 else
-    echo "Embedding dimensions look correct!"
+    echo "Embedding dimensions look correct! ($DIMS)"
 fi
 
 echo ""

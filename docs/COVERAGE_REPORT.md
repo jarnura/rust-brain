@@ -220,7 +220,7 @@ Files with **no** unit tests: `main.rs`, `sse_transport.rs`
 
 ## Integration Test Coverage (Docker Required)
 
-All 57 integration tests are marked `#[ignore]` and require `docker-compose up`.
+All 57 integration tests are marked `#[ignore]` and require `docker compose up`.
 
 ### REST API Endpoints — 38 integration tests
 

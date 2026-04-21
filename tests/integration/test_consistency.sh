@@ -8,7 +8,7 @@
 # 3. Re-running from the failed stage restores consistency
 #
 # Prerequisites:
-#   - Full docker-compose stack running (bash scripts/start.sh)
+#   - Full Docker Compose stack running (bash scripts/start.sh)
 #   - Data already ingested (or run test_pipeline.sh first)
 #   - jq installed for JSON parsing
 #

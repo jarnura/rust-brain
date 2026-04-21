@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Default values
-MEMORY_BUDGET="${INGESTION_MEMORY_BUDGET:-16GB}"
+MEMORY_BUDGET="${INGESTION_MEMORY_BUDGET:-32GB}"
 WORKSPACE_LABEL=""
 WORKSPACE_PATH="${1:-.}"
 shift || true
@@ -36,7 +36,7 @@ USAGE:
 
 OPTIONS:
     --workspace-label <LABEL>  Workspace label (e.g. Workspace_a1b2c3d4e5f6)
-    --memory-budget <SIZE>   Memory budget (default: 16GB, max: 62GB)
+     --memory-budget <SIZE>   Memory budget (default: 32GB, max: 62GB)
     --dry-run                Parse only, no database writes
     --resume <run-id>        Resume from checkpoint
     --verbose                Enable debug logging
@@ -51,14 +51,14 @@ MEMORY SAFETY:
     This script enforces container execution with memory limits.
     Direct host execution is disabled to prevent OOM crashes.
 
-    Memory budget breakdown (16GB default):
+    Memory budget breakdown (32GB default):
     - Discover stage:  512MB
-    - Expand stage:    2GB
-    - Parse stage:     3GB
-    - Typecheck stage: 1GB
-    - Graph stage:     2GB
-    - Embed stage:     1.5GB
-    - Overhead:        6GB (runtime, DB pools, OS)
+    - Expand stage:    4GB
+    - Parse stage:     6GB
+    - Typecheck stage: 2GB
+    - Graph stage:     4GB
+    - Embed stage:     3GB
+    - Overhead:       12.5GB (runtime, DB pools, OS, cargo expand cache)
 EOF
 }
 

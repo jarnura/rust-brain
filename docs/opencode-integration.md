@@ -545,8 +545,8 @@ echo $ANTHROPIC_API_KEY
 
 **Fix**:
 1. Verify `ANTHROPIC_API_KEY` is set: `export ANTHROPIC_API_KEY="sk-ant-..."`
-2. Restart LiteLLM: `docker-compose restart litellm`
-3. Check LiteLLM logs: `docker-compose logs litellm`
+2. Restart LiteLLM: `docker compose restart litellm`
+3. Check LiteLLM logs: `docker compose logs litellm`
 
 ### Streaming Response Hangs
 
@@ -588,8 +588,8 @@ curl -X POST http://localhost:8088/tools/search_semantic \
 
 **Fix**:
 1. Start ingestion: Check Dashboard → "Start Ingestion"
-2. Verify database connection: `docker-compose ps`
-3. Check tool API logs: `docker-compose logs api`
+2. Verify database connection: `docker compose ps`
+3. Check tool API logs: `docker compose logs api`
 
 ### OpenCode Authentication Fails
 
@@ -601,12 +601,12 @@ curl -X POST http://localhost:8088/tools/search_semantic \
 echo $OPENCODE_SERVER_PASSWORD
 
 # Check Docker got the value
-docker-compose exec opencode env | grep AUTH_PASSWORD
+docker compose exec opencode env | grep AUTH_PASSWORD
 ```
 
 **Fix**:
 1. Set password in `.env`: `OPENCODE_SERVER_PASSWORD=your_password`
-2. Reload containers: `docker-compose down && docker-compose up -d opencode`
+2. Reload containers: `docker compose down && docker compose up -d opencode`
 3. Try connecting with new password
 
 ### Keyboard Shortcuts Not Working in OpenCode
@@ -645,14 +645,14 @@ export RUST_LOG=debug
 export LITELLM_LOG_LEVEL=debug
 export MCP_SSE_LOG_LEVEL=debug
 
-docker-compose up --build
+docker compose up --build
 ```
 
 View logs:
 ```bash
-docker-compose logs -f mcp-sse    # MCP SSE server
-docker-compose logs -f api        # Tool API
-docker-compose logs -f litellm    # LiteLLM proxy
+docker compose logs -f mcp-sse    # MCP SSE server
+docker compose logs -f api        # Tool API
+docker compose logs -f litellm    # LiteLLM proxy
 ```
 
 ### Health Checks
