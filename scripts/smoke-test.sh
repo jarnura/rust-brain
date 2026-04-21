@@ -491,6 +491,40 @@ check_playground_roundtrip() {
     fi
 }
 
+# --- Check 10: Agent Events Schema -----------------------------------------
+# Validates that agent_events table has the required seq and content_hash
+# columns. Uses SELECT with LIMIT 0 (returns zero rows but succeeds only if
+# columns exist). This catches migration drift — e.g., if seq or content_hash
+# migrations were not applied.
+
+check_agent_events_schema() {
+    echo -e "\n${BOLD}10. Agent Events Schema (seq + content_hash)${NC}"
+
+    local resp
+    resp=$(curl -sf --max-time "${TIMEOUT}" \
+        -X POST -H "Content-Type: application/json" \
+        -d '{"query":"SELECT seq, content_hash FROM agent_events LIMIT 0"}' \
+        "${API_URL}/tools/pg_query" 2>/dev/null || echo "")
+
+    if [[ -n "${resp}" ]]; then
+        local has_error
+        has_error=$(echo "${resp}" | jq -r '.error // empty' 2>/dev/null || echo "")
+        if [[ -n "${has_error}" ]]; then
+            report "agent_events schema" "FAIL" "query returned error: ${has_error}"
+        else
+            local row_count
+            row_count=$(echo "${resp}" | jq -r '.row_count // -1' 2>/dev/null || echo "-1")
+            if [[ "${row_count}" -ge 0 ]]; then
+                report "agent_events schema" "PASS" "seq, content_hash columns exist (0 rows returned as expected)"
+            else
+                report "agent_events schema" "FAIL" "unexpected response shape: row_count=${row_count}"
+            fi
+        fi
+    else
+        report "agent_events schema" "FAIL" "pg_query endpoint unreachable"
+    fi
+}
+
 # --- Main -------------------------------------------------------------------
 
 main() {
@@ -514,6 +548,7 @@ main() {
     check_content_validation
     check_workspace_health
     check_playground_roundtrip
+    check_agent_events_schema
 
     local END_TIME DURATION
     END_TIME=$(date +%s)
