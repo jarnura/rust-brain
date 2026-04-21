@@ -4,7 +4,7 @@
 //! looks up the hash in the `api_keys` table, and attaches [`ApiKeyContext`]
 //! to request extensions. Rejects expired, inactive, or missing keys with 401.
 //!
-//! Bypass routes (always public): `GET /health`, `GET /metrics`.
+//! Bypass routes (always public): `GET /health`, `GET /metrics`, `GET /playground/*`.
 //!
 //! When `RUSTBRAIN_AUTH_DISABLED=true`, all requests receive a synthetic
 //! admin context and skip the database lookup.
@@ -110,7 +110,10 @@ pub fn require_write_access(ctx: &ApiKeyContext) -> Result<(), AppError> {
 
 /// Routes that bypass authentication entirely (always public).
 fn is_public_route(path: &str, method: &str) -> bool {
-    matches!(path, "/health" | "/metrics" | "/health/consistency") && method == "GET"
+    if method != "GET" {
+        return false;
+    }
+    matches!(path, "/health" | "/metrics" | "/health/consistency") || path.starts_with("/playground")
 }
 
 /// Axum middleware that enforces API key authentication.
@@ -326,6 +329,11 @@ mod tests {
         assert!(is_public_route("/health", "GET"));
         assert!(is_public_route("/metrics", "GET"));
         assert!(is_public_route("/health/consistency", "GET"));
+        assert!(is_public_route("/playground", "GET"));
+        assert!(is_public_route("/playground/", "GET"));
+        assert!(is_public_route("/playground/classic", "GET"));
+        assert!(is_public_route("/playground/assets/index.js", "GET"));
+        assert!(!is_public_route("/playground", "POST"));
         assert!(!is_public_route("/health", "POST"));
         assert!(!is_public_route("/api/keys", "GET"));
         assert!(!is_public_route("/tools/search_semantic", "POST"));
