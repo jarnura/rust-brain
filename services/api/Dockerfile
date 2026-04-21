@@ -25,6 +25,7 @@ COPY services/ingestion/Cargo.toml ./services/ingestion/
 COPY services/validator/Cargo.toml ./services/validator/
 COPY services/benchmarker/Cargo.toml ./services/benchmarker/
 COPY services/audit/Cargo.toml ./services/audit/
+COPY tests/fixtures/test-crate/Cargo.toml ./tests/fixtures/test-crate/
 
 # Create dummy source files for dependency caching
 RUN mkdir -p crates/rustbrain-common/src \
@@ -33,12 +34,14 @@ RUN mkdir -p crates/rustbrain-common/src \
     && mkdir -p services/validator/src \
     && mkdir -p services/benchmarker/src \
     && mkdir -p services/audit/src \
+    && mkdir -p tests/fixtures/test-crate/src \
     && echo "pub fn dummy() {}" > crates/rustbrain-common/src/lib.rs \
     && echo "fn main() {}" > services/api/src/main.rs \
     && echo "fn main() {}" > services/ingestion/src/main.rs \
     && echo "fn main() {}" > services/validator/src/main.rs \
     && echo "fn main() {}" > services/benchmarker/src/main.rs \
-    && echo "fn main() {}" > services/audit/src/main.rs
+    && echo "fn main() {}" > services/audit/src/main.rs \
+    && echo "pub fn dummy() {}" > tests/fixtures/test-crate/src/lib.rs
 
 # Build dependencies
 RUN cargo build --release -p rustbrain-api

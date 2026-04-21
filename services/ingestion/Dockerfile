@@ -23,16 +23,19 @@ COPY services/api/Cargo.toml ./services/api/
 COPY services/validator/Cargo.toml ./services/validator/
 COPY services/benchmarker/Cargo.toml ./services/benchmarker/
 COPY services/audit/Cargo.toml ./services/audit/
+COPY tests/fixtures/test-crate/Cargo.toml ./tests/fixtures/test-crate/
 
 # Create dummy source files for dependency caching
 RUN mkdir -p crates/rustbrain-common/src services/ingestion/src services/api/src \
-             services/validator/src services/benchmarker/src services/audit/src && \
+             services/validator/src services/benchmarker/src services/audit/src \
+             tests/fixtures/test-crate/src && \
     echo "pub fn dummy() {}" > crates/rustbrain-common/src/lib.rs && \
     echo "fn main() {}" > services/ingestion/src/main.rs && \
     echo "fn main() {}" > services/api/src/main.rs && \
     echo "fn main() {}" > services/validator/src/main.rs && \
     echo "fn main() {}" > services/benchmarker/src/main.rs && \
-    echo "fn main() {}" > services/audit/src/main.rs
+    echo "fn main() {}" > services/audit/src/main.rs && \
+    echo "pub fn dummy() {}" > tests/fixtures/test-crate/src/lib.rs
 
 # Build dependencies only (keep manifests for later)
 RUN cargo build --release -p rustbrain-ingestion
