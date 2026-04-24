@@ -426,6 +426,7 @@ services:
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
+      MCP_SSE_URL: ${MCP_SSE_URL:-http://mcp-sse:3001/sse}
       CHAT_MODEL: ${CHAT_MODEL:-glm-latest}
       # Git-based write workflow configuration
       TARGET_REPO_URL: ${TARGET_REPO_URL:-}

@@ -187,7 +187,11 @@ verify_opencode_config() {
 
     if [ -f "$template" ]; then
         log_info "Generating OpenCode config from template (substituting env vars)"
-        sed "s|\${LITELLM_API_KEY}|${LITELLM_API_KEY:-}|g" "$template" > "$config"
+        sed \
+            -e "s|\${LITELLM_API_KEY}|${LITELLM_API_KEY:-}|g" \
+            -e "s|\${MCP_SSE_URL}|${MCP_SSE_URL:-http://mcp-sse:3001/sse}|g" \
+            -e "s|\${LITELLM_BASE_URL}|${LITELLM_BASE_URL:-https://grid.ai.juspay.net}|g" \
+            "$template" > "$config"
         log_info "OpenCode config written to $config"
     elif [ -f "$config" ]; then
         log_info "OpenCode config found at $config"

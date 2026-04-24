@@ -6,7 +6,7 @@
   "mcp": {
     "rustbrain": {
       "type": "remote",
-      "url": "http://mcp-sse:3001/sse"
+      "url": "${MCP_SSE_URL}"
     }
   },
   "provider": {
@@ -14,7 +14,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "LiteLLM Proxy",
       "options": {
-        "baseURL": "https://grid.ai.juspay.net",
+        "baseURL": "${LITELLM_BASE_URL}",
         "apiKey": "${LITELLM_API_KEY}"
       },
       "models": {

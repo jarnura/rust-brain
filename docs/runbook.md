@@ -1675,6 +1675,78 @@ Increase batch size and check Qdrant resource usage:
 docker stats rustbrain-qdrant
 ```
 
+### 20. OpenCode MCP Connection Failure in Execution Containers
+
+**Symptoms:**
+- OpenCode agents (orchestrator, explorer, developer, etc.) cannot call MCP tools (`search_code`, `get_function`, `get_callers`, etc.)
+- OpenCode silently falls back to filesystem-only mode — no error surfaced to users
+- Execution containers (`rustbrain-exec-*`) show no MCP tool responses in agent transcripts
+- MCP health check (`GET /health` on port 3001) passes from the API container but fails from execution containers
+
+**Root cause:**
+The `opencode.json` template had a hardcoded MCP URL (`http://mcp-sse:3001/sse`) that was not substituted at container startup. The entrypoint script only substituted `LITELLM_API_KEY` — `MCP_SSE_URL` and `LITELLM_BASE_URL` were ignored. Execution containers received `MCP_SSE_URL` as an env var (from `docker.rs`), but the config generation step never used it.
+
+**Diagnosis:**
+
+```bash
+# Check the generated config inside the opencode container
+docker exec rustbrain-opencode cat /home/opencode/.config/opencode/opencode.json | grep -A2 '"mcp"'
+
+# If the URL is still "http://mcp-sse:3001/sse" (literal), the substitution is not working
+# If the URL is empty or "${MCP_SSE_URL}", the env var is not reaching the container
+
+# Check if MCP_SSE_URL is set in the opencode container
+docker exec rustbrain-opencode env | grep MCP_SSE_URL
+
+# Test MCP connectivity from inside the container
+docker exec rustbrain-opencode curl -sf http://mcp-sse:3001/health
+
+# For execution containers, check the same
+docker exec <execution-container> cat /home/opencode/.config/opencode/opencode.json | grep -A2 '"mcp"'
+docker exec <execution-container> env | grep MCP_SSE_URL
+```
+
+**Fix:**
+
+The fix was applied in three files:
+
+1. `configs/opencode/opencode.json` — MCP URL and provider baseURL now use `${MCP_SSE_URL}` and `${LITELLM_BASE_URL}` placeholders
+2. `configs/opencode/docker-entrypoint.sh` — The `sed` command now substitutes all three variables: `LITELLM_API_KEY`, `MCP_SSE_URL`, `LITELLM_BASE_URL`
+3. `docker-compose.yml` — The `opencode` service now receives `MCP_SSE_URL` as an env var (with default `http://mcp-sse:3001/sse`)
+
+To apply the fix on a running deployment:
+
+```bash
+# Rebuild and recreate the opencode container
+docker compose up -d --force-recreate opencode
+
+# Verify the generated config has the correct URL
+docker exec rustbrain-opencode cat /home/opencode/.config/opencode/opencode.json | grep -A2 '"mcp"'
+# Expected: "url": "http://mcp-sse:3001/sse" (substituted, not literal ${MCP_SSE_URL})
+
+# Verify MCP connectivity from the container
+docker exec rustbrain-opencode curl -sf http://mcp-sse:3001/health
+```
+
+**For custom MCP deployments** (non-default host/port):
+
+```bash
+# In .env, override the MCP URL
+MCP_SSE_URL=http://custom-mcp-host:3001/sse
+
+# Restart opencode to pick up the new URL
+docker compose up -d --force-recreate opencode
+```
+
+**Network alias considerations:**
+The `mcp-sse` DNS alias only resolves on the `rustbrain-net` bridge network. Execution containers must join this network (the API service already configures `--network` when spawning them). If containers are on different networks, use the full Docker-internal hostname or IP.
+
+```bash
+# Verify execution containers are on the correct network
+docker inspect <execution-container> --format '{{json .NetworkSettings.Networks}}' | jq 'keys'
+# Expected: ["rustbrain_rustbrain-net"]
+```
+
 ## Environment Variables
 
 Key variables in `.env`:
