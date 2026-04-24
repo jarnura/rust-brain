@@ -11,6 +11,7 @@
 //! 4. Bridge OpenCode response parts into `agent_events` rows.
 //! 5. Mark the execution `completed` (or `failed`) and clean up the container.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono;
@@ -36,6 +37,87 @@ const POLL_INTERVAL_SECS: u64 = 2;
 
 /// Maximum time to wait for new parts before logging a stall warning.
 const STALL_TIMEOUT_SECS: u64 = 60;
+
+/// Poll cycles between sub-session discovery calls (every Nth cycle ≈ every N*POLL_INTERVAL_SECS).
+const SUB_SESSION_DISCOVERY_INTERVAL: u32 = 3;
+
+// =============================================================================
+// Sub-session tracker
+// =============================================================================
+
+/// Tracks OpenCode sessions spawned by sub-agents during execution.
+///
+/// The orchestrator session is the only known session at start. When the
+/// orchestrator dispatches a sub-agent via the `task()` tool, OpenCode may
+/// create a new session for that sub-agent. This tracker discovers those
+/// sessions and maps them to their agent names so their events can be bridged
+/// into `agent_events` with correct attribution.
+struct SubSessionTracker {
+    /// All sessions we are aware of (orchestrator + sub-agent sessions).
+    known_sessions: HashSet<String>,
+    /// Maps sub-session ID → dispatched agent name.
+    session_agent_map: HashMap<String, String>,
+    /// Maps sub-session ID → last-seen assistant-message part count.
+    session_part_counts: HashMap<String, usize>,
+    /// FIFO queue of agent names awaiting a new session to be assigned.
+    pending_dispatches: Vec<String>,
+}
+
+impl SubSessionTracker {
+    fn new(orchestrator_session_id: &str) -> Self {
+        let mut known_sessions = HashSet::new();
+        known_sessions.insert(orchestrator_session_id.to_string());
+        Self {
+            known_sessions,
+            session_agent_map: HashMap::new(),
+            session_part_counts: HashMap::new(),
+            pending_dispatches: Vec::new(),
+        }
+    }
+
+    /// Record a detected agent dispatch so the next discovered session is mapped to that agent.
+    fn record_dispatch(&mut self, agent_name: String) {
+        self.pending_dispatches.push(agent_name);
+    }
+
+    /// Register newly discovered sessions from `list_sessions()`.
+    ///
+    /// For each session not yet in `known_sessions`, pops from `pending_dispatches`
+    /// to assign an agent name (falls back to `"unknown_subagent"`).
+    fn register_new_sessions(&mut self, session_ids: &[String]) {
+        for session_id in session_ids {
+            if self.known_sessions.contains(session_id) {
+                continue;
+            }
+            let agent_name = if self.pending_dispatches.is_empty() {
+                "unknown_subagent".to_string()
+            } else {
+                self.pending_dispatches.remove(0)
+            };
+            self.known_sessions.insert(session_id.clone());
+            self.session_agent_map
+                .insert(session_id.clone(), agent_name);
+            self.session_part_counts.insert(session_id.clone(), 0);
+        }
+    }
+
+    /// Returns `(session_id, agent_name, last_seen_part_count)` for each tracked sub-session.
+    fn sessions_to_poll(&self) -> Vec<(String, String, usize)> {
+        self.session_agent_map
+            .iter()
+            .map(|(sid, agent)| {
+                let count = self.session_part_counts.get(sid).copied().unwrap_or(0);
+                (sid.clone(), agent.clone(), count)
+            })
+            .collect()
+    }
+
+    /// Update the last-seen part count for a sub-session after polling.
+    fn update_part_count(&mut self, session_id: &str, count: usize) {
+        self.session_part_counts
+            .insert(session_id.to_string(), count);
+    }
+}
 
 // =============================================================================
 // Container readiness check
@@ -334,6 +416,8 @@ async fn run_execution_inner(
     let mut current_agent = "orchestrator".to_string();
     let mut last_new_part_time = std::time::Instant::now();
     let mut stall_logged = false;
+    let mut tracker = SubSessionTracker::new(&session_id);
+    let mut poll_cycle: u32 = 0;
 
     loop {
         tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
@@ -355,10 +439,14 @@ async fn run_execution_inner(
                     if let Some(new_agent) =
                         bridge_new_parts(&pool, exec_id, &current_agent, &owned).await
                     {
+                        tracker.record_dispatch(new_agent.clone());
                         current_agent = new_agent;
                     }
                 }
             }
+            // Final sweep: discover any sub-sessions created late and drain their remaining parts
+            discover_sub_sessions(&opencode, &mut tracker).await;
+            poll_sub_sessions(&opencode, &pool, exec_id, &mut tracker).await;
             // Now check the send result
             match send_task.await {
                 Ok(Ok(_)) => {
@@ -446,6 +534,7 @@ async fn run_execution_inner(
                                             warn!(execution_id = %exec_id, error = %e, agent = %dispatched_agent, "Failed to insert agent_dispatch in poll loop");
                                         }
                                     }
+                                    tracker.record_dispatch(dispatched_agent.clone());
                                     current_agent = dispatched_agent;
                                 }
                             }
@@ -499,6 +588,13 @@ async fn run_execution_inner(
             stall_logged = true;
             warn!(execution_id = %exec_id, "No new parts for {}s, send still running", STALL_TIMEOUT_SECS);
         }
+
+        // Discover new sub-sessions every N poll cycles and bridge their events.
+        if poll_cycle % SUB_SESSION_DISCOVERY_INTERVAL == 0 {
+            discover_sub_sessions(&opencode, &mut tracker).await;
+        }
+        poll_sub_sessions(&opencode, &pool, exec_id, &mut tracker).await;
+        poll_cycle = poll_cycle.wrapping_add(1);
     }
 
     // 4b. Post-completion agent detection pass.
@@ -741,6 +837,121 @@ async fn detect_agent_dispatches(
     }
 
     detected
+}
+
+/// Call `list_sessions()` and register any previously unknown sessions with the tracker.
+async fn discover_sub_sessions(opencode: &OpenCodeClient, tracker: &mut SubSessionTracker) {
+    match opencode.list_sessions().await {
+        Ok(sessions) => {
+            let ids: Vec<String> = sessions.into_iter().map(|s| s.id).collect();
+            tracker.register_new_sessions(&ids);
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to list sessions for sub-session discovery");
+        }
+    }
+}
+
+/// Poll all tracked sub-sessions and bridge new assistant message parts as `agent_events`.
+///
+/// Each sub-session is polled independently. Errors from a single sub-session
+/// are logged and skipped so they cannot crash the orchestrator polling loop.
+async fn poll_sub_sessions(
+    opencode: &OpenCodeClient,
+    pool: &PgPool,
+    execution_id: Uuid,
+    tracker: &mut SubSessionTracker,
+) {
+    for (session_id, agent_name, last_count) in tracker.sessions_to_poll() {
+        match opencode.get_messages(&session_id).await {
+            Ok(messages) => {
+                let all_parts: Vec<crate::opencode::MessagePart> = messages
+                    .into_iter()
+                    .filter(|m| m.role == "assistant")
+                    .flat_map(|m| m.parts)
+                    .collect();
+                let total = all_parts.len();
+                if total > last_count {
+                    let new_parts = &all_parts[last_count..];
+                    bridge_parts_for_agent(pool, execution_id, &agent_name, new_parts).await;
+                    tracker.update_part_count(&session_id, total);
+                }
+            }
+            Err(e) => {
+                warn!(
+                    execution_id = %execution_id,
+                    session_id = %session_id,
+                    agent = %agent_name,
+                    error = %e,
+                    "Failed to poll sub-session messages"
+                );
+            }
+        }
+    }
+}
+
+/// Bridge message parts from a sub-agent session into `agent_events` with a fixed agent name.
+///
+/// Unlike `bridge_new_parts`, this does not attempt agent-dispatch detection inside
+/// the sub-session (sub-agents don't further dispatch to sub-sub-agents in this design).
+async fn bridge_parts_for_agent(
+    pool: &PgPool,
+    execution_id: Uuid,
+    agent_name: &str,
+    parts: &[crate::opencode::MessagePart],
+) {
+    use crate::opencode::MessagePart;
+
+    for part in parts {
+        let (event_type, content) = match part {
+            MessagePart::Text { text } => {
+                ("reasoning", json!({ "agent": agent_name, "text": text }))
+            }
+            MessagePart::Reasoning { text } => (
+                "reasoning",
+                json!({ "agent": agent_name, "reasoning": text }),
+            ),
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+                state,
+            } => (
+                "tool_call",
+                json!({
+                    "agent": agent_name,
+                    "tool": tool_name,
+                    "args": args.as_ref().or(state.as_ref().and_then(|s| s.get("input"))),
+                    "result": result.as_ref().or(state.as_ref().and_then(|s| s.get("output"))),
+                }),
+            ),
+            MessagePart::StepStart { id } => (
+                "reasoning",
+                json!({ "agent": agent_name, "step_start": id }),
+            ),
+            MessagePart::StepFinish { reason } => (
+                "reasoning",
+                json!({ "agent": agent_name, "step_finish": reason }),
+            ),
+            MessagePart::Unknown { raw_type, raw } => {
+                warn!(
+                    execution_id = %execution_id,
+                    raw_type = %raw_type,
+                    "Unknown MessagePart in sub-session, persisting as opaque event"
+                );
+                ("unknown", json!({ "raw_type": raw_type, "raw": raw }))
+            }
+        };
+
+        if let Err(e) = insert_agent_event(pool, execution_id, event_type, content).await {
+            warn!(
+                execution_id = %execution_id,
+                agent = %agent_name,
+                error = %e,
+                "Failed to insert sub-session agent_event"
+            );
+        }
+    }
 }
 
 fn classify_container_error(error: &str) -> String {
@@ -1035,5 +1246,125 @@ mod tests {
             .collect();
 
         assert_eq!(classified, vec!["reasoning", "unknown", "reasoning"]);
+    }
+
+    // -------------------------------------------------------------------------
+    // SubSessionTracker unit tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tracker_new_knows_orchestrator_session() {
+        let tracker = SubSessionTracker::new("session-orch");
+        assert!(tracker.known_sessions.contains("session-orch"));
+        assert!(tracker.session_agent_map.is_empty());
+        assert!(tracker.pending_dispatches.is_empty());
+    }
+
+    #[test]
+    fn tracker_register_new_sessions_skips_known() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // Registering the orchestrator session again is a no-op.
+        tracker.register_new_sessions(&["session-orch".to_string()]);
+        assert!(tracker.session_agent_map.is_empty());
+    }
+
+    #[test]
+    fn tracker_record_dispatch_queues_name() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        tracker.record_dispatch("research".to_string());
+        tracker.record_dispatch("explorer".to_string());
+        assert_eq!(tracker.pending_dispatches, vec!["research", "explorer"]);
+    }
+
+    #[test]
+    fn tracker_register_pops_pending_dispatch_in_order() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        tracker.record_dispatch("research".to_string());
+        tracker.record_dispatch("explorer".to_string());
+
+        tracker.register_new_sessions(&["session-sub1".to_string(), "session-sub2".to_string()]);
+
+        assert_eq!(
+            tracker
+                .session_agent_map
+                .get("session-sub1")
+                .map(String::as_str),
+            Some("research")
+        );
+        assert_eq!(
+            tracker
+                .session_agent_map
+                .get("session-sub2")
+                .map(String::as_str),
+            Some("explorer")
+        );
+        assert!(tracker.pending_dispatches.is_empty());
+    }
+
+    #[test]
+    fn tracker_register_falls_back_to_unknown_subagent() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // No pending dispatch recorded — should use fallback name.
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+        assert_eq!(
+            tracker
+                .session_agent_map
+                .get("session-sub1")
+                .map(String::as_str),
+            Some("unknown_subagent")
+        );
+    }
+
+    #[test]
+    fn tracker_sessions_to_poll_returns_all_subsessions() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        tracker.record_dispatch("research".to_string());
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+
+        let to_poll = tracker.sessions_to_poll();
+        assert_eq!(to_poll.len(), 1);
+        let (sid, agent, count) = &to_poll[0];
+        assert_eq!(sid, "session-sub1");
+        assert_eq!(agent, "research");
+        assert_eq!(*count, 0);
+    }
+
+    #[test]
+    fn tracker_update_part_count_persists() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        tracker.record_dispatch("developer".to_string());
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+
+        tracker.update_part_count("session-sub1", 7);
+
+        let to_poll = tracker.sessions_to_poll();
+        let (_, _, count) = &to_poll[0];
+        assert_eq!(*count, 7);
+    }
+
+    #[test]
+    fn tracker_does_not_double_register_session() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        tracker.record_dispatch("research".to_string());
+        tracker.record_dispatch("explorer".to_string());
+
+        // Register the same new session twice — second call should be a no-op.
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+
+        // Only "research" should have been consumed; "explorer" still pending.
+        assert_eq!(tracker.pending_dispatches, vec!["explorer"]);
+        assert_eq!(tracker.session_agent_map.len(), 1);
+    }
+
+    #[test]
+    fn tracker_graceful_noop_when_no_subsessions() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // Simulates the orchestrator-only case: list_sessions returns only the
+        // orchestrator session.
+        tracker.register_new_sessions(&["session-orch".to_string()]);
+
+        assert!(tracker.session_agent_map.is_empty());
+        assert!(tracker.sessions_to_poll().is_empty());
     }
 }
