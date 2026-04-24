@@ -687,10 +687,11 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                         .or_else(|| payload.get("kind").and_then(|v| v.as_str()))
                         .unwrap_or("unknown")
                         .to_string();
-                    // file_path may not exist in all payloads
                     let file_path = payload
                         .get("file_path")
                         .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| payload.get("module_path").and_then(|v| v.as_str()))
                         .unwrap_or("")
                         .to_string();
                     // start_line/end_line are stored as i64 in Qdrant
@@ -723,12 +724,15 @@ pub fn parse_search_results(search_result: &serde_json::Value) -> Vec<SearchResu
                         end_line,
                         score: r.get("score")?.as_f64()? as f32,
                         snippet: payload
-                            .get("snippet")
+                            .get("text_preview")
                             .and_then(|v| v.as_str())
+                            .or_else(|| payload.get("snippet").and_then(|v| v.as_str()))
                             .map(|s| s.to_string()),
                         docstring: payload
-                            .get("docstring")
+                            .get("doc_comment")
                             .and_then(|v| v.as_str())
+                            .or_else(|| payload.get("docstring").and_then(|v| v.as_str()))
+                            .filter(|s| !s.is_empty())
                             .map(|s| s.to_string()),
                     })
                 })
@@ -746,10 +750,10 @@ pub fn parse_doc_search_results(search_result: &serde_json::Value) -> Vec<DocRes
                 .iter()
                 .filter_map(|r| {
                     let payload = r.get("payload")?;
-                    // doc_embeddings uses file_path (not source_file)
                     let source_file = payload
-                        .get("file_path")
+                        .get("source_fqn")
                         .and_then(|v| v.as_str())
+                        .or_else(|| payload.get("file_path").and_then(|v| v.as_str()))
                         .or_else(|| payload.get("source_file").and_then(|v| v.as_str()))
                         .unwrap_or("")
                         .to_string();
