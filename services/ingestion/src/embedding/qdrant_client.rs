@@ -245,6 +245,7 @@ struct CollectionInfoResponse {
 pub struct CollectionInfo {
     pub status: String,
     pub points_count: usize,
+    #[serde(alias = "indexed_vectors_count", default)]
     pub vectors_count: usize,
 }
 

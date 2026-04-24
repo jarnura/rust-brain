@@ -2210,12 +2210,13 @@ impl TypecheckStage {
         let query = if let Some(crate_name) = crate_name {
             sqlx::query(
                 r#"
-                SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                       start_line, end_line, body_source, generic_params, where_clauses,
-                       attributes, generated_by
-                FROM extracted_items
-                WHERE crate_name = $1
-                ORDER BY fqn
+                SELECT ei.item_type, ei.fqn, ei.name, ei.visibility, ei.signature, ei.doc_comment,
+                       ei.start_line, ei.end_line, ei.body_source, ei.generic_params, ei.where_clauses,
+                       ei.attributes, ei.generated_by
+                FROM extracted_items ei
+                INNER JOIN source_files sf ON ei.source_file_id = sf.id
+                WHERE sf.crate_name = $1
+                ORDER BY ei.fqn
                 "#,
             )
             .bind(crate_name)
@@ -2473,12 +2474,13 @@ impl ExtractStage {
         let query = if let Some(crate_name) = crate_name {
             sqlx::query(
                 r#"
-                SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                       start_line, end_line, body_source, generic_params, where_clauses,
-                       attributes, generated_by
-                FROM extracted_items
-                WHERE crate_name = $1
-                ORDER BY fqn
+                SELECT ei.item_type, ei.fqn, ei.name, ei.visibility, ei.signature, ei.doc_comment,
+                       ei.start_line, ei.end_line, ei.body_source, ei.generic_params, ei.where_clauses,
+                       ei.attributes, ei.generated_by
+                FROM extracted_items ei
+                INNER JOIN source_files sf ON ei.source_file_id = sf.id
+                WHERE sf.crate_name = $1
+                ORDER BY ei.fqn
                 "#,
             )
             .bind(crate_name)
@@ -2601,13 +2603,13 @@ impl PipelineStage for ExtractStage {
         let mut file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
         for source_file in &source_files {
             let file_id = Uuid::new_v4();
-            sqlx::query(
+            let actual_id = sqlx::query_scalar::<_, Uuid>(
                 r#"
-                INSERT INTO source_files (id, file_path, crate_name, module_path, content_hash, git_hash)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (file_path, content_hash) DO UPDATE SET
-                    crate_name = EXCLUDED.crate_name,
-                    module_path = EXCLUDED.module_path,
+                INSERT INTO source_files (id, file_path, crate_name, module_path, original_source, content_hash, git_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (crate_name, module_path, file_path) DO UPDATE SET
+                    original_source = EXCLUDED.original_source,
+                    content_hash = EXCLUDED.content_hash,
                     git_hash = COALESCE(EXCLUDED.git_hash, source_files.git_hash)
                 RETURNING id
                 "#,
@@ -2616,15 +2618,20 @@ impl PipelineStage for ExtractStage {
             .bind(source_file.path.to_string_lossy().to_string())
             .bind(&source_file.crate_name)
             .bind(&source_file.module_path)
+            .bind(source_file.original_source.as_str())
             .bind(&source_file.content_hash)
             .bind(&source_file.git_hash)
             .fetch_one(&pool)
-            .await
-            .ok()
-            .map(|row| row.get::<Uuid, _>("id"))
-            .unwrap_or(file_id);
+            .await;
 
-            file_ids.insert(source_file.path.clone(), file_id);
+            match actual_id {
+                Ok(id) => {
+                    file_ids.insert(source_file.path.clone(), id);
+                }
+                Err(e) => {
+                    warn!("Failed to insert source file {:?}: {}", source_file.path, e);
+                }
+            }
         }
 
         // Batch insert extracted items
@@ -3988,11 +3995,12 @@ impl GraphStage {
         let query = if let Some(crate_name) = crate_name {
             sqlx::query(
                 r#"
-                SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
-                FROM extracted_items
-                WHERE crate_name = $1
-                ORDER BY fqn
+                SELECT ei.item_type, ei.fqn, ei.name, ei.visibility, ei.signature, ei.doc_comment,
+                       ei.start_line, ei.end_line, ei.body_source, ei.generic_params, ei.where_clauses, ei.attributes, ei.generated_by
+                FROM extracted_items ei
+                INNER JOIN source_files sf ON ei.source_file_id = sf.id
+                WHERE sf.crate_name = $1
+                ORDER BY ei.fqn
                 "#
             )
             .bind(crate_name)
@@ -4962,11 +4970,12 @@ impl EmbedStage {
         let query = if let Some(crate_name) = crate_name {
             sqlx::query(
                 r#"
-                SELECT item_type, fqn, name, visibility, signature, doc_comment,
-                       start_line, end_line, body_source, generic_params, where_clauses, attributes, generated_by
-                FROM extracted_items
-                WHERE crate_name = $1
-                ORDER BY fqn
+                SELECT ei.item_type, ei.fqn, ei.name, ei.visibility, ei.signature, ei.doc_comment,
+                       ei.start_line, ei.end_line, ei.body_source, ei.generic_params, ei.where_clauses, ei.attributes, ei.generated_by
+                FROM extracted_items ei
+                INNER JOIN source_files sf ON ei.source_file_id = sf.id
+                WHERE sf.crate_name = $1
+                ORDER BY ei.fqn
                 "#
             )
             .bind(crate_name)
@@ -5158,55 +5167,117 @@ impl PipelineStage for EmbedStage {
 
         info!("Embedding {} items...", all_items.len());
 
-        // Embed all items in batches
+        // Check if code embeddings already exist (skip re-embedding if fully populated)
+        let existing_code_points = embedding_service
+            .get_stats()
+            .await
+            .map(|s| s.code_points)
+            .unwrap_or(0);
+
         let mut state = ctx.state.write().await;
         let mut embedded_count = 0;
         let mut failed_count = 0;
 
-        // Process in batches of 100 items
-        const BATCH_SIZE: usize = 100;
-
-        for (batch_num, chunk) in all_items.chunks(BATCH_SIZE).enumerate() {
-            debug!(
-                "Processing embedding batch {}/{}",
-                batch_num + 1,
-                all_items.len().div_ceil(BATCH_SIZE)
+        if existing_code_points >= all_items.len() {
+            info!(
+                "Code embeddings already populated ({} points >= {} items), skipping code embedding",
+                existing_code_points,
+                all_items.len()
+            );
+            embedded_count = existing_code_points;
+        } else {
+            info!(
+                "Code embeddings: {} existing, {} needed — embedding delta",
+                existing_code_points,
+                all_items.len()
             );
 
-            // Retry embedding batches with exponential backoff for transient failures
-            let batch_label = format!("embed batch {}", batch_num + 1);
-            let chunk_vec: Vec<_> = chunk.to_vec();
-            let service = &embedding_service;
+            // Process in batches of 100 items
+            const BATCH_SIZE: usize = 100;
 
-            match retry_with_backoff(&batch_label, MAX_RETRIES, || async {
-                service.embed_items(&chunk_vec).await
-            })
-            .await
-            {
-                Ok(results) => {
-                    embedded_count += results.len();
-                    debug!(
-                        "Embedded {} items in batch {}",
-                        results.len(),
-                        batch_num + 1
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to embed batch {} after retries: {}", batch_num, e);
-                    state
-                        .errors
-                        .push(
-                            StageError::new("embed", e.to_string()).with_context(format!(
-                                "batch {} (after {} retries)",
-                                batch_num, MAX_RETRIES
-                            )),
+            for (batch_num, chunk) in all_items.chunks(BATCH_SIZE).enumerate() {
+                debug!(
+                    "Processing embedding batch {}/{}",
+                    batch_num + 1,
+                    all_items.len().div_ceil(BATCH_SIZE)
+                );
+
+                let batch_label = format!("embed batch {}", batch_num + 1);
+                let chunk_vec: Vec<_> = chunk.to_vec();
+                let service = &embedding_service;
+
+                match retry_with_backoff(&batch_label, MAX_RETRIES, || async {
+                    service.embed_items(&chunk_vec).await
+                })
+                .await
+                {
+                    Ok(results) => {
+                        embedded_count += results.len();
+                        debug!(
+                            "Embedded {} items in batch {}",
+                            results.len(),
+                            batch_num + 1
                         );
-                    failed_count += chunk.len();
+                    }
+                    Err(e) => {
+                        warn!("Failed to embed batch {} after retries: {}", batch_num, e);
+                        state
+                            .errors
+                            .push(
+                                StageError::new("embed", e.to_string()).with_context(format!(
+                                    "batch {} (after {} retries)",
+                                    batch_num, MAX_RETRIES
+                                )),
+                            );
+                        failed_count += chunk.len();
+                    }
                 }
             }
         }
 
         state.counts.embeddings_created = embedded_count;
+
+        drop(state);
+
+        // Embed doc chunks for items with doc_comments into doc_embeddings collection
+        let doc_items: Vec<_> = all_items
+            .iter()
+            .filter(|item| !item.doc_comment.is_empty())
+            .collect();
+        let mut doc_embedded_count = 0usize;
+        let mut doc_failed_count = 0usize;
+
+        if !doc_items.is_empty() {
+            info!(
+                "Embedding doc chunks for {} items with doc_comments...",
+                doc_items.len()
+            );
+            for (i, item) in doc_items.iter().enumerate() {
+                match embedding_service.embed_doc_chunks(item).await {
+                    Ok(docs) => {
+                        doc_embedded_count += docs.len();
+                        if (i + 1) % 100 == 0 {
+                            info!(
+                                "Doc embedding progress: {}/{} items processed, {} chunks embedded",
+                                i + 1,
+                                doc_items.len(),
+                                doc_embedded_count
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to embed doc chunks for {}: {}", item.fqn, e);
+                        doc_failed_count += 1;
+                    }
+                }
+            }
+            info!(
+                "Doc embedding complete: {} chunks embedded, {} items failed",
+                doc_embedded_count, doc_failed_count
+            );
+        }
+
+        let mut state = ctx.state.write().await;
 
         let duration = start.elapsed();
 
@@ -5221,10 +5292,18 @@ impl PipelineStage for EmbedStage {
                 embedded_count,
                 failed_count,
                 duration,
-                format!("{} items embedded, {} failed", embedded_count, failed_count),
+                format!(
+                    "{} code embeddings, {} doc chunks, {} failed",
+                    embedded_count, doc_embedded_count, failed_count
+                ),
             ))
         } else {
-            Ok(StageResult::success("embed", embedded_count, 0, duration))
+            Ok(StageResult::success(
+                "embed",
+                embedded_count + doc_embedded_count,
+                0,
+                duration,
+            ))
         }
     }
 }
@@ -5449,7 +5528,7 @@ impl DataLifecycleManager {
         );
 
         let existing_fqns: std::collections::HashSet<String> =
-            sqlx::query_scalar("SELECT fqn FROM extracted_items WHERE crate_name = $1")
+            sqlx::query_scalar("SELECT ei.fqn FROM extracted_items ei INNER JOIN source_files sf ON ei.source_file_id = sf.id WHERE sf.crate_name = $1")
                 .bind(crate_name)
                 .fetch_all(pool)
                 .await
@@ -5537,7 +5616,7 @@ impl DataLifecycleManager {
             }
         }
 
-        match sqlx::query("DELETE FROM extracted_items WHERE crate_name = $1 AND fqn = ANY($2)")
+        match sqlx::query("DELETE FROM extracted_items WHERE id IN (SELECT ei.id FROM extracted_items ei INNER JOIN source_files sf ON ei.source_file_id = sf.id WHERE sf.crate_name = $1 AND ei.fqn = ANY($2))")
             .bind(crate_name)
             .bind(&stale_fqns)
             .execute(pool)

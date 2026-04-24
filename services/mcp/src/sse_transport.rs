@@ -57,10 +57,13 @@ const DEDUP_WINDOW_SIZE: usize = 256;
 const MAX_CONCURRENT_SESSIONS: usize = 1000;
 
 /// Time after which an inactive session is eligible for cleanup.
-const SESSION_TTL: Duration = Duration::from_secs(300);
+/// OpenCode keeps SSE connections open indefinitely but may not send
+/// protocol messages for extended periods. 24 hours prevents premature
+/// cleanup while still reclaiming truly abandoned sessions.
+const SESSION_TTL: Duration = Duration::from_secs(86400);
 
 /// Interval between session cleanup sweeps.
-const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // Event Buffer
