@@ -1684,7 +1684,7 @@ docker stats rustbrain-qdrant
 - MCP health check (`GET /health` on port 3001) passes from the API container but fails from execution containers
 
 **Root cause:**
-The `opencode.json` template had a hardcoded MCP URL (`http://mcp-sse:3001/sse`) that was not substituted at container startup. The entrypoint script only substituted `LITELLM_API_KEY` — `MCP_SSE_URL` and `LITELLM_BASE_URL` were ignored. Execution containers received `MCP_SSE_URL` as an env var (from `docker.rs`), but the config generation step never used it.
+The `opencode.json` template had hardcoded MCP URL and provider baseURL that were not substituted at container startup. The entrypoint script only substituted `LITELLM_API_KEY` — `MCP_SSE_URL` and `LITELLM_BASE_URL` were ignored. Execution containers received `MCP_SSE_URL` as an env var (from `docker.rs`), but neither `MCP_SSE_URL` nor `LITELLM_BASE_URL` were passed through, so the config generation step never used them.
 
 **Diagnosis:**
 
@@ -1704,15 +1704,17 @@ docker exec rustbrain-opencode curl -sf http://mcp-sse:3001/health
 # For execution containers, check the same
 docker exec <execution-container> cat /home/opencode/.config/opencode/opencode.json | grep -A2 '"mcp"'
 docker exec <execution-container> env | grep MCP_SSE_URL
+docker exec <execution-container> env | grep LITELLM_BASE_URL
 ```
 
 **Fix:**
 
-The fix was applied in three files:
+The fix was applied in four files:
 
 1. `configs/opencode/opencode.json` — MCP URL and provider baseURL now use `${MCP_SSE_URL}` and `${LITELLM_BASE_URL}` placeholders
 2. `configs/opencode/docker-entrypoint.sh` — The `sed` command now substitutes all three variables: `LITELLM_API_KEY`, `MCP_SSE_URL`, `LITELLM_BASE_URL`
 3. `docker-compose.yml` — The `opencode` service now receives `MCP_SSE_URL` as an env var (with default `http://mcp-sse:3001/sse`)
+4. `services/api/src/docker.rs` + `runner.rs` + `handlers/execution.rs` + `config.rs` — Execution containers now receive `LITELLM_BASE_URL` as an env var alongside `MCP_SSE_URL`, ensuring the `opencode.json.template` substitution produces a valid LLM provider config
 
 To apply the fix on a running deployment:
 

@@ -123,6 +123,13 @@ pub struct Config {
     /// Defaults to `http://mcp-sse:3001/sse` (Docker-network reachable).
     /// Override via `MCP_SSE_URL`.
     pub mcp_sse_url: String,
+    /// LiteLLM proxy base URL passed to execution containers.
+    ///
+    /// Required by the opencode.json.template substitution so that OpenCode
+    /// agents in execution containers can reach the LLM provider.
+    /// Defaults to `https://grid.ai.juspay.net`.
+    /// Override via `LITELLM_BASE_URL`.
+    pub litellm_base_url: String,
     /// Disable API key authentication entirely for local development.
     ///
     /// When `true`, all requests bypass auth and receive a synthetic admin context.
@@ -186,6 +193,7 @@ impl Config {
     /// | `OPENCODE_READY_TIMEOUT_SECS` | no | `60` |
     /// | `OPENCODE_CONFIG_HOST_PATH` | no | _(none)_ |
     /// | `MCP_SSE_URL` | no | `http://mcp-sse:3001/sse` |
+    /// | `LITELLM_BASE_URL` | no | `https://grid.ai.juspay.net` |
     /// | `RUSTBRAIN_AUTH_DISABLED` | no | `false` |
     /// | `RUSTBRAIN_INTERNAL_API_KEY` | no | _(none)_ |
     /// | `RUSTBRAIN_BOOTSTRAP_KEY` | no | _(none)_ |
@@ -251,6 +259,8 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             mcp_sse_url: std::env::var("MCP_SSE_URL")
                 .unwrap_or_else(|_| "http://mcp-sse:3001/sse".to_string()),
+            litellm_base_url: std::env::var("LITELLM_BASE_URL")
+                .unwrap_or_else(|_| "https://grid.ai.juspay.net".to_string()),
             auth_disabled: std::env::var("RUSTBRAIN_AUTH_DISABLED")
                 .map(|s| s.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
@@ -305,6 +315,7 @@ mod tests {
             opencode_ready_timeout_secs: 60,
             opencode_config_host_path: Some("/opt/rustbrain/configs/opencode".to_string()),
             mcp_sse_url: "http://mcp-sse:3001/sse".to_string(),
+            litellm_base_url: "https://grid.ai.juspay.net".to_string(),
             auth_disabled: false,
             internal_api_key: None,
             bootstrap_key: None,

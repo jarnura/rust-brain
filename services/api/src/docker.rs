@@ -47,6 +47,11 @@ pub struct ExecutionConfig<'a> {
     pub opencode_config_host_path: Option<&'a str>,
     /// MCP-SSE URL injected as `MCP_SSE_URL` env var into the container.
     pub mcp_sse_url: Option<&'a str>,
+    /// LiteLLM proxy base URL injected as `LITELLM_BASE_URL` env var.
+    ///
+    /// Required by the entrypoint's `verify_opencode_config()` to substitute
+    /// the `${LITELLM_BASE_URL}` placeholder in `opencode.json.template`.
+    pub litellm_base_url: Option<&'a str>,
     /// LiteLLM API key forwarded as `LITELLM_API_KEY` env var.
     ///
     /// Required by the entrypoint's `verify_opencode_config()` to substitute
@@ -276,6 +281,9 @@ impl DockerClient {
             )
         });
         let mcp_env = cfg.mcp_sse_url.map(|url| format!("MCP_SSE_URL={}", url));
+        let litellm_base_url_env = cfg
+            .litellm_base_url
+            .map(|url| format!("LITELLM_BASE_URL={}", url));
         let litellm_env = cfg
             .litellm_api_key
             .map(|key| format!("LITELLM_API_KEY={}", key));
@@ -308,6 +316,10 @@ impl DockerClient {
             args.push(mount);
         }
         if let Some(ref env) = mcp_env {
+            args.push("-e");
+            args.push(env);
+        }
+        if let Some(ref env) = litellm_base_url_env {
             args.push("-e");
             args.push(env);
         }
@@ -747,6 +759,7 @@ mod tests {
             publish_port: false,
             opencode_config_host_path: None,
             mcp_sse_url: None,
+            litellm_base_url: None,
             litellm_api_key: None,
             openai_api_key: None,
             opencode_server_password: None,

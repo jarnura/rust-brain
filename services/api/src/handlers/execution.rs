@@ -135,6 +135,7 @@ pub async fn execute_workspace(
         ready_timeout_secs: state.config.opencode_ready_timeout_secs,
         opencode_config_host_path: state.config.opencode_config_host_path.clone(),
         mcp_sse_url: Some(state.config.mcp_sse_url.clone()),
+        litellm_base_url: Some(state.config.litellm_base_url.clone()),
         litellm_api_key: std::env::var("LITELLM_API_KEY")
             .ok()
             .filter(|s| !s.is_empty()),
