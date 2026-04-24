@@ -76,8 +76,20 @@ impl SubSessionTracker {
     }
 
     /// Record a detected agent dispatch so the next discovered session is mapped to that agent.
+    ///
+    /// If a sub-session was already registered as `"unknown_subagent"` (race between
+    /// session discovery and dispatch detection), retroactively fix it.
     fn record_dispatch(&mut self, agent_name: String) {
-        self.pending_dispatches.push(agent_name);
+        let unknown_session = self
+            .session_agent_map
+            .iter()
+            .find(|(_, name)| name.as_str() == "unknown_subagent")
+            .map(|(sid, _)| sid.clone());
+        if let Some(sid) = unknown_session {
+            self.session_agent_map.insert(sid, agent_name);
+        } else {
+            self.pending_dispatches.push(agent_name);
+        }
     }
 
     /// Register newly discovered sessions from `list_sessions()`.
@@ -1313,6 +1325,40 @@ mod tests {
                 .map(String::as_str),
             Some("unknown_subagent")
         );
+    }
+
+    #[test]
+    fn tracker_record_dispatch_retroactively_fixes_unknown_subagent() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // Session discovered BEFORE dispatch (the race condition).
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+        assert_eq!(
+            tracker
+                .session_agent_map
+                .get("session-sub1")
+                .map(String::as_str),
+            Some("unknown_subagent")
+        );
+
+        // Dispatch arrives late — should retroactively fix the unknown entry.
+        tracker.record_dispatch("research".to_string());
+        assert_eq!(
+            tracker
+                .session_agent_map
+                .get("session-sub1")
+                .map(String::as_str),
+            Some("research")
+        );
+        assert!(tracker.pending_dispatches.is_empty());
+    }
+
+    #[test]
+    fn tracker_record_dispatch_queues_when_no_unknown() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // Dispatch arrives BEFORE any session — should queue normally.
+        tracker.record_dispatch("research".to_string());
+        assert_eq!(tracker.pending_dispatches, vec!["research"]);
+        assert!(tracker.session_agent_map.is_empty());
     }
 
     #[test]
