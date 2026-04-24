@@ -212,6 +212,19 @@ impl McpServer {
         })
     }
 
+    /// Create a pre-initialized MCP server for SSE transport sessions.
+    /// SSE clients establish connectivity via HTTP before sending messages,
+    /// so the initialization handshake is redundant — skipping it prevents
+    /// -32002 errors when clients reconnect without re-sending `initialize`.
+    pub fn new_initialized(config: Config) -> Result<Self> {
+        let client = ApiClient::new(&config)?;
+        Ok(Self {
+            config,
+            client,
+            initialized: true,
+        })
+    }
+
     /// Run the MCP server (stdio transport)
     pub async fn run(&mut self) -> Result<()> {
         info!("Starting MCP server (stdio transport)");

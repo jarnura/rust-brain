@@ -425,8 +425,8 @@ async fn new_session(state: &Arc<AppState>) -> Sse<ReceiverStream<Result<Event, 
     let channel_capacity = state.config.sse_channel_capacity;
     let (tx, rx) = mpsc::channel(channel_capacity);
 
-    let server =
-        McpServer::new(state.config.clone()).expect("Failed to create MCP server for session");
+    let server = McpServer::new_initialized(state.config.clone())
+        .expect("Failed to create MCP server for session");
 
     let session = Arc::new(Session {
         server: Mutex::new(server),
