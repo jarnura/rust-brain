@@ -717,15 +717,20 @@ async fn bridge_new_parts(
                     }
                 }
 
+                let effective_args = args.as_ref()
+                    .filter(|v| !v.is_null() && !v.as_object().is_some_and(|o| o.is_empty()))
+                    .or(state.as_ref().and_then(|s| s.get("input")));
+                let effective_result = result.as_ref()
+                    .filter(|v| !v.is_null() && !v.as_object().is_some_and(|o| o.is_empty()))
+                    .or(state.as_ref().and_then(|s| s.get("output")));
+
                 (
                     "tool_call",
                     json!({
                         "agent": current_agent,
                         "tool": tool_name,
-                        "args": args.as_ref().or(state.as_ref()
-                            .and_then(|s| s.get("input"))),
-                        "result": result.as_ref().or(state.as_ref()
-                            .and_then(|s| s.get("output"))),
+                        "args": effective_args,
+                        "result": effective_result,
                     }),
                 )
             }
@@ -966,13 +971,20 @@ async fn bridge_parts_for_agent(
                     }
                 }
 
+                let effective_args = args.as_ref()
+                    .filter(|v| !v.is_null() && !v.as_object().is_some_and(|o| o.is_empty()))
+                    .or(state.as_ref().and_then(|s| s.get("input")));
+                let effective_result = result.as_ref()
+                    .filter(|v| !v.is_null() && !v.as_object().is_some_and(|o| o.is_empty()))
+                    .or(state.as_ref().and_then(|s| s.get("output")));
+
                 (
                     "tool_call",
                     json!({
                         "agent": agent_name,
                         "tool": tool_name,
-                        "args": args.as_ref().or(state.as_ref().and_then(|s| s.get("input"))),
-                        "result": result.as_ref().or(state.as_ref().and_then(|s| s.get("output"))),
+                        "args": effective_args,
+                        "result": effective_result,
                     }),
                 )
             }
