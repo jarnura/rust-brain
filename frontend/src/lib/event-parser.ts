@@ -43,10 +43,27 @@ function toRawRecord(
 
 function parseReasoning(content: Record<string, unknown>): ReasoningContent | null {
   const agent = asString(content.agent)
+  if (agent === undefined) return null
+
+  const stepStart = asString(content.step_start)
+  const stepFinish = asString(content.step_finish)
+
   // Per R-1, reasoning may use `text` or (legacy) `reasoning` for the body.
-  const text = asString(content.text) ?? asString(content.reasoning)
-  if (agent === undefined || text === undefined) return null
-  return { kind: 'reasoning', agent, text }
+  // Real OpenCode events may also carry `step_start`/`step_finish` instead.
+  let text = asString(content.text) ?? asString(content.reasoning)
+
+  if ((text === undefined || text.length === 0) && stepStart !== undefined) {
+    text = `Starting step: ${stepStart}`
+  } else if ((text === undefined || text.length === 0) && stepFinish !== undefined) {
+    text = `Finished: ${stepFinish}`
+  }
+
+  if (text === undefined || text.length === 0) return null
+
+  const result: ReasoningContent = { kind: 'reasoning', agent, text }
+  if (stepStart !== undefined) result.step_start = stepStart
+  if (stepFinish !== undefined) result.step_finish = stepFinish
+  return result
 }
 
 function parseToolCall(content: Record<string, unknown>): ToolCallContent | null {

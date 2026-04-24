@@ -11,11 +11,18 @@
 
 import type { AgentEvent } from './index'
 
-/** Reasoning / text content emitted by an agent. */
+/** Reasoning / text content emitted by an agent.
+ *
+ * Real OpenCode events may carry `step_start` / `step_finish` instead of
+ * `text`. The parser synthesizes a display `text` from those fields so the
+ * rest of the UI only needs to read `text`. The originals are preserved for
+ * step-indicator rendering. */
 export interface ReasoningContent {
   kind: 'reasoning'
   agent: string
   text: string
+  step_start?: string
+  step_finish?: string
 }
 
 /** Atomic tool invocation — both `args` and `result` are delivered together. */

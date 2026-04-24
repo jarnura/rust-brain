@@ -150,6 +150,69 @@ export function summarizeArgs(args: unknown): string {
   return String(args)
 }
 
+/** Human-readable one-line summary for common tool calls.
+ *  Returns null if no semantic summary is available (falls back to args). */
+export function semanticToolSummary(tool: string, args: unknown): string | null {
+  if (args === undefined || args === null || typeof args !== 'object') return null
+  const a = args as Record<string, unknown>
+
+  switch (tool) {
+    case 'Read':
+    case 'read_file': {
+      const path = typeof a.file_path === 'string' ? a.file_path : typeof a.path === 'string' ? a.path : null
+      if (!path) return null
+      const name = path.split('/').pop() ?? path
+      const line = typeof a.offset === 'number' ? `:${a.offset}` : typeof a.line === 'number' ? `:${a.line}` : ''
+      return `Read ${name}${line}`
+    }
+    case 'Write':
+    case 'write_file': {
+      const path = typeof a.file_path === 'string' ? a.file_path : typeof a.path === 'string' ? a.path : null
+      if (!path) return null
+      return `Write ${path.split('/').pop() ?? path}`
+    }
+    case 'Edit':
+    case 'edit_file': {
+      const path = typeof a.file_path === 'string' ? a.file_path : typeof a.path === 'string' ? a.path : null
+      if (!path) return null
+      return `Edit ${path.split('/').pop() ?? path}`
+    }
+    case 'Bash':
+    case 'bash':
+    case 'execute_command': {
+      const cmd = typeof a.command === 'string' ? a.command : null
+      if (!cmd) return null
+      const short = cmd.length > 50 ? `${cmd.slice(0, 50)}…` : cmd
+      return `$ ${short}`
+    }
+    case 'Grep':
+    case 'grep':
+    case 'search': {
+      const pattern = typeof a.pattern === 'string' ? a.pattern : typeof a.query === 'string' ? a.query : null
+      if (!pattern) return null
+      const short = pattern.length > 40 ? `${pattern.slice(0, 40)}…` : pattern
+      return `Grep "${short}"`
+    }
+    case 'Glob':
+    case 'glob':
+    case 'list_files': {
+      const pat = typeof a.pattern === 'string' ? a.pattern : null
+      if (!pat) return null
+      return `Glob ${pat}`
+    }
+    case 'Agent':
+    case 'dispatch_agent':
+    case 'task': {
+      const desc = typeof a.description === 'string' ? a.description : typeof a.prompt === 'string' ? a.prompt : null
+      if (!desc) return null
+      const short = desc.length > 50 ? `${desc.slice(0, 50)}…` : desc
+      return `Agent: ${short}`
+    }
+    default:
+      return null
+  }
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 interface ToolCallCardProps {
@@ -305,7 +368,8 @@ export function ToolCallCard({
 
   const argsText = formatValue(content.args)
   const resultText = formatValue(content.result)
-  const argsSummary = summarizeArgs(content.args)
+  const semantic = semanticToolSummary(content.tool, content.args)
+  const argsSummary = semantic ?? summarizeArgs(content.args)
 
   const borderColor =
     status === 'error'
@@ -341,7 +405,7 @@ export function ToolCallCard({
           {new Date(timestamp).toLocaleTimeString('en-US', { hour12: false })}
         </span>
         {!expanded && argsSummary && (
-          <span className="text-dark-500 font-mono text-[11px] truncate">
+          <span className={`font-mono text-[11px] truncate ${semantic ? 'text-dark-300' : 'text-dark-500'}`}>
             {argsSummary}
           </span>
         )}

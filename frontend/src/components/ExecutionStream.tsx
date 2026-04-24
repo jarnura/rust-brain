@@ -7,6 +7,7 @@ import { parseAgentEvent } from '../lib/event-parser'
 import {
   isReasoningEvent,
   isToolCallEvent,
+  type ToolCallContent,
   type TypedAgentEvent,
 } from '../types/events'
 import {
@@ -220,6 +221,74 @@ function AgentTimeline({ entries, activeAgent, streamDone, usesLegacyPhases }: A
   )
 }
 
+// ─── Work blocks: consecutive tool-call groups wrapped in a collapsible ──────
+
+interface WorkBlock {
+  id: string
+  kind: 'tool-run' | 'other'
+  groupIndices: number[]
+}
+
+function buildWorkBlocks(groups: readonly TranscriptGroup[]): WorkBlock[] {
+  const blocks: WorkBlock[] = []
+  let i = 0
+  while (i < groups.length) {
+    if (groups[i].kind === 'tool_call') {
+      const start = i
+      while (i < groups.length && groups[i].kind === 'tool_call') i++
+      if (i - start >= 2) {
+        blocks.push({
+          id: `wb-${groups[start].id}`,
+          kind: 'tool-run',
+          groupIndices: Array.from({ length: i - start }, (_, k) => start + k),
+        })
+      } else {
+        blocks.push({ id: `wb-${groups[start].id}`, kind: 'other', groupIndices: [start] })
+      }
+    } else {
+      blocks.push({ id: `wb-${groups[i].id}`, kind: 'other', groupIndices: [i] })
+      i++
+    }
+  }
+  return blocks
+}
+
+function summarizeWorkBlock(groups: readonly TranscriptGroup[], indices: number[]): string {
+  const tools = new Set<string>()
+  for (const idx of indices) {
+    const g = groups[idx]
+    for (const ev of g.events) {
+      if (ev.content.kind === 'tool_call') tools.add((ev.content as ToolCallContent).tool)
+    }
+  }
+  const toolList = Array.from(tools).slice(0, 4)
+  const suffix = tools.size > 4 ? `, +${tools.size - 4} more` : ''
+  return `Worked · ran ${indices.length} command${indices.length === 1 ? '' : 's'} (${toolList.join(', ')}${suffix})`
+}
+
+interface WorkedHeaderProps {
+  summary: string
+  expanded: boolean
+  onToggle: () => void
+}
+
+function WorkedGroupHeader({ summary, expanded, onToggle }: WorkedHeaderProps) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] border border-yellow-900/40 rounded-md bg-yellow-900/10 hover:bg-yellow-900/20 transition-colors"
+    >
+      <span className="text-yellow-400/80 text-[10px]">{expanded ? '▼' : '▶'}</span>
+      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide bg-yellow-900/60 text-yellow-300 shrink-0">
+        WORKED
+      </span>
+      <span className="text-dark-300 text-[11px]">{summary}</span>
+      <span className="ml-auto text-[10px] text-dark-500">{expanded ? 'collapse' : 'expand'}</span>
+    </button>
+  )
+}
+
 // ─── Generic event row (non-tool, non-reasoning) ─────────────────────────────
 
 interface EventRowProps {
@@ -340,6 +409,7 @@ export function ExecutionStream() {
   // ─── State: collapse, focus, autoscroll, filter ────────────────────────────
 
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
+  const [collapsedWorkBlocks, setCollapsedWorkBlocks] = useState<Set<string>>(() => new Set())
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(() => new Set())
   const [focusedIndex, setFocusedIndex] = useState(0)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -356,6 +426,9 @@ export function ExecutionStream() {
 
   // Group consecutive same-kind events
   const groups = useMemo(() => groupConsecutiveEvents(typedEvents), [typedEvents])
+
+  // Build work blocks (consecutive tool-call groups → "Worked" sections)
+  const workBlocks = useMemo(() => buildWorkBlocks(groups), [groups])
 
   // Flat navigable units (respects collapsed groups)
   const navUnits: NavUnit[] = useMemo(
@@ -385,6 +458,7 @@ export function ExecutionStream() {
 
   const expandAll = useCallback(() => {
     setCollapsedGroups(new Set())
+    setCollapsedWorkBlocks(new Set())
     const allUnitIds = new Set<string>()
     for (const group of groups) {
       for (const event of group.events) {
@@ -397,7 +471,8 @@ export function ExecutionStream() {
   const collapseAll = useCallback(() => {
     setExpandedUnits(new Set())
     setCollapsedGroups(new Set(groups.map((g) => g.id)))
-  }, [groups])
+    setCollapsedWorkBlocks(new Set(workBlocks.filter((b) => b.kind === 'tool-run').map((b) => b.id)))
+  }, [groups, workBlocks])
 
   const toggleFocused = useCallback(() => {
     const unit = navUnits[focusedIndex]
@@ -493,12 +568,34 @@ export function ExecutionStream() {
   // Reset state when a new execution begins.
   useEffect(() => {
     setCollapsedGroups(new Set())
+    setCollapsedWorkBlocks(new Set())
     setExpandedUnits(new Set())
     setFocusedIndex(0)
     setAutoScroll(true)
     clearStreamGap()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeExecutionId])
+
+  // Auto-expand tool call cards so args/results are visible by default.
+  useEffect(() => {
+    const toolUnitIds: string[] = []
+    for (const group of groups) {
+      for (const event of group.events) {
+        if (isToolCallEvent(event)) {
+          const unitId = `${group.id}:${event.id}`
+          toolUnitIds.push(unitId)
+        }
+      }
+    }
+    if (toolUnitIds.length === 0) return
+    setExpandedUnits((prev) => {
+      const hasAll = toolUnitIds.every((id) => prev.has(id))
+      if (hasAll) return prev
+      const next = new Set(prev)
+      for (const id of toolUnitIds) next.add(id)
+      return next
+    })
+  }, [groups])
 
   if (!activeExecutionId) {
     return (
@@ -611,90 +708,120 @@ export function ExecutionStream() {
         onScroll={onScroll}
         className="flex-1 overflow-y-auto space-y-1 font-mono text-xs"
       >
-        {groups.map((group, groupIdx) => {
-          const isGroupCollapsed = collapsedGroups.has(group.id)
-          const headerUnitId = `${group.id}:hdr`
-          const headerFocused =
-            isGroupCollapsed &&
-            navUnits[focusedIndex]?.kind === 'group-header' &&
-            navUnits[focusedIndex]?.groupId === group.id
+        {(() => {
+          function renderGroup(group: TranscriptGroup, groupIdx: number) {
+            const isGroupCollapsed = collapsedGroups.has(group.id)
+            const headerFocused =
+              isGroupCollapsed &&
+              navUnits[focusedIndex]?.kind === 'group-header' &&
+              navUnits[focusedIndex]?.groupId === group.id
 
-          if (isGroupCollapsed) {
+            if (isGroupCollapsed) {
+              return (
+                <div key={`${group.id}:hdr`} data-group-id={group.id}>
+                  <CollapsedGroupHeader
+                    group={group}
+                    onExpand={() => toggleGroupCollapse(group.id)}
+                    focused={headerFocused}
+                  />
+                </div>
+              )
+            }
+
+            const showGroupDivider = group.events.length > 1
+
             return (
-              <div key={headerUnitId} data-group-id={group.id}>
-                <CollapsedGroupHeader
-                  group={group}
-                  onExpand={() => toggleGroupCollapse(group.id)}
-                  focused={headerFocused}
-                />
+              <div key={group.id} data-group-id={group.id}>
+                {showGroupDivider && (
+                  <div className="flex items-center gap-2 mt-1 mb-0.5 text-[10px] text-dark-500">
+                    <button
+                      type="button"
+                      onClick={() => toggleGroupCollapse(group.id)}
+                      className="flex items-center gap-1 hover:text-dark-300"
+                      title="Collapse group"
+                    >
+                      <span>▼</span>
+                      <span>{summarizeGroup(group)}</span>
+                    </button>
+                    <div className="flex-1 h-px bg-dark-800" />
+                  </div>
+                )}
+                {group.events.map((event, eventIdx) => {
+                  const unitId = `${group.id}:${event.id}`
+                  const unitExpanded = expandedUnits.has(unitId)
+                  const highlighted = filterActive && eventMatchesQuery(event, filter)
+                  const navUnit = navUnits[focusedIndex]
+                  const unitFocused =
+                    navUnit?.kind === 'event' &&
+                    navUnit.groupIndex === groupIdx &&
+                    navUnit.eventIndex === eventIdx
+
+                  if (isToolCallEvent(event)) {
+                    return (
+                      <ToolCallCard
+                        key={event.id}
+                        event={event}
+                        expanded={unitExpanded}
+                        onToggle={() => toggleUnit(unitId)}
+                        highlighted={highlighted}
+                        focused={unitFocused}
+                      />
+                    )
+                  }
+                  if (isReasoningEvent(event)) {
+                    return (
+                      <ReasoningCard
+                        key={event.id}
+                        event={event}
+                        expanded={unitExpanded}
+                        onToggle={() => toggleUnit(unitId)}
+                        highlighted={highlighted}
+                        focused={unitFocused}
+                      />
+                    )
+                  }
+                  return (
+                    <EventRow
+                      key={event.id}
+                      event={event}
+                      highlighted={highlighted}
+                      focused={unitFocused}
+                    />
+                  )
+                })}
               </div>
             )
           }
 
-          const showGroupDivider = group.events.length > 1
-
-          return (
-            <div key={group.id} data-group-id={group.id}>
-              {showGroupDivider && (
-                <div className="flex items-center gap-2 mt-1 mb-0.5 text-[10px] text-dark-500">
-                  <button
-                    type="button"
-                    onClick={() => toggleGroupCollapse(group.id)}
-                    className="flex items-center gap-1 hover:text-dark-300"
-                    title="Collapse group"
-                  >
-                    <span>▼</span>
-                    <span>{summarizeGroup(group)}</span>
-                  </button>
-                  <div className="flex-1 h-px bg-dark-800" />
-                </div>
-              )}
-              {group.events.map((event, eventIdx) => {
-                const unitId = `${group.id}:${event.id}`
-                const unitExpanded = expandedUnits.has(unitId)
-                const highlighted = filterActive && eventMatchesQuery(event, filter)
-                const navUnit = navUnits[focusedIndex]
-                const unitFocused =
-                  navUnit?.kind === 'event' &&
-                  navUnit.groupIndex === groupIdx &&
-                  navUnit.eventIndex === eventIdx
-
-                if (isToolCallEvent(event)) {
-                  return (
-                    <ToolCallCard
-                      key={event.id}
-                      event={event}
-                      expanded={unitExpanded}
-                      onToggle={() => toggleUnit(unitId)}
-                      highlighted={highlighted}
-                      focused={unitFocused}
-                    />
-                  )
-                }
-                if (isReasoningEvent(event)) {
-                  return (
-                    <ReasoningCard
-                      key={event.id}
-                      event={event}
-                      expanded={unitExpanded}
-                      onToggle={() => toggleUnit(unitId)}
-                      highlighted={highlighted}
-                      focused={unitFocused}
-                    />
-                  )
-                }
-                return (
-                  <EventRow
-                    key={event.id}
-                    event={event}
-                    highlighted={highlighted}
-                    focused={unitFocused}
+          return workBlocks.map((block) => {
+            if (block.kind === 'tool-run') {
+              const isWbCollapsed = collapsedWorkBlocks.has(block.id)
+              const summary = summarizeWorkBlock(groups, block.groupIndices)
+              return (
+                <div key={block.id} className="space-y-1">
+                  <WorkedGroupHeader
+                    summary={summary}
+                    expanded={!isWbCollapsed}
+                    onToggle={() => {
+                      setCollapsedWorkBlocks((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(block.id)) next.delete(block.id)
+                        else next.add(block.id)
+                        return next
+                      })
+                    }}
                   />
-                )
-              })}
-            </div>
-          )
-        })}
+                  {!isWbCollapsed && (
+                    <div className="ml-3 border-l-2 border-yellow-900/30 pl-2 space-y-1">
+                      {block.groupIndices.map((gi) => renderGroup(groups[gi], gi))}
+                    </div>
+                  )}
+                </div>
+              )
+            }
+            return block.groupIndices.map((gi) => renderGroup(groups[gi], gi))
+          })
+        })()}
         {streamEvents.length === 0 && !streamDone && (
           <p className="text-dark-500 italic animate-pulse">Waiting for events...</p>
         )}

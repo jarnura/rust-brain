@@ -201,4 +201,65 @@ describe('parseAgentEvent', () => {
         throw new Error('expected tool_call narrowing')
     }
   })
+
+  // ─── step_start / step_finish handling ──────────────────────────────────────
+
+  it('parses reasoning events with step_start into synthesized text', () => {
+    const parsed = parseAgentEvent(
+      raw('reasoning', { agent: 'research', step_start: 'prt_db02' }),
+    )
+    expect(isReasoningEvent(parsed)).toBe(true)
+    if (isReasoningEvent(parsed)) {
+      expect(parsed.content.text).toBe('Starting step: prt_db02')
+      expect(parsed.content.step_start).toBe('prt_db02')
+      expect(parsed.content.step_finish).toBeUndefined()
+    }
+  })
+
+  it('parses reasoning events with step_finish into synthesized text', () => {
+    const parsed = parseAgentEvent(
+      raw('reasoning', { agent: 'research', step_finish: 'stop' }),
+    )
+    expect(isReasoningEvent(parsed)).toBe(true)
+    if (isReasoningEvent(parsed)) {
+      expect(parsed.content.text).toBe('Finished: stop')
+      expect(parsed.content.step_finish).toBe('stop')
+      expect(parsed.content.step_start).toBeUndefined()
+    }
+  })
+
+  it('prefers explicit text over step_start when both present', () => {
+    const parsed = parseAgentEvent(
+      raw('reasoning', { agent: 'research', text: 'explicit', step_start: 'prt_1' }),
+    )
+    expect(isReasoningEvent(parsed)).toBe(true)
+    if (isReasoningEvent(parsed)) {
+      expect(parsed.content.text).toBe('explicit')
+      expect(parsed.content.step_start).toBe('prt_1')
+    }
+  })
+
+  it('falls back to step_start when text is empty string', () => {
+    const parsed = parseAgentEvent(
+      raw('reasoning', { agent: 'research', text: '', step_start: 'prt_2' }),
+    )
+    expect(isReasoningEvent(parsed)).toBe(true)
+    if (isReasoningEvent(parsed)) {
+      expect(parsed.content.text).toBe('Starting step: prt_2')
+    }
+  })
+
+  it('falls back to UnknownContent for empty text with no step fields', () => {
+    const parsed = parseAgentEvent(
+      raw('reasoning', { agent: 'research', text: '' }),
+    )
+    expect(isUnknownEvent(parsed)).toBe(true)
+  })
+
+  it('falls back to UnknownContent for reasoning with no agent', () => {
+    const parsed = parseAgentEvent(
+      raw('reasoning', { step_start: 'prt_1' }),
+    )
+    expect(isUnknownEvent(parsed)).toBe(true)
+  })
 })

@@ -6,6 +6,7 @@ import {
   deriveToolCallStatus,
   formatValue,
   isErrorResult,
+  semanticToolSummary,
   summarizeArgs,
   tokenizeJson,
   truncateText,
@@ -186,6 +187,74 @@ describe('tokenizeJson', () => {
     const tokens = tokenizeJson(pretty)
     expect(tokens.map((t) => t.value).join('')).toBe(pretty)
     expect(tokens.some((t) => t.type === 'string' && t.value.includes('\\"hi\\"'))).toBe(true)
+  })
+})
+
+describe('semanticToolSummary', () => {
+  it('summarizes Read with file path and offset', () => {
+    expect(semanticToolSummary('Read', { file_path: '/src/main.rs', offset: 95 }))
+      .toBe('Read main.rs:95')
+  })
+
+  it('summarizes read_file with path and line', () => {
+    expect(semanticToolSummary('read_file', { path: '/src/lib.rs', line: 10 }))
+      .toBe('Read lib.rs:10')
+  })
+
+  it('summarizes Read without line number', () => {
+    expect(semanticToolSummary('Read', { file_path: '/src/config.ts' }))
+      .toBe('Read config.ts')
+  })
+
+  it('summarizes Write tool', () => {
+    expect(semanticToolSummary('Write', { file_path: '/src/new.rs' }))
+      .toBe('Write new.rs')
+  })
+
+  it('summarizes Edit tool', () => {
+    expect(semanticToolSummary('Edit', { file_path: '/src/lib.rs' }))
+      .toBe('Edit lib.rs')
+  })
+
+  it('summarizes Bash with command', () => {
+    expect(semanticToolSummary('Bash', { command: 'cargo test' }))
+      .toBe('$ cargo test')
+  })
+
+  it('truncates long Bash commands', () => {
+    const longCmd = 'a'.repeat(60)
+    const result = semanticToolSummary('Bash', { command: longCmd })
+    expect(result).not.toBeNull()
+    expect(result!.length).toBeLessThanOrEqual(53)
+  })
+
+  it('summarizes Grep with pattern', () => {
+    expect(semanticToolSummary('Grep', { pattern: 'fn main' }))
+      .toBe('Grep "fn main"')
+  })
+
+  it('summarizes Glob with pattern', () => {
+    expect(semanticToolSummary('Glob', { pattern: '**/*.rs' }))
+      .toBe('Glob **/*.rs')
+  })
+
+  it('summarizes Agent dispatch', () => {
+    expect(semanticToolSummary('Agent', { description: 'explore code' }))
+      .toBe('Agent: explore code')
+  })
+
+  it('returns null for unknown tools', () => {
+    expect(semanticToolSummary('custom_tool', { data: 'x' }))
+      .toBeNull()
+  })
+
+  it('returns null when args is null or undefined', () => {
+    expect(semanticToolSummary('Read', null)).toBeNull()
+    expect(semanticToolSummary('Read', undefined)).toBeNull()
+  })
+
+  it('returns null when required field is missing', () => {
+    expect(semanticToolSummary('Read', { wrong_field: 'x' })).toBeNull()
   })
 })
 
