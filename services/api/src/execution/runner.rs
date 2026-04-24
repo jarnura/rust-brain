@@ -61,6 +61,8 @@ struct SubSessionTracker {
     session_part_counts: HashMap<String, usize>,
     /// FIFO queue of agent names awaiting a new session to be assigned.
     pending_dispatches: Vec<String>,
+    /// Tool call IDs already bridged as events (prevents duplicate bridging).
+    seen_call_ids: HashSet<String>,
 }
 
 impl SubSessionTracker {
@@ -72,6 +74,7 @@ impl SubSessionTracker {
             session_agent_map: HashMap::new(),
             session_part_counts: HashMap::new(),
             pending_dispatches: Vec::new(),
+            seen_call_ids: HashSet::new(),
         }
     }
 
@@ -520,6 +523,7 @@ async fn run_execution_inner(
                         ref args,
                         ref result,
                         ref state,
+                        ..
                     } => {
                         if let Some(name) = tool_name {
                             if name == "task" {
@@ -688,6 +692,7 @@ async fn bridge_new_parts(
                 args,
                 result,
                 state,
+                ..
             } => {
                 if let Some(name) = tool_name {
                     if name == "task" {
@@ -868,6 +873,11 @@ async fn discover_sub_sessions(opencode: &OpenCodeClient, tracker: &mut SubSessi
 ///
 /// Each sub-session is polled independently. Errors from a single sub-session
 /// are logged and skipped so they cannot crash the orchestrator polling loop.
+///
+/// Non-tool parts use append-only part-count tracking. Tool parts are scanned
+/// across the full message list and deduplicated by `callID` so that tools
+/// completed in-place (after being initially skipped as incomplete) are still
+/// captured exactly once.
 async fn poll_sub_sessions(
     opencode: &OpenCodeClient,
     pool: &PgPool,
@@ -883,11 +893,16 @@ async fn poll_sub_sessions(
                     .flat_map(|m| m.parts)
                     .collect();
                 let total = all_parts.len();
-                if total > last_count {
-                    let new_parts = &all_parts[last_count..];
-                    bridge_parts_for_agent(pool, execution_id, &agent_name, new_parts).await;
-                    tracker.update_part_count(&session_id, total);
-                }
+                bridge_parts_for_agent(
+                    pool,
+                    execution_id,
+                    &agent_name,
+                    &all_parts,
+                    last_count,
+                    &mut tracker.seen_call_ids,
+                )
+                .await;
+                tracker.update_part_count(&session_id, total);
             }
             Err(e) => {
                 warn!(
@@ -906,36 +921,70 @@ async fn poll_sub_sessions(
 ///
 /// Unlike `bridge_new_parts`, this does not attempt agent-dispatch detection inside
 /// the sub-session (sub-agents don't further dispatch to sub-sub-agents in this design).
+///
+/// Non-tool parts are only bridged from `[last_count..]` (append-only tracking).
+/// Tool parts are scanned across ALL indices and deduplicated by `call_id`:
+/// incomplete tools (no result yet) are skipped, and completed tools are bridged
+/// exactly once via `seen_call_ids`.
 async fn bridge_parts_for_agent(
     pool: &PgPool,
     execution_id: Uuid,
     agent_name: &str,
-    parts: &[crate::opencode::MessagePart],
+    all_parts: &[crate::opencode::MessagePart],
+    last_count: usize,
+    seen_call_ids: &mut HashSet<String>,
 ) {
     use crate::opencode::MessagePart;
 
-    for part in parts {
+    for (i, part) in all_parts.iter().enumerate() {
         let (event_type, content) = match part {
+            MessagePart::ToolInvocation {
+                tool_name,
+                args,
+                result,
+                state,
+                call_id,
+            } => {
+                let has_result = result.is_some();
+                let has_state_output = state
+                    .as_ref()
+                    .and_then(|s| s.get("output"))
+                    .is_some();
+                let state_completed = state
+                    .as_ref()
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| s == "result" || s == "completed");
+
+                if !has_result && !has_state_output && !state_completed {
+                    continue;
+                }
+
+                if let Some(id) = call_id {
+                    if !seen_call_ids.insert(id.clone()) {
+                        continue;
+                    }
+                }
+
+                (
+                    "tool_call",
+                    json!({
+                        "agent": agent_name,
+                        "tool": tool_name,
+                        "args": args.as_ref().or(state.as_ref().and_then(|s| s.get("input"))),
+                        "result": result.as_ref().or(state.as_ref().and_then(|s| s.get("output"))),
+                    }),
+                )
+            }
+
+            _ if i < last_count => continue,
+
             MessagePart::Text { text } => {
                 ("reasoning", json!({ "agent": agent_name, "text": text }))
             }
             MessagePart::Reasoning { text } => (
                 "reasoning",
                 json!({ "agent": agent_name, "reasoning": text }),
-            ),
-            MessagePart::ToolInvocation {
-                tool_name,
-                args,
-                result,
-                state,
-            } => (
-                "tool_call",
-                json!({
-                    "agent": agent_name,
-                    "tool": tool_name,
-                    "args": args.as_ref().or(state.as_ref().and_then(|s| s.get("input"))),
-                    "result": result.as_ref().or(state.as_ref().and_then(|s| s.get("output"))),
-                }),
             ),
             MessagePart::StepStart { id } => (
                 "reasoning",
@@ -1412,5 +1461,97 @@ mod tests {
 
         assert!(tracker.session_agent_map.is_empty());
         assert!(tracker.sessions_to_poll().is_empty());
+    }
+
+    #[test]
+    fn tracker_seen_call_ids_starts_empty() {
+        let tracker = SubSessionTracker::new("session-orch");
+        assert!(tracker.seen_call_ids.is_empty());
+    }
+
+    #[test]
+    fn tracker_seen_call_ids_deduplicates() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        assert!(tracker.seen_call_ids.insert("call-1".to_string()));
+        assert!(!tracker.seen_call_ids.insert("call-1".to_string()));
+        assert!(tracker.seen_call_ids.insert("call-2".to_string()));
+        assert_eq!(tracker.seen_call_ids.len(), 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tool completion detection tests (mirrors bridge_parts_for_agent logic)
+    // -------------------------------------------------------------------------
+
+    fn is_tool_complete(
+        result: &Option<serde_json::Value>,
+        state: &Option<serde_json::Value>,
+    ) -> bool {
+        if result.is_some() {
+            return true;
+        }
+        if let Some(s) = state {
+            if s.get("output").is_some() {
+                return true;
+            }
+            if let Some(status) = s.get("status").and_then(|v| v.as_str()) {
+                if status == "result" || status == "completed" {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn tool_complete_when_result_present() {
+        assert!(is_tool_complete(
+            &Some(json!("output data")),
+            &None,
+        ));
+    }
+
+    #[test]
+    fn tool_complete_when_state_has_output() {
+        assert!(is_tool_complete(
+            &None,
+            &Some(json!({ "status": "result", "output": "data" })),
+        ));
+    }
+
+    #[test]
+    fn tool_complete_when_state_status_is_result() {
+        assert!(is_tool_complete(
+            &None,
+            &Some(json!({ "status": "result" })),
+        ));
+    }
+
+    #[test]
+    fn tool_complete_when_state_status_is_completed() {
+        assert!(is_tool_complete(
+            &None,
+            &Some(json!({ "status": "completed" })),
+        ));
+    }
+
+    #[test]
+    fn tool_incomplete_when_pending() {
+        assert!(!is_tool_complete(
+            &None,
+            &Some(json!({ "status": "pending" })),
+        ));
+    }
+
+    #[test]
+    fn tool_incomplete_when_running() {
+        assert!(!is_tool_complete(
+            &None,
+            &Some(json!({ "status": "running" })),
+        ));
+    }
+
+    #[test]
+    fn tool_incomplete_when_no_result_no_state() {
+        assert!(!is_tool_complete(&None, &None));
     }
 }

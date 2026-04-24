@@ -170,6 +170,9 @@ pub enum MessagePart {
         /// OpenCode wraps input/output in a `state` object.
         #[serde(default)]
         state: Option<serde_json::Value>,
+        /// Unique identifier for this tool call (e.g. `"functions.task:0"`).
+        #[serde(rename = "callID", default)]
+        call_id: Option<String>,
     },
     /// Marks the beginning of an agent step
     StepStart {
@@ -213,11 +216,13 @@ impl Serialize for MessagePart {
                 args,
                 result,
                 state,
+                call_id,
             } => KnownMessagePart::ToolInvocation {
                 tool_name: tool_name.clone(),
                 args: args.clone(),
                 result: result.clone(),
                 state: state.clone(),
+                call_id: call_id.clone(),
             }
             .serialize(serializer),
             MessagePart::StepStart { id } => {
@@ -259,6 +264,8 @@ enum KnownMessagePart {
         result: Option<serde_json::Value>,
         #[serde(default)]
         state: Option<serde_json::Value>,
+        #[serde(rename = "callID", default)]
+        call_id: Option<String>,
     },
     #[serde(rename = "step-start")]
     StepStart {
@@ -306,11 +313,13 @@ impl From<MessagePartHelper> for MessagePart {
                     args,
                     result,
                     state,
+                    call_id,
                 } => MessagePart::ToolInvocation {
                     tool_name,
                     args,
                     result,
                     state,
+                    call_id,
                 },
                 KnownMessagePart::StepStart { id } => MessagePart::StepStart { id },
                 KnownMessagePart::StepFinish { reason } => MessagePart::StepFinish { reason },
@@ -642,6 +651,7 @@ mod tests {
                 args,
                 result,
                 state,
+                call_id,
             } => {
                 assert_eq!(
                     tool_name,
@@ -654,6 +664,7 @@ mod tests {
                     "result should be None for OpenCode format"
                 );
                 assert!(state.is_some(), "state should be populated");
+                assert_eq!(call_id, Some("functions.task:0".to_string()));
 
                 let state = state.unwrap();
                 assert_eq!(
@@ -688,6 +699,7 @@ mod tests {
                 args,
                 result,
                 state,
+                ..
             } => {
                 assert_eq!(tool_name, Some("bash".to_string()));
                 assert!(args.is_some());
