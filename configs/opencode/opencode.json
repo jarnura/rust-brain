@@ -61,7 +61,7 @@
     "orchestrator": {
       "description": "Control plane. Classifies intent (CLASS A-E), decomposes into task DAGs, dispatches to specialist agents, tracks artifacts via context_store. Never writes code or reads source files.",
       "mode": "primary",
-      "model": "juspay-grid/kimi-latest",
+      "model": "juspay-grid/glm-latest",
       "prompt": "{file:/home/opencode/.config/opencode/.opencode/agents/orchestrator.md}",
       "steps": 2000,
       "temperature": 0.3,
