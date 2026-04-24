@@ -506,11 +506,23 @@ impl OpenCodeClient {
             .send()
             .await
             .context("send_message request failed")?;
-        let send_resp = resp
-            .error_for_status()?
-            .json::<SendMessageResponse>()
-            .await
-            .context("send_message parse failed")?;
+        let resp = resp.error_for_status()?;
+        let bytes = resp.bytes().await.context("send_message read body")?;
+        if bytes.is_empty() {
+            // OpenCode returned async (empty body). Poll until the assistant
+            // message appears, up to the client timeout.
+            for _ in 0..120 {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if let Ok(msgs) = self.get_messages(session_id).await {
+                    if let Some(last) = msgs.into_iter().rev().find(|m| m.role == "assistant") {
+                        return Ok(last);
+                    }
+                }
+            }
+            anyhow::bail!("send_message: no assistant response after polling");
+        }
+        let send_resp: SendMessageResponse =
+            serde_json::from_slice(&bytes).context("send_message parse failed")?;
         Ok(send_resp.into_message())
     }
 
