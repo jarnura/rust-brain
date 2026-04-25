@@ -2,13 +2,23 @@
 resolver = "2"
 members = [
     "crates/rustbrain-common",
+    "crates/rb-tracing",
+    "crates/rb-schemas",
     "services/ingestion",
     "services/api",
     "services/audit",
     "services/validator",
     "services/benchmarker",
+    "services/migrate",
+    "tests/fixtures/test-crate",
 ]
 exclude = [
     "target-repo",
     "tools/stress-gen",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Rust-brain-by-GOV Bot <bot@example.com>"]

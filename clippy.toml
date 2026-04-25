@@ -1,0 +1,9 @@
+msrv = "1.85.0"
+
+[lints.clippy]
+# Deny lints
+all = "deny"
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"

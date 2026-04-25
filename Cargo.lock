@@ -2269,6 +2269,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rb-migrate"
+version = "0.1.0"
+
+[[package]]
+name = "rb-schemas"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "rb-tracing"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

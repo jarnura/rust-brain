@@ -1,0 +1,11 @@
+[package]
+name = "rb-migrate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Database migration runner for rust-brain v2 (REQ-DV-02)"
+
+[[bin]]
+name = "rb-migrate"
+path = "src/main.rs"
