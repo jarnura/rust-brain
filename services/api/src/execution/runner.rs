@@ -63,6 +63,10 @@ struct SubSessionTracker {
     pending_dispatches: Vec<String>,
     /// Tool call IDs already bridged as events (prevents duplicate bridging).
     seen_call_ids: HashSet<String>,
+    /// Sessions discovered but not yet matched to a dispatch (FIFO order).
+    /// These sessions are NOT polled until resolved, preventing events from
+    /// being persisted with incorrect agent attribution.
+    unresolved_sessions: Vec<String>,
 }
 
 impl SubSessionTracker {
@@ -75,21 +79,20 @@ impl SubSessionTracker {
             session_part_counts: HashMap::new(),
             pending_dispatches: Vec::new(),
             seen_call_ids: HashSet::new(),
+            unresolved_sessions: Vec::new(),
         }
     }
 
     /// Record a detected agent dispatch so the next discovered session is mapped to that agent.
     ///
-    /// If a sub-session was already registered as `"unknown_subagent"` (race between
-    /// session discovery and dispatch detection), retroactively fix it.
+    /// If a sub-session was already discovered but not yet matched (in
+    /// `unresolved_sessions`), resolve it immediately (FIFO). Otherwise queue
+    /// the name in `pending_dispatches` for the next session discovery.
     fn record_dispatch(&mut self, agent_name: String) {
-        let unknown_session = self
-            .session_agent_map
-            .iter()
-            .find(|(_, name)| name.as_str() == "unknown_subagent")
-            .map(|(sid, _)| sid.clone());
-        if let Some(sid) = unknown_session {
-            self.session_agent_map.insert(sid, agent_name);
+        if !self.unresolved_sessions.is_empty() {
+            let session_id = self.unresolved_sessions.remove(0);
+            self.session_agent_map
+                .insert(session_id, agent_name);
         } else {
             self.pending_dispatches.push(agent_name);
         }
@@ -98,21 +101,23 @@ impl SubSessionTracker {
     /// Register newly discovered sessions from `list_sessions()`.
     ///
     /// For each session not yet in `known_sessions`, pops from `pending_dispatches`
-    /// to assign an agent name (falls back to `"unknown_subagent"`).
+    /// to assign an agent name. If no pending dispatch exists, the session is
+    /// added to `unresolved_sessions` for deferred resolution — it will be
+    /// matched when a dispatch is later detected via `record_dispatch()`.
     fn register_new_sessions(&mut self, session_ids: &[String]) {
         for session_id in session_ids {
             if self.known_sessions.contains(session_id) {
                 continue;
             }
-            let agent_name = if self.pending_dispatches.is_empty() {
-                "unknown_subagent".to_string()
-            } else {
-                self.pending_dispatches.remove(0)
-            };
             self.known_sessions.insert(session_id.clone());
-            self.session_agent_map
-                .insert(session_id.clone(), agent_name);
             self.session_part_counts.insert(session_id.clone(), 0);
+            if self.pending_dispatches.is_empty() {
+                self.unresolved_sessions.push(session_id.clone());
+            } else {
+                let agent_name = self.pending_dispatches.remove(0);
+                self.session_agent_map
+                    .insert(session_id.clone(), agent_name);
+            }
         }
     }
 
@@ -131,6 +136,15 @@ impl SubSessionTracker {
     fn update_part_count(&mut self, session_id: &str, count: usize) {
         self.session_part_counts
             .insert(session_id.to_string(), count);
+    }
+
+    /// Assign generic labels to any sessions still unresolved after all
+    /// dispatch detection has completed. Call once at post-completion.
+    fn finalize_unresolved(&mut self) {
+        for (i, session_id) in self.unresolved_sessions.drain(..).enumerate() {
+            let name = format!("subagent_{}", i + 1);
+            self.session_agent_map.insert(session_id, name);
+        }
     }
 }
 
@@ -641,7 +655,38 @@ async fn run_execution_inner(
                 agents = ?detected,
                 "Post-completion agent detection found dispatches"
             );
+            // Resolve unresolved sessions using newly detected dispatches.
+            // Subtract agents already in session_agent_map to avoid
+            // double-consuming unresolved sessions.
+            let mut needed: HashMap<String, usize> = HashMap::new();
+            for agent in &detected {
+                *needed.entry(agent.clone()).or_default() += 1;
+            }
+            for agent in tracker.session_agent_map.values() {
+                if let Some(count) = needed.get_mut(agent) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+            for (agent, count) in &needed {
+                for _ in 0..*count {
+                    tracker.record_dispatch(agent.clone());
+                }
+            }
         }
+    }
+
+    // Assign generic labels to any sessions that could not be matched to a
+    // dispatch, then do a final poll sweep to capture their events.
+    let unresolved_count = tracker.unresolved_sessions.len();
+    tracker.finalize_unresolved();
+    if unresolved_count > 0 {
+        info!(
+            execution_id = %exec_id,
+            count = unresolved_count,
+            "Finalized unresolved sub-sessions with generic labels"
+        );
+        discover_sub_sessions(&opencode, &mut tracker).await;
+        poll_sub_sessions(&opencode, &pool, exec_id, &mut tracker).await;
     }
 
     info!(execution_id = %exec_id, final_agent = %current_agent, "Execution events bridged");
@@ -787,6 +832,8 @@ fn extract_dispatched_agent_name(
         obj.get("subagent_type")
             .and_then(|v| v.as_str())
             .or_else(|| obj.get("category").and_then(|v| v.as_str()))
+            .or_else(|| obj.get("agent").and_then(|v| v.as_str()))
+            .or_else(|| obj.get("name").and_then(|v| v.as_str()))
     }) {
         return Some(name.to_string());
     }
@@ -796,6 +843,8 @@ fn extract_dispatched_agent_name(
             .get("subagent_type")
             .and_then(|v| v.as_str())
             .or_else(|| input.get("agent").and_then(|v| v.as_str()))
+            .or_else(|| input.get("name").and_then(|v| v.as_str()))
+            .or_else(|| input.get("category").and_then(|v| v.as_str()))
         {
             return Some(name.to_string());
         }
@@ -1383,33 +1432,23 @@ mod tests {
     }
 
     #[test]
-    fn tracker_register_falls_back_to_unknown_subagent() {
+    fn tracker_register_defers_when_no_pending_dispatch() {
         let mut tracker = SubSessionTracker::new("session-orch");
-        // No pending dispatch recorded — should use fallback name.
+        // No pending dispatch recorded — session should be deferred, not in session_agent_map.
         tracker.register_new_sessions(&["session-sub1".to_string()]);
-        assert_eq!(
-            tracker
-                .session_agent_map
-                .get("session-sub1")
-                .map(String::as_str),
-            Some("unknown_subagent")
-        );
+        assert!(tracker.session_agent_map.get("session-sub1").is_none());
+        assert_eq!(tracker.unresolved_sessions, vec!["session-sub1"]);
     }
 
     #[test]
-    fn tracker_record_dispatch_retroactively_fixes_unknown_subagent() {
+    fn tracker_record_dispatch_resolves_deferred_session() {
         let mut tracker = SubSessionTracker::new("session-orch");
         // Session discovered BEFORE dispatch (the race condition).
         tracker.register_new_sessions(&["session-sub1".to_string()]);
-        assert_eq!(
-            tracker
-                .session_agent_map
-                .get("session-sub1")
-                .map(String::as_str),
-            Some("unknown_subagent")
-        );
+        assert!(tracker.session_agent_map.get("session-sub1").is_none());
+        assert_eq!(tracker.unresolved_sessions.len(), 1);
 
-        // Dispatch arrives late — should retroactively fix the unknown entry.
+        // Dispatch arrives late — should resolve the deferred session.
         tracker.record_dispatch("research".to_string());
         assert_eq!(
             tracker
@@ -1418,7 +1457,54 @@ mod tests {
                 .map(String::as_str),
             Some("research")
         );
+        assert!(tracker.unresolved_sessions.is_empty());
         assert!(tracker.pending_dispatches.is_empty());
+    }
+
+    #[test]
+    fn tracker_finalize_unresolved_assigns_generic_labels() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        tracker.register_new_sessions(&[
+            "session-sub1".to_string(),
+            "session-sub2".to_string(),
+        ]);
+        assert_eq!(tracker.unresolved_sessions.len(), 2);
+
+        tracker.finalize_unresolved();
+        assert!(tracker.unresolved_sessions.is_empty());
+        assert_eq!(
+            tracker.session_agent_map.get("session-sub1").map(String::as_str),
+            Some("subagent_1")
+        );
+        assert_eq!(
+            tracker.session_agent_map.get("session-sub2").map(String::as_str),
+            Some("subagent_2")
+        );
+    }
+
+    #[test]
+    fn tracker_multiple_deferred_resolve_fifo() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // Two sessions discovered before any dispatch.
+        tracker.register_new_sessions(&[
+            "session-sub1".to_string(),
+            "session-sub2".to_string(),
+        ]);
+        assert_eq!(tracker.unresolved_sessions.len(), 2);
+
+        // Dispatches arrive — should resolve FIFO.
+        tracker.record_dispatch("research".to_string());
+        tracker.record_dispatch("explorer".to_string());
+
+        assert_eq!(
+            tracker.session_agent_map.get("session-sub1").map(String::as_str),
+            Some("research")
+        );
+        assert_eq!(
+            tracker.session_agent_map.get("session-sub2").map(String::as_str),
+            Some("explorer")
+        );
+        assert!(tracker.unresolved_sessions.is_empty());
     }
 
     #[test]
@@ -1470,6 +1556,18 @@ mod tests {
         // Only "research" should have been consumed; "explorer" still pending.
         assert_eq!(tracker.pending_dispatches, vec!["explorer"]);
         assert_eq!(tracker.session_agent_map.len(), 1);
+    }
+
+    #[test]
+    fn tracker_unresolved_sessions_excluded_from_poll() {
+        let mut tracker = SubSessionTracker::new("session-orch");
+        // Session discovered with no dispatch — goes to unresolved.
+        tracker.register_new_sessions(&["session-sub1".to_string()]);
+        assert!(tracker.sessions_to_poll().is_empty());
+
+        // After resolving, it appears in sessions_to_poll.
+        tracker.record_dispatch("research".to_string());
+        assert_eq!(tracker.sessions_to_poll().len(), 1);
     }
 
     #[test]
