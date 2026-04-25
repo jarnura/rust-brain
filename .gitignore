@@ -21,8 +21,9 @@ pipeline-*.json
 test-results/
 services/api/static/test.html
 
-# Agent worktrees
+# Agent worktrees and agent directories
 .worktrees/
+agents/
 
 # TypeScript build artifacts
 *.tsbuildinfo
