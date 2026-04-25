@@ -26,7 +26,7 @@ Tool budgets from the original design still apply.
 - None. Research agent has no bash access.
 
 ### Available external access
-- **webfetch** — fetch external documentation URLs
+- None. Research agent uses MCP tools exclusively. No webfetch access.
 
 ### Priority 0: mcp_rustbrain_pg_query — check cache FIRST
 ```sql
@@ -40,20 +40,20 @@ ORDER BY created_at DESC LIMIT 3
 If fresh brief exists (< 24h): return with cache_hit: true.
 If stale (> 24h): use as baseline, search for deltas only.
 
-### Priority 1: mcp_rustbrain_search_code — internal docs (cheapest search)
+### Priority 1: mcp_rustbrain_search_docs — internal docs (cheapest search)
 ```
-mcp_rustbrain_search_code(query, collection: "doc_embeddings", limit: 10, score_threshold: 0.75)
+mcp_rustbrain_search_docs(query, limit: 10, score_threshold: 0.6)
 ```
-Score interpretation: >0.85 = high confidence, 0.75-0.85 = related, <0.75 = noise.
+Score interpretation: >0.85 = high confidence, 0.70-0.85 = related, 0.60-0.70 = possibly relevant, <0.60 = noise.
 
-### Priority 2: webfetch — external documentation
-Target URLs (in credibility order):
-1. docs.rs/{crate}/{version}
-2. crates.io/crates/{crate}
-3. doc.rust-lang.org/reference
-4. rust-lang.github.io/api-guidelines
-5. github.com/{org}/{repo}/CHANGELOG.md
-Max 4 web fetches per task.
+### Priority 2: mcp_rustbrain_search_code — code search (when docs insufficient)
+```
+mcp_rustbrain_search_code(query, limit: 10, score_threshold: 0.65)
+```
+Use when doc search returns insufficient results. Lower score_threshold to cast wider net.
+
+### Priority 3: mcp_rustbrain_query_graph — structural queries
+Use Neo4j graph queries for relationship-based questions (callers, trait impls, module structure).
 ---
 ## Research modes
 ### MODE: ecosystem
@@ -104,6 +104,6 @@ Never stop when: zero T1/T2 findings and question is answerable, or contradictio
 3. Never recommend implementations (that's the Planner's job).
 4. Never ignore version numbers.
 5. Never skip the cache check.
-6. Never use webfetch as first resort.
+6. Never use webfetch — it is disabled. Use only MCP tools.
 7. Never return a brief with 0 sources consulted and no cache hit.
 8. Never drop contradictions.

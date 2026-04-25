@@ -95,13 +95,14 @@
         "bash": {
           "*": "deny"
         },
-        "webfetch": "allow",
+        "webfetch": "deny",
         "task": {
           "*": "deny"
         }
       },
       "tools": {
         "mcp_rustbrain_search_code": true,
+        "mcp_rustbrain_search_docs": true,
         "mcp_rustbrain_get_function": true,
         "mcp_rustbrain_query_graph": true,
         "mcp_rustbrain_pg_query": true,
