@@ -1749,6 +1749,14 @@ impl PipelineStage for ParseStage {
             return Ok(StageResult::skipped("parse"));
         }
 
+        // Upsert all source files into Postgres so we can set source_file_id on extracted_items.
+        let file_ids: HashMap<PathBuf, Uuid> =
+            Self::upsert_source_files(&db_pool, &source_files).await;
+        info!(
+            "Upserted {} source files into Postgres for parse stage",
+            file_ids.len()
+        );
+
         let total_files = source_files.len();
         info!(
             "Parsing {} files with {} threads, batch size 10",
@@ -1817,6 +1825,7 @@ impl PipelineStage for ParseStage {
                         .parse(&file_info.original_source, &file_info.module_path);
                     match result {
                         Ok(parse_result) => {
+                            let file_source_id = file_ids.get(&file_info.path).copied();
                             let mut items: Vec<ParsedItemInfo> = parse_result
                                 .items
                                 .iter()
@@ -1834,6 +1843,7 @@ impl PipelineStage for ParseStage {
                                     end_line: item.end_line,
                                     body_source: item.body_source.clone(),
                                     generated_by: None,
+                                    source_file_path: Some(file_info.path.clone()),
                                 })
                                 .collect();
 
@@ -1861,7 +1871,8 @@ impl PipelineStage for ParseStage {
                             if !items.is_empty() {
                                 let items_ref: Vec<&ParsedItemInfo> = items.iter().collect();
                                 let insert_count =
-                                    Self::batch_insert_items(&db_pool, &items_ref).await;
+                                    Self::batch_insert_items(&db_pool, &items_ref, file_source_id)
+                                        .await;
                                 debug!("Inserted {} items for {:?}", insert_count, file_info.path);
                             }
 
@@ -1922,6 +1933,7 @@ impl PipelineStage for ParseStage {
                                     end_line: item.end_line,
                                     body_source: item.body_source.clone(),
                                     generated_by,
+                                    source_file_path: Some(file_info.path.clone()),
                                 }
                             })
                             .collect();
@@ -1949,9 +1961,12 @@ impl PipelineStage for ParseStage {
                         items_count += items_len;
                         parsed_count += 1;
 
+                        let file_source_id = file_ids.get(&file_info.path).copied();
                         if !items.is_empty() {
                             let items_ref: Vec<&ParsedItemInfo> = items.iter().collect();
-                            let insert_count = Self::batch_insert_items(&db_pool, &items_ref).await;
+                            let insert_count =
+                                Self::batch_insert_items(&db_pool, &items_ref, file_source_id)
+                                    .await;
                             debug!("Inserted {} items for {:?}", insert_count, file_info.path);
                         }
 
@@ -2055,7 +2070,11 @@ impl ParseStage {
         None
     }
 
-    async fn batch_insert_items(pool: &sqlx::PgPool, items: &[&ParsedItemInfo]) -> usize {
+    async fn batch_insert_items(
+        pool: &sqlx::PgPool,
+        items: &[&ParsedItemInfo],
+        source_file_id: Option<Uuid>,
+    ) -> usize {
         if items.is_empty() {
             return 0;
         }
@@ -2080,6 +2099,11 @@ impl ParseStage {
         let ids: Vec<String> = deduped_items
             .iter()
             .map(|_| Uuid::new_v4().to_string())
+            .collect();
+        let source_file_id_str = source_file_id.map(|u| u.to_string());
+        let source_file_ids: Vec<Option<&str>> = deduped_items
+            .iter()
+            .map(|_| source_file_id_str.as_deref())
             .collect();
         let item_types: Vec<&str> = deduped_items.iter().map(|i| i.item_type.as_str()).collect();
         let fqns: Vec<&str> = deduped_items.iter().map(|i| i.fqn.as_str()).collect();
@@ -2123,26 +2147,26 @@ impl ParseStage {
 
         let result = sqlx::query(
             r#"
-            INSERT INTO extracted_items 
-                (id, source_file_id, item_type, fqn, name, visibility, signature, 
-                 doc_comment, start_line, end_line, body_source, 
+            INSERT INTO extracted_items
+                (id, source_file_id, item_type, fqn, name, visibility, signature,
+                 doc_comment, start_line, end_line, body_source,
                  generic_params, where_clauses, attributes, generated_by)
-            SELECT 
+            SELECT
                 unnest($1::uuid[]) as id,
-                NULL::uuid as source_file_id,
-                unnest($2::text[]) as item_type,
-                unnest($3::text[]) as fqn,
-                unnest($4::text[]) as name,
-                unnest($5::text[]) as visibility,
-                unnest($6::text[]) as signature,
-                unnest($7::text[]) as doc_comment,
-                unnest($8::int[]) as start_line,
-                unnest($9::int[]) as end_line,
-                unnest($10::text[]) as body_source,
-                unnest($11::jsonb[]) as generic_params,
-                unnest($12::jsonb[]) as where_clauses,
-                unnest($13::jsonb[]) as attributes,
-                unnest($14::text[]) as generated_by
+                unnest($2::uuid[]) as source_file_id,
+                unnest($3::text[]) as item_type,
+                unnest($4::text[]) as fqn,
+                unnest($5::text[]) as name,
+                unnest($6::text[]) as visibility,
+                unnest($7::text[]) as signature,
+                unnest($8::text[]) as doc_comment,
+                unnest($9::int[]) as start_line,
+                unnest($10::int[]) as end_line,
+                unnest($11::text[]) as body_source,
+                unnest($12::jsonb[]) as generic_params,
+                unnest($13::jsonb[]) as where_clauses,
+                unnest($14::jsonb[]) as attributes,
+                unnest($15::text[]) as generated_by
             ON CONFLICT (fqn) DO UPDATE SET
                 signature = EXCLUDED.signature,
                 doc_comment = EXCLUDED.doc_comment,
@@ -2159,6 +2183,7 @@ impl ParseStage {
             "#,
         )
         .bind(&ids)
+        .bind(&source_file_ids)
         .bind(&item_types)
         .bind(&fqns)
         .bind(&names)
@@ -2182,6 +2207,47 @@ impl ParseStage {
                 0
             }
         }
+    }
+
+    /// Upsert all source files into Postgres and return a map of path → UUID.
+    async fn upsert_source_files(
+        pool: &sqlx::PgPool,
+        source_files: &[SourceFileInfo],
+    ) -> HashMap<PathBuf, Uuid> {
+        let mut file_ids: HashMap<PathBuf, Uuid> = HashMap::new();
+        for sf in source_files {
+            let file_id = Uuid::new_v4();
+            let actual_id = sqlx::query_scalar::<_, Uuid>(
+                r#"
+                INSERT INTO source_files (id, file_path, crate_name, module_path, original_source, content_hash, git_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (crate_name, module_path, file_path) DO UPDATE SET
+                    original_source = EXCLUDED.original_source,
+                    content_hash = EXCLUDED.content_hash,
+                    git_hash = COALESCE(EXCLUDED.git_hash, source_files.git_hash)
+                RETURNING id
+                "#,
+            )
+            .bind(file_id)
+            .bind(sf.path.to_string_lossy().to_string())
+            .bind(&sf.crate_name)
+            .bind(&sf.module_path)
+            .bind(sf.original_source.as_str())
+            .bind(&sf.content_hash)
+            .bind(&sf.git_hash)
+            .fetch_one(pool)
+            .await;
+
+            match actual_id {
+                Ok(id) => {
+                    file_ids.insert(sf.path.clone(), id);
+                }
+                Err(e) => {
+                    warn!("Failed to upsert source file {:?}: {}", sf.path, e);
+                }
+            }
+        }
+        file_ids
     }
 }
 
@@ -2266,6 +2332,7 @@ impl TypecheckStage {
                         .get::<Option<String>, _>("body_source")
                         .unwrap_or_default(),
                     generated_by: row.get("generated_by"),
+                    source_file_path: None,
                 }
             })
             .collect();
@@ -2274,6 +2341,7 @@ impl TypecheckStage {
     }
 }
 
+#[async_trait::async_trait]
 #[async_trait::async_trait]
 impl PipelineStage for TypecheckStage {
     fn name(&self) -> &str {
@@ -2327,10 +2395,16 @@ impl PipelineStage for TypecheckStage {
 
         let service = TypeResolutionService::new(pool);
 
+        let typecheck_timeout = Duration::from_secs(
+            std::env::var("TYPECHECK_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(120),
+        );
+
         let mut typechecked_count = 0usize;
         let mut failed_count = 0usize;
 
-        // Process each expanded source file for type information
         for source_file in &source_files {
             let expanded_path = match expanded_sources.get(&source_file.path) {
                 Some(path) => path,
@@ -2350,11 +2424,9 @@ impl PipelineStage for TypecheckStage {
                 }
             };
 
-            // Collect caller FQNs for this file
             let caller_fqns: Vec<String> = parsed_items
                 .iter()
                 .filter(|item| {
-                    // Match items from this source file approximately by module path
                     item.fqn
                         .starts_with(&source_file.module_path.replace('/', "::"))
                         || item.fqn.starts_with(&source_file.crate_name)
@@ -2363,8 +2435,8 @@ impl PipelineStage for TypecheckStage {
                 .collect();
 
             let file_size = expanded_source.len();
+            let file_path_str = source_file.path.to_string_lossy().into_owned();
             let result = if file_size > 10_000_000 {
-                // Use heuristics for large files (>10MB)
                 debug!(
                     "Using heuristic analysis for large file ({} bytes): {}",
                     file_size,
@@ -2374,21 +2446,38 @@ impl PipelineStage for TypecheckStage {
                     .analyze_with_heuristics(
                         &source_file.crate_name,
                         &source_file.module_path,
-                        &source_file.path.to_string_lossy(),
+                        &file_path_str,
                         &expanded_source,
                         &caller_fqns,
                     )
                     .await
             } else {
-                service
-                    .analyze_expanded_source(
-                        &source_file.crate_name,
-                        &source_file.module_path,
-                        &source_file.path.to_string_lossy(),
-                        &expanded_source,
-                        &caller_fqns,
-                    )
-                    .await
+                let analyze_fut = service.analyze_expanded_source(
+                    &source_file.crate_name,
+                    &source_file.module_path,
+                    &file_path_str,
+                    &expanded_source,
+                    &caller_fqns,
+                );
+                match tokio::time::timeout(typecheck_timeout, analyze_fut).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        warn!(
+                            "Typecheck timed out after {}s for {:?}, falling back to heuristics",
+                            typecheck_timeout.as_secs(),
+                            source_file.path
+                        );
+                        service
+                            .analyze_with_heuristics(
+                                &source_file.crate_name,
+                                &source_file.module_path,
+                                &file_path_str,
+                                &expanded_source,
+                                &caller_fqns,
+                            )
+                            .await
+                    }
+                }
             };
 
             match result {
@@ -2530,6 +2619,7 @@ impl ExtractStage {
                         .get::<Option<String>, _>("body_source")
                         .unwrap_or_default(),
                     generated_by: row.get("generated_by"),
+                    source_file_path: None,
                 }
             })
             .collect();
@@ -2705,18 +2795,24 @@ impl PipelineStage for ExtractStage {
                 .map(|(_, i)| i.generated_by.as_deref())
                 .collect();
 
-            // Resolve source_file_id for each item
+            // Resolve source_file_id for each item: prefer the path recorded at parse time,
+            // fall back to fuzzy FQN matching when the item was loaded from the database.
             let source_file_ids: Vec<Option<Uuid>> = items_with_ids
                 .iter()
                 .map(|(_, item)| {
-                    // Try to find the source file for this item
-                    file_map
-                        .keys()
-                        .find(|p| {
-                            item.fqn
-                                .contains(&*p.file_stem().unwrap_or_default().to_string_lossy())
-                        })
+                    item.source_file_path
+                        .as_ref()
                         .and_then(|p| file_ids.get(p).copied())
+                        .or_else(|| {
+                            file_map
+                                .keys()
+                                .find(|p| {
+                                    item.fqn.contains(
+                                        &*p.file_stem().unwrap_or_default().to_string_lossy(),
+                                    )
+                                })
+                                .and_then(|p| file_ids.get(p).copied())
+                        })
                 })
                 .collect();
 
@@ -4049,6 +4145,7 @@ impl GraphStage {
                         .get::<Option<String>, _>("body_source")
                         .unwrap_or_default(),
                     generated_by: row.get("generated_by"),
+                    source_file_path: None,
                 }
             })
             .collect();
@@ -5024,6 +5121,7 @@ impl EmbedStage {
                         .get::<Option<String>, _>("body_source")
                         .unwrap_or_default(),
                     generated_by: row.get("generated_by"),
+                    source_file_path: None,
                 }
             })
             .collect();
@@ -5277,7 +5375,7 @@ impl PipelineStage for EmbedStage {
             );
         }
 
-        let mut state = ctx.state.write().await;
+        let _state = ctx.state.write().await;
 
         let duration = start.elapsed();
 
@@ -6748,5 +6846,137 @@ mod tests {
         let result = StageResult::failed("graph", "Failed to load items from database: timeout");
         assert_eq!(result.status, StageStatus::Failed);
         assert!(result.error.is_some());
+    }
+}
+
+#[cfg(test)]
+mod rusa339_tests {
+    use super::*;
+
+    #[test]
+    fn test_parsed_item_info_has_source_file_path() {
+        let path = PathBuf::from("/src/lib.rs");
+        let item = ParsedItemInfo {
+            fqn: "my_crate::Foo".to_string(),
+            item_type: "struct".to_string(),
+            name: "Foo".to_string(),
+            visibility: "pub".to_string(),
+            signature: "struct Foo".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: String::new(),
+            generated_by: None,
+            source_file_path: Some(path.clone()),
+        };
+        assert_eq!(item.source_file_path, Some(path));
+    }
+
+    #[test]
+    fn test_source_file_path_absent_when_loaded_from_db() {
+        let item = ParsedItemInfo {
+            fqn: "my_crate::Bar".to_string(),
+            item_type: "fn".to_string(),
+            name: "bar".to_string(),
+            visibility: "pub".to_string(),
+            signature: "fn bar()".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 10,
+            end_line: 15,
+            body_source: String::new(),
+            generated_by: None,
+            source_file_path: None,
+        };
+        assert!(item.source_file_path.is_none());
+    }
+
+    #[test]
+    fn test_extract_stage_source_file_id_prefers_path_over_fqn_heuristic() {
+        // Simulate the resolution logic: exact path match wins over fuzzy FQN
+        let exact_path = PathBuf::from("/workspace/src/foo.rs");
+        let other_path = PathBuf::from("/workspace/src/bar.rs");
+        let exact_id = uuid::Uuid::new_v4();
+        let other_id = uuid::Uuid::new_v4();
+
+        let mut file_ids: HashMap<PathBuf, uuid::Uuid> = HashMap::new();
+        file_ids.insert(exact_path.clone(), exact_id);
+        file_ids.insert(other_path.clone(), other_id);
+
+        // Item with source_file_path set — should resolve via direct lookup
+        let item = ParsedItemInfo {
+            fqn: "my_crate::foo::Foo".to_string(),
+            item_type: "struct".to_string(),
+            name: "Foo".to_string(),
+            visibility: "pub".to_string(),
+            signature: "struct Foo".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: String::new(),
+            generated_by: None,
+            source_file_path: Some(exact_path.clone()),
+        };
+
+        let resolved = item
+            .source_file_path
+            .as_ref()
+            .and_then(|p| file_ids.get(p).copied());
+
+        assert_eq!(resolved, Some(exact_id));
+        assert_ne!(resolved, Some(other_id));
+    }
+
+    #[test]
+    fn test_extract_stage_source_file_id_falls_back_to_fqn_heuristic() {
+        // Simulate the resolution logic when source_file_path is None (DB-loaded item)
+        let exact_path = PathBuf::from("/workspace/src/foo.rs");
+        let exact_id = uuid::Uuid::new_v4();
+
+        let mut file_ids: HashMap<PathBuf, uuid::Uuid> = HashMap::new();
+        file_ids.insert(exact_path.clone(), exact_id);
+
+        let item = ParsedItemInfo {
+            fqn: "my_crate::foo::SomeStruct".to_string(),
+            item_type: "struct".to_string(),
+            name: "SomeStruct".to_string(),
+            visibility: "pub".to_string(),
+            signature: "struct SomeStruct".to_string(),
+            generic_params: vec![],
+            where_clauses: vec![],
+            attributes: vec![],
+            doc_comment: String::new(),
+            start_line: 1,
+            end_line: 5,
+            body_source: String::new(),
+            generated_by: None,
+            source_file_path: None,
+        };
+
+        // No source_file_path, fall back to fuzzy FQN match
+        let resolved = item
+            .source_file_path
+            .as_ref()
+            .and_then(|p| file_ids.get(p).copied())
+            .or_else(|| {
+                file_ids
+                    .keys()
+                    .find(|p| {
+                        item.fqn
+                            .contains(&*p.file_stem().unwrap_or_default().to_string_lossy())
+                    })
+                    .and_then(|p| file_ids.get(p).copied())
+            });
+
+        // FQN "my_crate::foo::SomeStruct" contains "foo" which matches "foo.rs"
+        assert_eq!(resolved, Some(exact_id));
     }
 }

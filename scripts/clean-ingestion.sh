@@ -115,7 +115,10 @@ echo ""
 
 # Resolve container names (handles hash-prefixed names like "abc123_rustbrain-postgres")
 resolve_container() {
-    docker ps --format "{{.Names}}" | grep "$1" | head -1
+    # Match exact container name at end of line to avoid false positives
+    # e.g. "rustbrain-postgres" should NOT match "rustbrain-postgres-exporter"
+    # Handles hash-prefixed names like "abc123_rustbrain-postgres"
+    docker ps --format "{{.Names}}" | grep -E "(^|_)$1$" | head -1
 }
 
 # Check services are running

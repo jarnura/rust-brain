@@ -453,6 +453,7 @@ async fn parse_stage(
                             end_line: item.end_line,
                             body_source: item.body_source.clone(),
                             generated_by: item.generated_by.clone(),
+                            source_file_path: None,
                         })
                         .collect();
 

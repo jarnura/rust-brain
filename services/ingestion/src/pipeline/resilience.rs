@@ -974,6 +974,7 @@ mod tests {
                 end_line: 5,
                 body_source: "{ }".to_string(),
                 generated_by: None,
+                source_file_path: None,
             },
             ParsedItemInfo {
                 fqn: "crate::bar".to_string(),
@@ -989,6 +990,7 @@ mod tests {
                 end_line: 15,
                 body_source: "{ x: i32 }".to_string(),
                 generated_by: Some("derive(Debug)".to_string()),
+                source_file_path: None,
             },
         ];
 
@@ -1035,6 +1037,7 @@ mod tests {
             end_line: 1,
             body_source: String::new(),
             generated_by: None,
+            source_file_path: None,
         };
 
         store.spill(std::slice::from_ref(&item)).unwrap();

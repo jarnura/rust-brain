@@ -145,11 +145,28 @@ fi
 echo "Checking ingestion image..."
 $COMPOSE_CMD -f "$PROJECT_ROOT/docker-compose.yml" build ingestion
 
+# When --workspace-label is set, append search_path to DATABASE_URL so the
+# ingestion pipeline writes into the workspace-scoped Postgres schema rather
+# than the default public schema.  Mirrors what the API does via
+# append_search_path() in services/api/src/handlers/workspace.rs.
+INGESTION_DB_URL="${DATABASE_URL:-}"
+if [ -n "$WORKSPACE_LABEL" ]; then
+    WS_SUFFIX="${WORKSPACE_LABEL#Workspace_}"
+    WS_SCHEMA="ws_${WS_SUFFIX}"
+    SEARCH_PATH_PARAM="options=--search_path%3D${WS_SCHEMA},public"
+    if [[ "$INGESTION_DB_URL" == *'?'* ]]; then
+        INGESTION_DB_URL="${INGESTION_DB_URL}&${SEARCH_PATH_PARAM}"
+    else
+        INGESTION_DB_URL="${INGESTION_DB_URL}?${SEARCH_PATH_PARAM}"
+    fi
+fi
+
 # Run ingestion in container with memory limits
 # --rm ensures container is removed after run (no accumulation)
 echo "Starting ingestion..."
 $COMPOSE_CMD -f "$PROJECT_ROOT/docker-compose.yml" run --rm \
     -e INGESTION_MEMORY_BUDGET="$MEMORY_BUDGET" \
+    ${INGESTION_DB_URL:+-e DATABASE_URL="$INGESTION_DB_URL"} \
     -v "$WORKSPACE_PATH:/workspace/target-repo" \
     ingestion \
     --crate-path /workspace/target-repo \
