@@ -7,6 +7,7 @@
 pub mod config;
 pub mod errors;
 pub mod events;
+pub mod ingest_events;
 pub mod logging;
 pub mod types;
 
