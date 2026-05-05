@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/rustbrain-common",
+    "crates/rb-query",
     "services/ingestion",
     "services/api",
     "services/audit",

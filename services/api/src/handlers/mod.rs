@@ -12,6 +12,7 @@
 //! | [`typecheck`] | `GET /tools/find_calls_with_type`, `GET /tools/find_trait_impls_for_type` |
 //! | [`ingestion`] | `GET /api/ingestion/progress` |
 //! | [`playground`] | Playground HTML serving |
+//! | [`repos`] | `GET /v1/repos/:repo_id/items/:fqn_b64/callers`, `/callees` (REQ-DP-03) |
 
 pub mod artifacts;
 pub mod benchmarker;
@@ -26,6 +27,7 @@ pub mod items;
 pub mod keys;
 pub mod pg_query;
 pub mod playground;
+pub mod repos;
 pub mod search;
 pub mod tasks;
 pub mod typecheck;

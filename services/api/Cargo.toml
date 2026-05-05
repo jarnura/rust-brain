@@ -58,6 +58,12 @@ neo4rs = "0.7"
 # Shared types
 rustbrain-common = { path = "../../crates/rustbrain-common" }
 
+# Data-plane query engine (REQ-DP-03)
+rb-query = { path = "../../crates/rb-query" }
+
+# Base64 for FQN path decoding
+base64 = "0.22"
+
 [dev-dependencies]
 # Integration test HTTP client
 reqwest = { version = "0.12", features = ["json", "stream"] }

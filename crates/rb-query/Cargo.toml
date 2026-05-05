@@ -1,0 +1,16 @@
+[package]
+name = "rb-query"
+version = "0.1.0"
+edition = "2021"
+description = "Call-graph traversal engine for rust-brain data-plane queries (REQ-DP-03)"
+
+[dependencies]
+neo4rs = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+base64 = "0.22"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.37", features = ["full"] }

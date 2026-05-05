@@ -290,6 +290,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/tools/query_graph", post(handlers::graph::query_graph))
         // Read-only SQL query
         .route("/tools/pg_query", post(handlers::pg_query::pg_query))
+        // v1 data-plane: caller/callee traversal (REQ-DP-03)
+        .route(
+            "/v1/repos/:repo_id/items/:fqn_b64/callers",
+            get(handlers::repos::get_callers),
+        )
+        .route(
+            "/v1/repos/:repo_id/items/:fqn_b64/callees",
+            get(handlers::repos::get_callees),
+        )
         // API key management (admin only)
         .route(
             "/api/keys",

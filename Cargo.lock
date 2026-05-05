@@ -2269,6 +2269,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rb-query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "neo4rs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2427,6 +2440,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "config",
  "futures-util",
@@ -2436,6 +2450,7 @@ dependencies = [
  "moka",
  "neo4rs",
  "prometheus",
+ "rb-query",
  "reqwest",
  "rustbrain-common",
  "serde",
@@ -3265,15 +3280,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "test-fixture"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "tokio",
 ]
 
 [[package]]
