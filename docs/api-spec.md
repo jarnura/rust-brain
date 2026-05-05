@@ -1937,3 +1937,146 @@ Get full detail for a bench run including per-case results.
   ]
 }
 ```
+
+---
+
+## Data Plane — Caller/Callee Traversal (REQ-DP-03)
+
+BFS traversal of the Neo4j call graph scoped to a workspace/repo. Implemented in `crates/rb-query`.
+
+All endpoints under this section are tenant-isolated: `repo_id` maps to the Neo4j workspace label and no cross-tenant edges are returned.
+
+### GET /v1/repos/{repo_id}/items/{fqn_b64}/callers
+
+Returns all functions that transitively call the target item, up to `depth` hops (BFS backward over `CALLS` and `CALL_INSTANTIATES` edges).
+
+#### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `repo_id` | string | Workspace identifier (used as Neo4j workspace label) |
+| `fqn_b64` | string | URL-safe base64-encoded fully-qualified name of the target item |
+
+To encode a FQN: `base64url(fqn)` with no padding (RFC 4648 §5 without `=`).
+
+#### Query Parameters
+
+| Parameter | Type | Default | Max | Description |
+|-----------|------|---------|-----|-------------|
+| `depth` | integer | `3` | `10` | BFS traversal depth |
+| `limit` | integer | `50` | `200` | Max edges to return per page |
+| `cursor` | string | — | — | Opaque continuation token from prior response |
+
+#### Response
+
+**`200 OK`** — `application/json`
+
+```json
+{
+  "root": {
+    "fqn": "serde_json::from_str",
+    "name": "from_str",
+    "kind": "fn",
+    "file_path": "src/lib.rs",
+    "line": 101
+  },
+  "nodes": [
+    {
+      "fqn": "my_app::config::load_config",
+      "name": "load_config",
+      "kind": "fn",
+      "file_path": "src/config.rs",
+      "line": 23
+    }
+  ],
+  "edges": [
+    {
+      "from_fqn": "my_app::config::load_config",
+      "to_fqn": "serde_json::from_str",
+      "depth": 1,
+      "provenance": "direct"
+    }
+  ],
+  "cycles_detected": false,
+  "next_cursor": null
+}
+```
+
+#### Response Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `root` | `TraversalNode` | The item whose callers were requested |
+| `nodes` | `TraversalNode[]` | All unique nodes encountered (excluding root), deduplicated |
+| `edges` | `TraversalEdge[]` | BFS-ordered edges; length ≤ `limit` |
+| `cycles_detected` | boolean | `true` if any cycle was detected during traversal |
+| `next_cursor` | string? | Opaque cursor; absent when no more pages |
+
+**`TraversalNode`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fqn` | string | Fully-qualified name |
+| `name` | string | Short name (last segment) |
+| `kind` | string? | Item kind: `fn`, `method`, `closure`, etc. |
+| `file_path` | string? | Source file path relative to repo root |
+| `line` | integer? | Line number of definition |
+
+**`TraversalEdge`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `from_fqn` | string | Calling node FQN |
+| `to_fqn` | string | Called node FQN |
+| `depth` | integer | BFS depth at which this edge was discovered (1-indexed) |
+| `provenance` | `EdgeProvenance` | `direct` / `monomorph` / `dyn_candidate` |
+
+**`EdgeProvenance`**
+
+| Value | Description |
+|-------|-------------|
+| `direct` | Static direct call via a `CALLS` edge with static dispatch |
+| `monomorph` | Monomorphized generic — `CALL_INSTANTIATES` edge or `CALLS` edge with concrete type args |
+| `dyn_candidate` | Dynamic dispatch candidate — `CALLS` edge with `dispatch = "dynamic"` |
+
+#### Errors
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `BAD_REQUEST` | Invalid `repo_id`, malformed `fqn_b64`, `depth > 10`, `limit > 200`, or invalid cursor |
+| `500` | `NEO4J_ERROR` | Graph query failed |
+
+#### cURL Example
+
+```bash
+# Encode FQN
+FQN_B64=$(echo -n "serde_json::from_str" | base64 | tr '+/' '-_' | tr -d '=')
+
+curl "http://localhost:8088/v1/repos/my-workspace/items/${FQN_B64}/callers?depth=3&limit=50"
+```
+
+---
+
+### GET /v1/repos/{repo_id}/items/{fqn_b64}/callees
+
+Returns all functions transitively called by the target item, up to `depth` hops (BFS forward over `CALLS` and `CALL_INSTANTIATES` edges).
+
+Path parameters, query parameters, response schema, and errors are identical to the [callers endpoint](#get-v1reposrepo_iditemsfqn_b64callers) above. The traversal direction is reversed: edges go from the root outward toward callees.
+
+#### cURL Example
+
+```bash
+FQN_B64=$(echo -n "my_app::main" | base64 | tr '+/' '-_' | tr -d '=')
+
+curl "http://localhost:8088/v1/repos/my-workspace/items/${FQN_B64}/callees?depth=5&limit=100"
+```
+
+#### Pagination
+
+Both endpoints support cursor-based pagination:
+
+1. Make initial request (no `cursor`).
+2. If `next_cursor` is non-null, pass it as `?cursor=<value>` to fetch the next page.
+3. Repeat until `next_cursor` is null.
+
+The cursor encodes the current page offset and is opaque — do not parse or construct it manually.

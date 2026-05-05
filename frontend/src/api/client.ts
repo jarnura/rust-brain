@@ -6,6 +6,7 @@ import type {
   ExecuteResponse,
   FileNode,
   ResetResponse,
+  TraversalResult,
   Workspace,
   WorkspaceStats,
 } from '../types'
@@ -144,6 +145,42 @@ export function commitWorkspace(
 
 export function resetWorkspace(id: string): Promise<ResetResponse> {
   return post(`/workspaces/${id}/reset`)
+}
+
+// ─── Call Graph Traversal (REQ-DP-03) ────────────────────────────────────────
+
+export interface TraversalParams {
+  depth?: number
+  limit?: number
+  cursor?: string
+}
+
+function fqnToB64(fqn: string): string {
+  return btoa(fqn).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function traversalQuery(params: TraversalParams): string {
+  const parts: string[] = []
+  if (params.depth != null) parts.push(`depth=${params.depth}`)
+  if (params.limit != null) parts.push(`limit=${params.limit}`)
+  if (params.cursor != null) parts.push(`cursor=${encodeURIComponent(params.cursor)}`)
+  return parts.length ? `?${parts.join('&')}` : ''
+}
+
+export function getCallers(
+  repoId: string,
+  fqn: string,
+  params: TraversalParams = {},
+): Promise<TraversalResult> {
+  return get(`/v1/repos/${repoId}/items/${fqnToB64(fqn)}/callers${traversalQuery(params)}`)
+}
+
+export function getCallees(
+  repoId: string,
+  fqn: string,
+  params: TraversalParams = {},
+): Promise<TraversalResult> {
+  return get(`/v1/repos/${repoId}/items/${fqnToB64(fqn)}/callees${traversalQuery(params)}`)
 }
 
 // ─── SSE stream ───────────────────────────────────────────────────────────────

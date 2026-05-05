@@ -216,3 +216,38 @@ export interface ResetResponse {
   message: string
   head_sha: string
 }
+
+// ─── Call Graph Traversal (REQ-DP-03) ────────────────────────────────────────
+
+/** Dispatch provenance for a call graph edge. */
+export type EdgeProvenance = 'direct' | 'monomorph' | 'dyn_candidate'
+
+/** A node discovered during BFS traversal of the call graph. */
+export interface TraversalNode {
+  fqn: string
+  name: string
+  kind?: string
+  file_path?: string
+  line?: number
+}
+
+/** A directed edge discovered during BFS traversal. */
+export interface TraversalEdge {
+  from_fqn: string
+  to_fqn: string
+  /** BFS depth at which this edge was discovered (1-indexed from root). */
+  depth: number
+  provenance: EdgeProvenance
+}
+
+/**
+ * Response from GET /v1/repos/{repo_id}/items/{fqn_b64}/callers
+ * and GET /v1/repos/{repo_id}/items/{fqn_b64}/callees.
+ */
+export interface TraversalResult {
+  root: TraversalNode
+  nodes: TraversalNode[]
+  edges: TraversalEdge[]
+  cycles_detected: boolean
+  next_cursor?: string | null
+}
